@@ -22,6 +22,59 @@ Synapse 是一款基于 Electron 的本地个人知识库助手，围绕三大�
 
 - [Node.js](https://nodejs.org/) 18 及以上（推荐 20+）
 - npm 随 Node.js 一并安装
+- Git（用于版本管理与协作）
+
+## 系统初始化
+
+### 1. 克隆仓库
+
+```bash
+git clone https://github.com/skaterqiang/Synapse.git
+cd Synapse
+```
+
+### 2. 安装依赖
+
+```bash
+npm install
+```
+
+### 3. 配置 Git 代理（国内网络）
+
+如需访问 GitHub，配置本地代理（以 Clash 默认端口为例）：
+
+```bash
+git config --global http.proxy http://127.0.0.1:7892
+git config --global https.proxy http://127.0.0.1:7892
+```
+
+取消代理：
+
+```bash
+git config --global --unset http.proxy
+git config --global --unset https.proxy
+```
+
+### 4. 配置 API Key
+
+启动应用后，点击左下角「⚙」打开设置，在「AI 服务」页填入：
+
+| 配置项 | 说明 |
+|---|---|
+| API Base URL | 兼容 OpenAI 格式的接口地址（如 `https://api.openai.com/v1`） |
+| API Key | 你的密钥（保存在本地 SQLite，不会上传） |
+| Model | 模型名称（如 `gpt-4o-mini`） |
+
+### 5. 安全说明
+
+项目已配置 `.gitignore`，以下敏感文件**不会**被提交到仓库：
+
+- `*.db` / `*.db.bak` — SQLite 数据库（含 API Key 等设置）
+- `.env` / `*.key` / `*.pem` — 环境变量与密钥文件
+- `db-path.json` — 数据库路径指针
+- `node_modules/` — 依赖目录
+
+> **重要：** 切勿将 API Key 硬编码到源码中，所有密钥通过应用设置界面存入本地数据库。
 
 ## 启动方式
 
