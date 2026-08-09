@@ -1,0 +1,30 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: Q0DeR-MaG1C-BrAnCh-Fo2-NoN-GiT-Or-No-C0MmIt
+nodes_managed: true
+exported_at: "2026-08-09T11:51:02Z"
+modules:
+    "":
+        dir_name: Synapse 本地个人知识库应用
+        title: Synapse 本地个人知识库应用
+        scope:
+            - package.json
+            - package-lock.json
+            - README.md
+            - main.js
+            - preload.js
+        source_files: []
+        children:
+            - wiki_content
+        depends_on: []
+        related_to: []
+    wiki_content:
+        dir_name: LLM Wiki 个人知识库（OKF v0.2 知识包）
+        title: LLM Wiki 个人知识库（OKF v0.2 知识包）
+        scope:
+            - llmwiki/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

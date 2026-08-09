@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
+  <title>Synapse</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- 左侧导航 -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">📚 知识库</div>
+        <button class="btn btn-primary" id="btn-new-note" title="新建笔记">＋ 新建</button>
+      </div>
+      <div class="sidebar-search">
+        <input type="text" id="search-input" placeholder="🔍 搜索标题、内容、标签…" />
+      </div>
+      <nav class="sidebar-nav">
+        <div class="nav-item" id="nav-all-notes">
+          <span>📝 全部笔记</span>
+          <span class="nav-count" id="count-all">0</span>
+        </div>
+
+        <div class="nav-section">
+          <span>目录</span>
+          <button class="icon-btn" id="btn-add-folder" title="新建目录">＋</button>
+        </div>
+        <div id="folder-tree"></div>
+
+        <div class="nav-section"><span>标签</span></div>
+        <div id="tag-list"></div>
+
+        <div class="nav-section wiki-header" id="wiki-header" title="点击折叠/展开">
+          <span class="wiki-header-title"><span class="chevron" id="wiki-chevron">▾</span> 📖 LLM Wiki</span>
+          <button class="icon-btn" id="btn-wiki-ingest" title="吸收新来源">＋</button>
+        </div>
+        <div id="wiki-collapse">
+          <div id="wiki-tree"></div>
+          <div class="wiki-ops">
+            <button class="btn btn-ghost" id="btn-wiki-ask">📖 问答</button>
+            <button class="btn btn-ghost" id="btn-wiki-jobs">🗂 作业</button>
+          </div>
+        </div>
+      </nav>
+      <div class="sidebar-footer">
+        <button class="btn btn-ghost" id="btn-settings">⚙ 设置</button>
+        <button class="btn btn-ghost" id="btn-ai-toggle">🤖 AI 问答</button>
+      </div>
+    </aside>
+
+    <!-- 分隔条：拖拽调整侧边栏宽度 -->
+    <div class="pane-resizer" id="sidebar-resizer" title="拖拽调整宽度，双击复位"></div>
+
+    <!-- 笔记列表 -->
+    <div class="note-list-pane">
+      <div class="note-list-header">
+        <span id="note-list-title">全部笔记</span>
+        <span class="note-list-count" id="note-list-count"></span>
+      </div>
+      <div id="note-list"></div>
+    </div>
+
+    <!-- 分隔条：拖拽调整笔记列表宽度 -->
+    <div class="pane-resizer" id="notelist-resizer" title="拖拽调整宽度，双击复位"></div>
+
+    <!-- 编辑区 -->
+    <main class="editor-pane">
+      <div class="editor-empty" id="editor-empty">
+        <div class="empty-icon">🗂️</div>
+        <p>选择或新建一篇笔记开始记录</p>
+      </div>
+
+      <!-- 作业管理页 -->
+      <div class="jobs-view" id="jobs-view" hidden>
+        <div class="jobs-toolbar">
+          <span class="jobs-view-title">🗂 作业管理</span>
+          <div class="jobs-filter" id="jobs-filter">
+            <button data-filter="all" class="active">全部</button>
+            <button data-filter="active">进行中</button>
+            <button data-filter="success">成功</button>
+            <button data-filter="failed">失败</button>
+          </div>
+          <span class="jobs-stats" id="jobs-stats"></span>
+          <div class="toolbar-actions">
+            <button class="btn btn-primary" id="btn-jobs-new-lint" title="提交一个新的 Wiki 体检作业">➕ 新建体检</button>
+            <button class="btn btn-ghost" id="btn-jobs-clear" title="清除全部已完成的作业历史">🧹 清空历史</button>
+            <button class="icon-btn" id="btn-jobs-close" title="关闭作业页">✕</button>
+          </div>
+        </div>
+        <div class="jobs-page-list" id="jobs-page-list"></div>
+      </div>
+
+      <!-- 设置页（主区域 Tab 分类） -->
+      <div class="settings-view" id="settings-view" hidden>
+        <div class="settings-view-header">
+          <span class="settings-view-title">⚙ 设置</span>
+          <div class="settings-tabs" id="settings-tabs">
+            <button data-tab="ai" class="active">🤖 AI 服务</button>
+            <button data-tab="wiki">📖 存储</button>
+            <button data-tab="jobs">🗂 作业</button>
+            <button data-tab="ask">💬 问答</button>
+            <button data-tab="editor">✏️ 编辑器</button>
+          </div>
+          <div class="toolbar-actions">
+            <button class="icon-btn" id="btn-settings-close" title="关闭设置">✕</button>
+          </div>
+        </div>
+        <div class="settings-view-body">
+          <div class="settings-form">
+            <div class="settings-pane" data-pane="ai">
+              <p class="modal-tip">兼容 OpenAI 接口格式（OpenAI / DeepSeek / 通义千问 / Ollama 等均可）</p>
+              <label>接口地址 (Base URL)</label>
+              <input type="text" id="set-baseurl" placeholder="https://api.openai.com/v1" />
+              <label>API Key</label>
+              <input type="password" id="set-apikey" placeholder="sk-..." />
+              <label>模型名称</label>
+              <input type="text" id="set-model" placeholder="gpt-4o-mini" />
+            </div>
+            <div class="settings-pane" data-pane="wiki" hidden>
+              <label>Wiki 根目录（LLM Wiki）</label>
+              <input type="text" id="set-wikiroot" placeholder="留空则自动探测" />
+              <label class="checkbox-row"><input type="checkbox" id="set-wikicollapsed" /> 默认折叠 Wiki 目录树</label>
+              <label>数据文件位置（SQLite）</label>
+              <input type="text" id="set-dbpath" placeholder="留空则使用默认位置" />
+              <p class="modal-tip">修改后将整个数据库迁移到新路径并立即生效；留空保存则恢复默认位置</p>
+            </div>
+            <div class="settings-pane" data-pane="jobs" hidden>
+              <label>作业历史保留条数</label>
+              <input type="number" id="set-maxhistory" min="1" max="500" placeholder="默认 50" />
+              <label>失败重试次数（网络/5xx 等瞬时错误自动重试）</label>
+              <input type="number" id="set-retries" min="0" max="5" placeholder="默认 1" />
+              <label>网页拉取超时（秒）</label>
+              <input type="number" id="set-urltimeout" min="1" max="600" placeholder="默认 30" />
+              <label>来源内容截断阈值（字符，防提示词过长）</label>
+              <input type="number" id="set-sourcechars" min="1000" max="1000000" placeholder="默认 60000" />
+            </div>
+            <div class="settings-pane" data-pane="ask" hidden>
+              <label>Wiki 问答最大引用页数</label>
+              <input type="number" id="set-askpages" min="1" max="20" placeholder="默认 5" />
+              <label>日志展示行数（log.md 尾部）</label>
+              <input type="number" id="set-loglines" min="1" max="500" placeholder="默认 30" />
+            </div>
+            <div class="settings-pane" data-pane="editor" hidden>
+              <label>默认编辑器模式</label>
+              <select id="set-editormode">
+                <option value="split">分屏</option>
+                <option value="edit">编辑</option>
+                <option value="preview">预览</option>
+              </select>
+            </div>
+            <div class="settings-view-actions">
+              <span class="modal-data-path" id="data-path"></span>
+              <button class="btn btn-primary" id="btn-settings-save">保存设置</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Wiki 页面阅读器 -->
+      <div class="wiki-viewer" id="wiki-viewer" hidden>
+        <div class="wiki-viewer-header">
+          <span class="wiki-path" id="wiki-page-path"></span>
+          <div class="toolbar-actions">
+            <button class="icon-btn" id="btn-wiki-source" title="切换源码/渲染视图">≡</button>
+            <button class="icon-btn" id="btn-wiki-close" title="关闭">✕</button>
+          </div>
+        </div>
+        <div class="wiki-fm" id="wiki-fm"></div>
+        <div class="preview markdown-body wiki-body" id="wiki-body"></div>
+        <textarea id="wiki-raw-text" readonly hidden></textarea>
+      </div>
+      <div class="editor-content" id="editor-content" hidden>
+        <div class="editor-toolbar">
+          <input type="text" id="note-title" placeholder="无标题笔记" />
+          <div class="toolbar-actions">
+            <div class="mode-switch">
+              <button id="mode-edit" class="active" title="编辑模式">编辑</button>
+              <button id="mode-split" title="分屏模式">分屏</button>
+              <button id="mode-preview" title="预览模式">预览</button>
+            </div>
+            <button class="icon-btn" id="btn-pin" title="置顶">📌</button>
+            <button class="icon-btn" id="btn-export" title="导出为文件">⬇</button>
+            <button class="icon-btn danger" id="btn-delete" title="删除笔记">🗑</button>
+          </div>
+        </div>
+        <div class="editor-meta">
+          <select id="note-folder"></select>
+          <input type="text" id="note-tags" placeholder="标签，用逗号分隔，如：工作, 学习" />
+          <span class="meta-time" id="note-time"></span>
+        </div>
+        <div class="editor-body" id="editor-body">
+          <textarea id="note-content" placeholder="支持 Markdown 语法：# 标题、**加粗**、- 列表、```代码块``` …"></textarea>
+          <div class="preview markdown-body" id="note-preview"></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- 分隔条：拖拽调整 AI 面板宽度（随面板显隐） -->
+    <div class="pane-resizer" id="ai-resizer" title="拖拽调整宽度，双击复位" hidden></div>
+
+    <!-- AI 问答面板 -->
+    <aside class="ai-panel" id="ai-panel" hidden>
+      <div class="ai-header">
+        <span>🤖 AI 智能问答</span>
+        <div>
+          <button class="icon-btn" id="btn-ai-clear" title="清空对话">🧹</button>
+          <button class="icon-btn" id="btn-ai-close" title="关闭">✕</button>
+        </div>
+      </div>
+      <div class="ai-mode-switch">
+        <button id="ai-mode-notes" class="active">📝 笔记问答</button>
+        <button id="ai-mode-wiki">📖 Wiki 问答</button>
+      </div>
+      <div class="ai-hint" id="ai-hint">基于你的知识库内容回答问题，发送前会自动检索相关笔记。</div>
+      <div class="ai-messages" id="ai-messages"></div>
+      <div class="ai-input-row">
+        <textarea id="ai-input" rows="2" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
+        <button class="btn btn-primary" id="btn-ai-send">发送</button>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 通用输入弹窗（替代 window.prompt） -->
+  <div class="modal-mask" id="prompt-modal" hidden>
+    <div class="modal" style="width:360px">
+      <h3 id="prompt-title">请输入</h3>
+      <input type="text" id="prompt-input" style="margin-top:12px" />
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="btn-prompt-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-prompt-ok">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 吸收来源弹窗 -->
+  <div class="modal-mask" id="ingest-modal" hidden>
+    <div class="modal" style="width:560px">
+      <h3>吸收新来源（Ingest）</h3>
+      <p class="modal-tip">来源将保存到 raw/（不可变），AI 随后把它编译进 wiki：创建摘要页、更新相关页面与索引</p>
+      <div class="mode-switch" style="margin:8px 0">
+        <button id="ingest-tab-url" class="active">网页 URL</button>
+        <button id="ingest-tab-text">粘贴文本</button>
+        <button id="ingest-tab-files">本地文件</button>
+      </div>
+      <label>标题（可选，留空自动提取）</label>
+      <input type="text" id="ingest-title" placeholder="自动提取" />
+      <div id="ingest-url-panel">
+        <label>URL</label>
+        <input type="text" id="ingest-url" placeholder="https://…" />
+      </div>
+      <div id="ingest-text-panel" hidden>
+        <label>文本内容</label>
+        <textarea id="ingest-text" rows="8" placeholder="粘贴文章或笔记内容…"></textarea>
+      </div>
+      <div id="ingest-files-panel" hidden>
+        <div class="file-drop" id="file-drop">
+          <div class="file-drop-icon">📁</div>
+          <p>拖拽文件到此处，或</p>
+          <button class="btn btn-ghost" id="btn-pick-files">选择文件…（可多选）</button>
+          <p class="file-drop-tip">支持 PDF、DOCX、XLSX/XLS、PPTX、MD、TXT、CSV</p>
+        </div>
+        <div class="file-list" id="file-list"></div>
+      </div>
+      <div class="ingest-status" id="ingest-status"></div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="btn-ingest-cancel">关闭</button>
+        <button class="btn btn-primary" id="btn-ingest-go">开始吸收</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lint 报告弹窗 -->
+  <div class="modal-mask" id="lint-modal" hidden>
+    <div class="modal" style="width:680px">
+      <h3>🩺 Wiki 体检报告（Lint）</h3>
+      <div class="markdown-body lint-report" id="lint-report"></div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="btn-lint-close">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="lib/marked.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
