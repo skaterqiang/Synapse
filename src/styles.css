@@ -1358,7 +1358,8 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .job-row-card.failed { border-color: rgba(245, 74, 69, 0.4); }
 .job-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .job-chevron { width: 12px; font-size: 11px; color: var(--text-sub); }
-.job-icon { font-size: 15px; }
+.job-icon { font-size: 15px; display: inline-flex; align-items: center; }
+.job-icon .job-type-icon { display: block; }
 .job-title { flex: 1; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-progress { font-size: 11px; color: var(--text-sub); background: rgba(0, 0, 0, 0.05); border-radius: 8px; padding: 1px 7px; white-space: nowrap; }
 .job-src-count { font-size: 11px; color: var(--primary); background: rgba(51, 112, 255, 0.1); border-radius: 8px; padding: 1px 7px; white-space: nowrap; }

@@ -23,6 +23,17 @@ function jobStatusMeta(status) {
   return { queued: ['排队中', ''], running: ['执行中', 'running'], success: ['成功', 'success'], failed: ['失败', 'failed'] }[status] || [status, ''];
 }
 
+// 作业类型图标：按类型定制的渐变 SVG（与作业管理页标题图标同风格）
+// ingest=蓝·汇入箭头，graph=青·网状节点，lint=绿·对勾体检
+const JOB_TYPE_ICONS = {
+  ingest: '<svg class="job-type-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><defs><linearGradient id="jobIconIngest" x1="3" y1="3" x2="21" y2="21"><stop stop-color="#5b8cff"/><stop offset="1" stop-color="#3370ff"/></linearGradient></defs><rect x="3" y="3" width="18" height="18" rx="5" fill="url(#jobIconIngest)"/><path d="M12 6.8v6.4m0 0l-2.7-2.7M12 13.2l2.7-2.7" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.6 16.8h8.8" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>',
+  graph: '<svg class="job-type-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><defs><linearGradient id="jobIconGraph" x1="3" y1="3" x2="21" y2="21"><stop stop-color="#3fd6d0"/><stop offset="1" stop-color="#0da6a0"/></linearGradient></defs><rect x="3" y="3" width="18" height="18" rx="5" fill="url(#jobIconGraph)"/><circle cx="9.2" cy="9.4" r="1.7" fill="#fff"/><circle cx="15.2" cy="9.4" r="1.7" fill="#fff"/><circle cx="12.2" cy="15" r="1.7" fill="#fff"/><path d="M10.1 10.9l1.3 2.5M14.3 10.9l-1.3 2.5M10.9 9.4h2.6" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  lint: '<svg class="job-type-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><defs><linearGradient id="jobIconLint" x1="3" y1="3" x2="21" y2="21"><stop stop-color="#5ad184"/><stop offset="1" stop-color="#16a34a"/></linearGradient></defs><rect x="3" y="3" width="18" height="18" rx="5" fill="url(#jobIconLint)"/><path d="M7.6 12.4l3 3 5.8-6.2" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+function jobTypeIcon(type) {
+  return JOB_TYPE_ICONS[type] || JOB_TYPE_ICONS.ingest;
+}
+
 function fmtDuration(ms) {
   if (!ms || ms < 0) return '';
   const s = Math.round(ms / 1000);
@@ -80,7 +91,7 @@ function buildJobCard(job) {
   card.className = 'job-row-card ' + job.status;
 
   const [statusText, statusCls] = jobStatusMeta(job.status);
-  const icon = job.type === 'ingest' ? '📥' : '🩺';
+  const icon = jobTypeIcon(job.type);
   const stages = job.stages || [];
   // 与阶段行图标同一归一规则：作业已终态时残留 running 视为 success/failed，保证徽章与行一致
   const normStage = (st) => (st.status === 'running' && job.status !== 'running' && job.status !== 'queued')

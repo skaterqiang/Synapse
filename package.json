@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "web": "node web/server.js",
-    "postinstall": "codesign --force --deep --sign - node_modules/electron/dist/Electron.app || true",
+    "postinstall": "node -e \"const{execSync}=require('child_process');if(process.platform==='darwin'){try{execSync('codesign --force --deep --sign - node_modules/electron/dist/Electron.app',{stdio:'inherit'})}catch(e){}}\"",
     "dist": "electron-builder --win",
     "dist:win": "powershell -ExecutionPolicy Bypass -File build-win.ps1",
     "dist:mac": "bash build-mac.sh"
