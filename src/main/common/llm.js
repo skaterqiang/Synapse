@@ -2,6 +2,8 @@
 // 说明：该部署环境的网关对长时间无响应头的非流式请求会触发 undici headers timeout，
 // 因此 chatOnce 也统一以 stream:true 发起并累积全文。
 const { num } = require('./config');
+// 默认模型 / API 基础 URL 统一引用单一配置源（defaults.js）
+const { DEFAULTS, normalizeModel } = require('./defaults');
 
 // 可选模型参数：仅当设置中填写时才透传（留空走接口默认值），供设置页调参
 function withModelParams(body, settings) {
@@ -56,9 +58,9 @@ function emitDataLine(trimmed, onDelta) {
 
 // 流式对话：增量经 ai:chunk 推送给渲染进程，错误经 ai:error 上报
 async function streamChat(event, settings, messages) {
-  const baseUrl = (settings.apiBaseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/$/, '');
+  const baseUrl = (settings.apiBaseUrl || DEFAULTS.apiBaseUrl).replace(/\/$/, '');
   const apiKey = settings.apiKey || '';
-  const model = settings.model || 'qwen3.8-max';
+  const model = normalizeModel(settings.model);
 
   if (!apiKey) {
     event.sender.send('ai:error', '尚未配置 API Key，请先点击右上角设置按钮填写。');
@@ -100,7 +102,7 @@ async function streamChat(event, settings, messages) {
 // onDelta 可选：流式增量回调，供作业系统上报执行细节
 async function chatOnce(settings, messages, retries, onDelta) {
   const left = retries !== undefined ? retries : num(settings, 'chatRetries', 2, 0, 5);
-  const baseUrl = (settings.apiBaseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/$/, '');
+  const baseUrl = (settings.apiBaseUrl || DEFAULTS.apiBaseUrl).replace(/\/$/, '');
   if (!settings.apiKey) throw new Error('尚未配置 API Key，请先在设置中填写。');
   try {
     let resp;
@@ -108,7 +110,7 @@ async function chatOnce(settings, messages, retries, onDelta) {
       resp = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
-        body: JSON.stringify(withModelParams({ model: settings.model || 'qwen3.8-max', messages, stream: true }, settings)),
+        body: JSON.stringify(withModelParams({ model: normalizeModel(settings.model), messages, stream: true }, settings)),
       });
     } catch (err) {
       // 网络层失败（DNS/连接/超时）视为可重试，并带上根因便于诊断

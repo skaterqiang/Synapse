@@ -238,8 +238,22 @@
             <button class="icon-btn" id="btn-prompts-close" title="关闭提示词页">✕</button>
           </div>
         </div>
-        <p class="modal-tip" style="padding: 0 20px;">集中管理各 AI 能力的系统提示词；留空表示使用内置默认，保存后立即生效</p>
+        <p class="modal-tip" style="padding: 0 20px;">集中管理各 AI 能力的系统提示词；输入框已预填内置默认，可直接在此基础上修改，保存后立即生效（清空保存则回退内置默认）；点卡片上的「✎ 全屏编辑」可在主框架内舒展地编辑长提示词</p>
         <div class="prompts-cards" id="prompt-cards"></div>
+      </div>
+
+      <!-- 提示词全屏编辑页（主区域，从提示词管理页进入） -->
+      <div class="prompt-editor-view" id="prompt-editor-view" hidden>
+        <div class="tpl-toolbar">
+          <span class="tpl-view-title" id="prompt-editor-title">✎ 编辑提示词</span>
+          <div class="toolbar-actions">
+            <button class="btn btn-ghost" id="btn-prompt-editor-reset">恢复默认</button>
+            <button class="btn btn-primary" id="btn-prompt-editor-save">💾 保存</button>
+            <button class="icon-btn" id="btn-prompt-editor-close" title="返回列表（未保存内容将丢失）">✕</button>
+          </div>
+        </div>
+        <p class="prompt-card-desc" id="prompt-editor-desc" style="padding: 0 20px 8px;"></p>
+        <textarea class="prompt-editor-input" id="prompt-editor-input" placeholder="（使用内置默认）" spellcheck="false"></textarea>
       </div>
 
       <!-- 设置页（主区域 Tab 分类） -->
@@ -262,11 +276,11 @@
             <div class="settings-pane" data-pane="ai">
               <p class="modal-tip">兼容 OpenAI 接口格式（OpenAI / DeepSeek / 通义千问 / Ollama 等均可）</p>
               <label>接口地址 (Base URL)</label>
-              <input type="text" id="set-baseurl" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+              <input type="text" id="set-baseurl" placeholder="" />
               <label>API Key</label>
               <input type="password" id="set-apikey" placeholder="sk-..." />
               <label>模型名称</label>
-              <input type="text" id="set-model" placeholder="qwen3.8-max" />
+              <input type="text" id="set-model" placeholder="" />
               <label>采样温度 temperature（0–2，留空用接口默认）</label>
               <input type="number" id="set-temperature" min="0" max="2" step="0.1" placeholder="默认（不设置）" />
               <label>核采样 top_p（0–1，留空用接口默认）</label>
@@ -345,7 +359,7 @@
               <button class="tb-btn" id="btn-format" title="格式：加粗/斜体/标题/列表/引用">格式</button>
               <button class="tb-btn" id="btn-checklist" title="核对清单">☑</button>
               <button class="tb-btn" id="btn-table" title="添加表格">⊞</button>
-              <button class="tb-btn" id="btn-attach" title="附加文件 / 照片 / 扫描文稿">🖼<span class="caret">▾</span></button>
+              <button class="tb-btn" id="btn-attach" title="附加文件 / 照片 / 扫描文稿"><svg class="attach-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><defs><linearGradient id="attachIconG" x1="4" y1="4" x2="20" y2="20"><stop stop-color="#5b8cff"/><stop offset="1" stop-color="#3370ff"/></linearGradient></defs><path d="M19.5 12.6l-7.1 7.1a5.5 5.5 0 01-7.8-7.8l7.1-7.1a3.7 3.7 0 015.2 5.2l-6.6 6.6a1.8 1.8 0 01-2.6-2.6l6.6-6.5" stroke="url(#attachIconG)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="caret">▾</span></button>
             </div>
             <div class="mode-switch">
               <button id="mode-edit" class="active" title="编辑模式">编辑</button>
@@ -550,6 +564,7 @@
             <span>只需填写名称即可生成（描述可选）：自动补全模版 ID、关键词、实体/概念类型与提取规则</span>
           </div>
           <div class="tpl-gen-status" id="tpl-gen-status" hidden></div>
+          <pre class="tpl-gen-log" id="tpl-gen-log" hidden></pre>
         </div>
         <label>关键词（逗号分隔）<i class="tpl-req">*</i></label>
         <input type="text" id="tpl-keywords" data-req="1" placeholder="如: 租房, 楼盘, 租金, 保租房" />

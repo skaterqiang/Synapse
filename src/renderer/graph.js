@@ -12,6 +12,8 @@ function showGraphView() {
   $('tpl-view').hidden = true;
   $('raw-view').hidden = true;
   $('prompts-view').hidden = true;
+  $('prompt-editor-view').hidden = true;
+  promptEditing = null;
   $('graph-view').hidden = false;
   renderEditor();
   renderSidebar();

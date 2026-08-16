@@ -189,6 +189,12 @@ function renderEditor() {
     content.hidden = true;
     return;
   }
+  // 提示词全屏编辑页打开时，编辑区让位
+  if (!$('prompt-editor-view').hidden) {
+    empty.hidden = true;
+    content.hidden = true;
+    return;
+  }
   const note = currentNote();
   if (!note) {
     empty.hidden = false;

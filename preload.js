@@ -1,6 +1,10 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('kb', {
+  // 应用级默认值（单一配置源 defaults.js，供渲染层展示占位与兜底）
+  defaults: require('./src/main/common/defaults').DEFAULTS,
+  // 模型名归一：未设置/历史错误值 → 当前默认（与主进程同一实现）
+  normalizeModel: require('./src/main/common/defaults').normalizeModel,
   // 数据
   loadData: () => ipcRenderer.invoke('data:load'),
   saveData: (store) => ipcRenderer.invoke('data:save', store),
@@ -36,6 +40,12 @@ contextBridge.exposeInMainWorld('kb', {
     ipcRenderer.on('wiki:refs', handler);
     return () => ipcRenderer.removeListener('wiki:refs', handler);
   },
+  // 领域模版 AI 生成：流式增量（{ text, reasoning }），供弹窗实时打印生成过程
+  onTplGenChunk: (callback) => {
+    const handler = (_event, chunk) => callback(chunk);
+    ipcRenderer.on('tpl:gen-chunk', handler);
+    return () => ipcRenderer.removeListener('tpl:gen-chunk', handler);
+  },
 
   // 领域模版
   tplList: () => ipcRenderer.invoke('tpl:list'),
@@ -52,6 +62,7 @@ contextBridge.exposeInMainWorld('kb', {
   rawList: (settings) => ipcRenderer.invoke('raw:list', settings),
   rawOpen: (payload) => ipcRenderer.invoke('raw:open', payload),
   rawRemove: (payload) => ipcRenderer.invoke('raw:remove', payload),
+  rawRemoveDir: (payload) => ipcRenderer.invoke('raw:removeDir', payload),
   rawAddFiles: (payload) => ipcRenderer.invoke('raw:addFiles', payload),
   rawAddDir: (payload) => ipcRenderer.invoke('raw:addDir', payload),
   browseDir: (payload) => ipcRenderer.invoke('raw:browse', payload),

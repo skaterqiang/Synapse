@@ -183,7 +183,8 @@ function templateGuidance(tpl) {
 }
 
 // AI 自动生成：按名称与描述补全模版 ID、关键词、实体/概念类型与提取规则
-async function generateTemplate(settings, { name, desc }) {
+// onDelta(delta, isReasoning) 可选：流式增量回调，供渲染层实时打印生成过程
+async function generateTemplate(settings, { name, desc }, onDelta) {
   if (!trimStr(name, 100)) throw new Error('请先填写名称');
   const prompt = [
     '你是知识库领域建模专家。请为下述知识领域设计一个「领域模版」，用于指导 AI 从该领域文档中抽取结构化知识。',
@@ -207,7 +208,7 @@ async function generateTemplate(settings, { name, desc }) {
   const answer = await chatOnce(settings, [
     { role: 'system', content: getPrompt(settings, 'tplGenPrompt') },
     { role: 'user', content: prompt },
-  ]);
+  ], undefined, onDelta);
   const raw = extractJson(answer);
   // 防模型照抄提示词示例/泛占位：命中时回退为时间戳 id（用户可在弹窗中修改）
   let id = /^[A-Za-z][A-Za-z0-9_]*$/.test(trimStr(raw.id, 60)) ? trimStr(raw.id, 60) : '';

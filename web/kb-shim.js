@@ -59,6 +59,7 @@
     wikiAsk: (payload) => call('wiki:ask', payload),
     wikiFileAnswer: (payload) => call('wiki:fileAnswer', payload),
     onWikiRefs: on('wiki:refs'),
+    onTplGenChunk: on('tpl:gen-chunk'),
 
     // 领域模版
     tplList: () => call('tpl:list'),
@@ -73,6 +74,7 @@
     rawList: (settings) => call('raw:list', settings),
     rawOpen: () => Promise.resolve({ ok: false, error: '网页模式不支持打开本地文件，请在桌面端使用' }),
     rawRemove: (payload) => call('raw:remove', payload),
+    rawRemoveDir: (payload) => call('raw:removeDir', payload),
     rawAddFiles: (payload) => call('raw:addFiles', payload),
     rawAddDir: (payload) => call('raw:addDir', payload),
     browseDir: () => Promise.resolve({ ok: false, error: '网页模式不支持浏览本地目录' }),

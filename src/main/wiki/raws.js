@@ -136,6 +136,22 @@ function removeRaw(settings, relPath) {
   return { removed: relPath };
 }
 
+// 整个目录解除引用：移除目录引用，并清除其下的单文件引用与排除项（不删除任何本机文件）
+function removeRawDir(settings, dir) {
+  if (!dir) throw new Error('缺少目录路径');
+  const under = (p) => String(p) === dir || String(p).startsWith(dir + '\\') || String(p).startsWith(dir + '/');
+  const dirs = getDirRefs();
+  const hadDirRef = dirs.some((d) => d.dir === dir);
+  if (hadDirRef) saveDirRefs(dirs.filter((d) => d.dir !== dir));
+  const refs = getRefs();
+  const rest = refs.filter((r) => !under(r.path));
+  if (rest.length !== refs.length) saveRefs(rest);
+  const excl = getExcl();
+  const restExcl = excl.filter((p) => !under(p));
+  if (restExcl.length !== excl.length) saveExcl(restExcl);
+  return { removed: dir, hadDirRef };
+}
+
 // 逐文件添加：不转存，直接记录本地路径引用；baseDir 存在时记录目录结构（root/rel）
 async function addFiles(settings, paths, baseDir) {
   const added = [];
@@ -239,4 +255,4 @@ async function addPaths(settings, pathsList) {
   return { added: total, failed, skipped, dirCount: dirs.length };
 }
 
-module.exports = { listRaws, removeRaw, addFiles, addDir, addPaths, migrateAutoRaws, migrateFileRefsToDirs, SKIP_DIRS, markIngested, isIngestedFresh, backfillIngested };
+module.exports = { listRaws, removeRaw, removeRawDir, addFiles, addDir, addPaths, migrateAutoRaws, migrateFileRefsToDirs, SKIP_DIRS, markIngested, isIngestedFresh, backfillIngested };

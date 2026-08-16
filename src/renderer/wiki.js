@@ -363,6 +363,8 @@ function showTplView() {
   $('graph-view').hidden = true;
   $('raw-view').hidden = true;
   $('prompts-view').hidden = true;
+  $('prompt-editor-view').hidden = true;
+  promptEditing = null;
   $('tpl-view').hidden = false;
   renderEditor();
   renderSidebar();
@@ -566,6 +568,22 @@ function setTplGenStatus(text, cls) {
   el.hidden = !text;
 }
 
+// 生成过程实时输出：同一类别（正文/思考）的增量追加到尾部同类 span，避免碎片化增量产生大量节点
+function appendTplGenLog(text, reasoning) {
+  const log = $('tpl-gen-log');
+  if (!log || !text) return;
+  log.hidden = false;
+  const cls = reasoning ? 'reasoning' : 'body';
+  let tail = log.lastElementChild;
+  if (!tail || tail.className !== cls) {
+    tail = document.createElement('span');
+    tail.className = cls;
+    log.appendChild(tail);
+  }
+  tail.textContent += text;
+  log.scrollTop = log.scrollHeight;
+}
+
 // AI 自动生成：按名称与描述补全其余字段（已填内容会被覆盖）
 async function runTplGenerate() {
   const name = $('tpl-name').value.trim();
@@ -575,6 +593,10 @@ async function runTplGenerate() {
   btn.disabled = true;
   btn.textContent = '⏳ AI 生成中…';
   setTplGenStatus('⚙ 生成阶段：AI 正在按名称补全模版 ID、关键词、实体/概念类型与提取规则…', 'running');
+  // 清空上次输出并订阅流式增量，实时打印生成过程（思考/正文）
+  const log = $('tpl-gen-log');
+  if (log) { log.innerHTML = ''; log.hidden = true; }
+  const unsub = window.kb.onTplGenChunk ? window.kb.onTplGenChunk((c) => appendTplGenLog(c && c.text, c && c.reasoning)) : null;
   try {
     const res = await window.kb.tplGenerate({ settings: state.settings, name, desc });
     if (!res.ok) { setTplGenStatus('✖ 生成阶段失败：' + res.error + '，可重试或手工填写', 'err'); toast('生成失败：' + res.error, 4000); return; }
@@ -589,6 +611,7 @@ async function runTplGenerate() {
     setTplGenStatus('✔ 生成阶段完成：各字段已补全，请审阅并按需调整，确认后点「创建」', 'ok');
     toast('已生成，请检查并按需调整');
   } finally {
+    if (unsub) unsub();
     btn.disabled = false;
     btn.textContent = '✨ AI 自动生成模版';
   }
@@ -637,6 +660,8 @@ function showRawView() {
   $('graph-view').hidden = true;
   $('tpl-view').hidden = true;
   $('prompts-view').hidden = true;
+  $('prompt-editor-view').hidden = true;
+  promptEditing = null;
   $('raw-view').hidden = false;
   renderEditor();
   renderSidebar();
@@ -673,6 +698,10 @@ function renderRawList() {
     const row = document.createElement('div');
     row.className = 'raw-row';
     row.style.paddingLeft = indent + 'px';
+    // 本机引用（local:）仅解除引用不删本机文件；raw/ 下副本才是真删除
+    const isLocal = String(r.path).startsWith('local:');
+    const delLabel = isLocal ? '解除' : '删除';
+    const delTitle = isLocal ? '解除该来源的引用（不删除本机文件）' : '删除该原始文件（raw/ 内副本）';
     // 吸收状态徽标：已吸收（绿）/ 吸收后文件已修改（橙，建议重新吸收）
     const badge = r.ingested
       ? (r.ingested.stale
@@ -688,7 +717,7 @@ function renderRawList() {
       ${badge}
       <span class="raw-actions">
         <button class="btn btn-ghost" data-act="view" title="用本机默认软件打开该文件">查看</button>
-        <button class="btn btn-ghost danger" data-act="del" title="删除该原始文件">删除</button>
+        <button class="btn btn-ghost danger" data-act="del" title="${delTitle}">${delLabel}</button>
       </span>`;
     row.addEventListener('click', (e) => {
       const act = e.target.dataset && e.target.dataset.act;
@@ -704,7 +733,7 @@ function renderRawList() {
         { label: '🕸 提取知识图谱', action: () => graphRaw(r.path) },
         { sep: true },
         { label: '📂 查看（本机打开）', action: () => openRawNative(r.path) },
-        { label: '🗑 删除', danger: true, action: () => deleteRaw(r.path) },
+        { label: isLocal ? '🗑 解除引用（不删本机文件）' : '🗑 删除', danger: true, action: () => deleteRaw(r.path) },
       ]);
     });
     return row;
@@ -737,7 +766,7 @@ function renderRawList() {
     // 收集目录节点（含子目录）下的全部文件，供右键批量提取使用
     const collectFiles = (node) => node.files.slice().concat([...node.dirs.values()].flatMap(collectFiles));
     // 折叠状态：根目录默认展开，子目录默认折叠（保留多级结构、逐级展开）
-    const folderHeader = (name, count, key, depth, files) => {
+    const folderHeader = (name, count, key, depth, files, rootDir) => {
       const collapsed = (key in rawTreeCollapsed) ? rawTreeCollapsed[key] : (depth > 0);
       const fh = document.createElement('div');
       fh.className = 'wiki-domain-title wiki-group-toggle';
@@ -745,15 +774,20 @@ function renderRawList() {
       fh.title = '右键：对该目录提取 Wiki / 知识图谱';
       fh.innerHTML = `<span class="chevron${collapsed ? ' collapsed' : ''}">▾</span> 📁 ${escapeHtml(name)} <span class="wiki-group-count">${count}</span>`;
       fh.addEventListener('click', () => { rawTreeCollapsed[key] = !collapsed; renderRawList(); });
-      // 右键菜单：对整个目录提取 Wiki / 知识图谱
+      // 右键菜单：对整个目录提取 Wiki / 知识图谱；根目录额外支持整个目录解除引用
       fh.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
         const paths = files.map((f) => f.path);
-        openCtxMenu(e.clientX, e.clientY, [
+        const items = [
           { label: `📝 提取 Wiki（${paths.length} 个文件）`, action: () => ingestRawPaths(paths, name) },
           { label: `🕸 提取知识图谱（${paths.length} 个文件）`, action: () => graphRawPaths(paths, name) },
-        ]);
+        ];
+        if (rootDir) {
+          items.push({ sep: true });
+          items.push({ label: `🗑 解除整个目录引用（${paths.length} 个文件，不删本机文件）`, danger: true, action: () => removeRawDir(rootDir, name, paths.length) });
+        }
+        openCtxMenu(e.clientX, e.clientY, items);
       });
       return fh;
     };
@@ -768,7 +802,7 @@ function renderRawList() {
       });
     };
     const rootKey = 'rawdir:' + root;
-    box.appendChild(folderHeader(pathBasename(root), refs.length, rootKey, 0, refs));
+    box.appendChild(folderHeader(pathBasename(root), refs.length, rootKey, 0, refs, root));
     if (!((rootKey in rawTreeCollapsed) ? rawTreeCollapsed[rootKey] : false)) renderNode(tree, 1, root);
   }
 }
@@ -914,10 +948,22 @@ async function graphTpl(t) {
 }
 
 async function deleteRaw(relPath) {
-  if (!confirm(`删除原始来源“${relPath}”？已编译的 Wiki 页面不受影响。`)) return;
+  const isLocal = String(relPath).startsWith('local:');
+  if (isLocal) {
+    if (!confirm(`解除来源“${relPath}”的引用？\n仅移除引用，本机文件不受影响；已编译的 Wiki 页面不受影响。`)) return;
+  } else if (!confirm(`删除原始来源“${relPath}”？已编译的 Wiki 页面不受影响。`)) return;
   const res = await window.kb.rawRemove({ settings: state.settings, relPath });
-  if (!res.ok) { toast('删除失败：' + res.error, 4000); return; }
-  toast('已删除');
+  if (!res.ok) { toast('操作失败：' + res.error, 4000); return; }
+  toast(isLocal ? '已解除引用' : '已删除');
+  loadRaws();
+}
+
+// 整个目录解除引用（仅移除知识库引用，不删除本机文件）
+async function removeRawDir(dir, name, count) {
+  if (!confirm(`解除目录“${name}”的整个引用（共 ${count} 个来源）？\n仅移除引用，本机文件不受影响；已编译的 Wiki 页面不受影响。`)) return;
+  const res = await window.kb.rawRemoveDir({ settings: state.settings, dir });
+  if (!res.ok) { toast('解除失败：' + res.error, 4000); return; }
+  toast(`已解除目录“${name}”的引用`);
   loadRaws();
 }
 

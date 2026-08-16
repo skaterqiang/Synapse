@@ -55,6 +55,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // preload 需 require 本地模块（defaults.js 单一默认值配置源），沙箱模式下 require 仅限白名单内置模块
+      sandbox: false,
     },
   });
   mainWindow.setMenuBarVisibility(false);

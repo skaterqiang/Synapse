@@ -121,7 +121,11 @@ function registerIpc(getWindow) {
 
   ipcMain.handle('tpl:generate', async (_e, { settings, name, desc }) => {
     try {
-      return { ok: true, template: await templates.generateTemplate(settings, { name, desc }) };
+      // 流式增量经 tpl:gen-chunk 实时推给渲染层，打印生成过程（thinking/正文分开标记）
+      const template = await templates.generateTemplate(settings, { name, desc }, (delta, isReasoning) => {
+        try { _e.sender.send('tpl:gen-chunk', { text: delta, reasoning: !!isReasoning }); } catch (_) { /* 窗口已关闭 */ }
+      });
+      return { ok: true, template };
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -194,6 +198,14 @@ function registerIpc(getWindow) {
   ipcMain.handle('raw:remove', (_e, { settings, relPath }) => {
     try {
       return { ok: true, ...raws.removeRaw(settings, relPath) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('raw:removeDir', (_e, { settings, dir }) => {
+    try {
+      return { ok: true, ...raws.removeRawDir(settings, dir) };
     } catch (err) {
       return { ok: false, error: err.message };
     }

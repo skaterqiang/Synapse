@@ -204,6 +204,10 @@ function bindEvents() {
   // 提示词管理页
   $('nav-prompts').addEventListener('click', showPromptsView);
   $('btn-prompts-close').addEventListener('click', hidePromptsView);
+  // 提示词全屏编辑页（从卡片列表进入）
+  $('btn-prompt-editor-save').addEventListener('click', () => closePromptEditor(true));
+  $('btn-prompt-editor-close').addEventListener('click', () => closePromptEditor(false));
+  $('btn-prompt-editor-reset').addEventListener('click', resetPromptEditor);
   $('btn-jobs-new-lint').addEventListener('click', runLint);
   $('btn-jobs-clear').addEventListener('click', clearJobsHistory);
   $('jobs-filter').addEventListener('click', (e) => {

@@ -301,10 +301,15 @@ const NUM_SETTING_FIELDS = {
 
 function showSettingsView() {
   const s = state.settings;
-  // 未配置时默认显示阿里云通义千问（DashScope 兼容接口）设置，与 llm.js 的兜底默认保持一致
-  $('set-baseurl').value = s.apiBaseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+  const D = window.kb.defaults || {};
+  // 未配置时默认显示阿里云通义千问（DashScope 兼容接口）设置，默认值统一引用 kb.defaults（单一配置源）
+  $('set-baseurl').value = s.apiBaseUrl || D.apiBaseUrl || '';
   $('set-apikey').value = s.apiKey || '';
-  $('set-model').value = s.model || 'qwen3.8-max';
+  // 历史错误默认值（如 qianwen3.8-max）自动归一为当前默认，避免继续请求不存在的模型
+  const modelVal = (s.model || '').trim();
+  $('set-model').value = window.kb.normalizeModel ? window.kb.normalizeModel(modelVal) : (modelVal || D.model || '');
+  $('set-model').placeholder = D.model || '';
+  $('set-baseurl').placeholder = D.apiBaseUrl || '';
   const fillDec = (id, v) => { $(id).value = Number.isFinite(v) ? String(v) : ''; };
   fillDec('set-temperature', s.temperature);
   fillDec('set-topp', s.topP);
@@ -331,6 +336,8 @@ function showSettingsView() {
   $('tpl-view').hidden = true;
   $('raw-view').hidden = true;
   $('prompts-view').hidden = true;
+  $('prompt-editor-view').hidden = true;
+  promptEditing = null;
   $('settings-view').hidden = false;
   renderEditor();
   renderSidebar();
@@ -446,23 +453,26 @@ async function renderPromptCards() {
     card.innerHTML = `
       <div class="prompt-card-head"><b>${escapeHtml(d.name)}</b></div>
       <p class="prompt-card-desc">${escapeHtml(d.desc || '')}</p>
-      <textarea class="prompt-card-input" rows="4" placeholder="${d.def ? '默认：' + escapeHtml(d.def) : '（使用内置默认）'}"></textarea>
+      <textarea class="prompt-card-input" rows="7" placeholder="${d.def ? '默认：' + escapeHtml(d.def) : '（使用内置默认）'}"></textarea>
       <div class="prompt-card-actions">
         <button class="btn btn-primary" data-act="save">保存</button>
+        <button class="btn btn-ghost" data-act="fullscreen" title="在主框架内全屏编辑">✎ 全屏编辑</button>
         <button class="btn btn-ghost" data-act="reset">恢复默认</button>
       </div>`;
     const ta = card.querySelector('textarea');
-    ta.value = state.settings[d.key] || '';
+    // 无自定义时预填内置默认，便于在默认基础上修改而非完全重写
+    ta.value = state.settings[d.key] || d.def || '';
     card.querySelector('[data-act="save"]').addEventListener('click', () => {
       state.settings[d.key] = ta.value.trim();
       persist();
       toast('已保存「' + d.name + '」提示词');
     });
+    card.querySelector('[data-act="fullscreen"]').addEventListener('click', () => openPromptEditor(d, ta));
     card.querySelector('[data-act="reset"]').addEventListener('click', () => {
       delete state.settings[d.key];
-      ta.value = '';
+      ta.value = d.def || '';
       persist();
-      toast('「' + d.name + '」已恢复默认');
+      toast('「' + d.name + '」已恢复默认，可在默认基础上修改后保存');
     });
     box.appendChild(card);
   });
@@ -475,6 +485,8 @@ function showPromptsView() {
   $('tpl-view').hidden = true;
   $('raw-view').hidden = true;
   $('graph-view').hidden = true;
+  $('prompt-editor-view').hidden = true; // 从其他入口回到列表页时，全屏编辑页一并关闭
+  promptEditing = null;
   $('prompts-view').hidden = false;
   renderPromptCards();
   renderEditor();
@@ -482,8 +494,54 @@ function showPromptsView() {
 }
 function hidePromptsView() {
   $('prompts-view').hidden = true;
+  $('prompt-editor-view').hidden = true;
+  promptEditing = null;
   renderEditor();
   renderSidebar();
+}
+
+// ---------- 提示词全屏编辑（主框架视图，从卡片列表进入） ----------
+let promptEditing = null; // { key, def, cardTa }：正在全屏编辑的项与列表卡片输入框引用
+
+function openPromptEditor(d, cardTa) {
+  promptEditing = { key: d.key, def: d.def, cardTa };
+  $('prompt-editor-title').textContent = '✎ ' + d.name;
+  $('prompt-editor-desc').textContent = d.desc || '';
+  $('prompt-editor-input').placeholder = d.def ? '默认：' + d.def : '（使用内置默认）';
+  $('prompt-editor-input').value = cardTa.value;
+  $('prompts-view').hidden = true;
+  $('prompt-editor-view').hidden = false;
+  renderEditor();
+  $('prompt-editor-input').focus();
+}
+
+// 返回列表；save=true 时先落盘（与卡片「保存」同逻辑），否则未保存变更需确认
+function closePromptEditor(save) {
+  if (!promptEditing) { $('prompt-editor-view').hidden = true; return; }
+  const input = $('prompt-editor-input');
+  if (save) {
+    state.settings[promptEditing.key] = input.value.trim();
+    promptEditing.cardTa.value = input.value;
+    persist();
+    toast('已保存提示词');
+  } else if (input.value !== promptEditing.cardTa.value && !confirm('有未保存的修改，确定返回列表？')) {
+    return;
+  }
+  promptEditing = null;
+  $('prompt-editor-view').hidden = true;
+  $('prompts-view').hidden = false;
+  renderEditor();
+}
+
+// 全屏编辑页「恢复默认」：清除自定义值并回填内置默认文本，可在其基础上继续修改
+function resetPromptEditor() {
+  if (!promptEditing) return;
+  delete state.settings[promptEditing.key];
+  const v = promptEditing.def || '';
+  $('prompt-editor-input').value = v;
+  promptEditing.cardTa.value = v;
+  persist();
+  toast('已恢复默认提示词，可在此基础上修改后保存');
 }
 
 // ================= 汇总渲染 =================
@@ -497,7 +555,7 @@ function renderAll() {
 // 主内容区专题页（设置/作业/图谱/模版/原始文件/Wiki 阅读器）统一让位，避免切换导航时旧页残留
 // keepWikiViewer：点 LLM Wiki 标题只回到索引列表，正在阅读的页面不强制关闭
 function hideMainViews({ keepWikiViewer = false } = {}) {
-  ['settings-view', 'jobs-view', 'graph-view', 'tpl-view', 'raw-view', 'prompts-view'].forEach((id) => { $(id).hidden = true; });
+  ['settings-view', 'jobs-view', 'graph-view', 'tpl-view', 'raw-view', 'prompts-view', 'prompt-editor-view'].forEach((id) => { $(id).hidden = true; });
   if (!keepWikiViewer) $('wiki-viewer').hidden = true;
 }
 
