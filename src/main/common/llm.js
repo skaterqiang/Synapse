@@ -58,7 +58,7 @@ function emitDataLine(trimmed, onDelta) {
 async function streamChat(event, settings, messages) {
   const baseUrl = (settings.apiBaseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/$/, '');
   const apiKey = settings.apiKey || '';
-  const model = settings.model || 'qianwen3.8-max';
+  const model = settings.model || 'qwen3.8-max';
 
   if (!apiKey) {
     event.sender.send('ai:error', '尚未配置 API Key，请先点击右上角设置按钮填写。');
@@ -108,7 +108,7 @@ async function chatOnce(settings, messages, retries, onDelta) {
       resp = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
-        body: JSON.stringify(withModelParams({ model: settings.model || 'qianwen3.8-max', messages, stream: true }, settings)),
+        body: JSON.stringify(withModelParams({ model: settings.model || 'qwen3.8-max', messages, stream: true }, settings)),
       });
     } catch (err) {
       // 网络层失败（DNS/连接/超时）视为可重试，并带上根因便于诊断

@@ -304,7 +304,7 @@ function showSettingsView() {
   // 未配置时默认显示阿里云通义千问（DashScope 兼容接口）设置，与 llm.js 的兜底默认保持一致
   $('set-baseurl').value = s.apiBaseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
   $('set-apikey').value = s.apiKey || '';
-  $('set-model').value = s.model || 'qianwen3.8-max';
+  $('set-model').value = s.model || 'qwen3.8-max';
   const fillDec = (id, v) => { $(id).value = Number.isFinite(v) ? String(v) : ''; };
   fillDec('set-temperature', s.temperature);
   fillDec('set-topp', s.topP);
