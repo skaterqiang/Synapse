@@ -1,8 +1,0 @@
-schema_version: 1
-module_path: wiki_content
-title: LLM Wiki 个人知识库（OKF v0.2 知识包）
-scope:
-    - llmwiki/
-source_files: []
-depends_on: []
-related_to: []

@@ -6,12 +6,16 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win"
+    "web": "node web/server.js",
+    "postinstall": "codesign --force --deep --sign - node_modules/electron/dist/Electron.app || true",
+    "dist": "electron-builder --win",
+    "dist:win": "powershell -ExecutionPolicy Bypass -File build-win.ps1",
+    "dist:mac": "bash build-mac.sh"
   },
   "author": "",
-  "license": "GPL-3.0-or-later",
+  "license": "MIT",
   "devDependencies": {
-    "electron": "^31.0.0",
+    "electron": "^31.7.7",
     "electron-builder": "^24.13.3",
     "marked": "^12.0.2",
     "pdfkit": "^0.19.1"
@@ -19,12 +23,32 @@
   "build": {
     "appId": "com.personal.knowledge-assistant",
     "productName": "Synapse",
+    "directories": {
+      "output": "release"
+    },
     "files": [
       "main.js",
       "preload.js",
       "src/**/*",
       "node_modules/**/*"
     ],
+    "asarUnpack": [
+      "**/node_modules/sql.js/dist/*.wasm"
+    ],
+    "extraResources": [
+      {
+        "from": "data/llmwiki",
+        "to": "llmwiki"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dir"
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "identity": null
+    },
     "win": {
       "target": "nsis"
     },

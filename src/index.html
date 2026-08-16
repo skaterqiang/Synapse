@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: kb-asset:" />
   <title>Synapse</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -11,42 +11,72 @@
     <!-- 左侧导航 -->
     <aside class="sidebar">
       <div class="sidebar-header">
-        <div class="logo">📚 知识库</div>
-        <button class="btn btn-primary" id="btn-new-note" title="新建笔记">＋ 新建</button>
+        <div class="logo">📚 Synapse</div>
       </div>
       <div class="sidebar-search">
-        <input type="text" id="search-input" placeholder="🔍 搜索标题、内容、标签…" />
+        <input type="text" id="search-input" placeholder="🔍 搜索笔记 / 原始文件 / Wiki / 图谱…" />
       </div>
       <nav class="sidebar-nav">
         <div class="nav-item" id="nav-all-notes">
           <span>📝 全部笔记</span>
-          <span class="nav-count" id="count-all">0</span>
+          <span class="nav-side">
+            <span class="nav-count" id="count-all">0</span>
+            <button class="icon-btn" id="btn-new-note" title="新建笔记">＋</button>
+          </span>
+        </div>
+        <div class="nav-submenu">
+          <div class="nav-sub-head">
+            <span>目录</span>
+            <button class="icon-btn" id="btn-add-folder" title="新建目录">＋</button>
+          </div>
+          <div id="folder-tree"></div>
+
+          <div class="nav-sub-head"><span>标签</span></div>
+          <div id="tag-list"></div>
         </div>
 
-        <div class="nav-section">
-          <span>目录</span>
-          <button class="icon-btn" id="btn-add-folder" title="新建目录">＋</button>
+        <div class="nav-item" id="nav-raws">
+          <span>🗄 原始文件</span>
+          <span class="nav-side">
+            <span class="nav-count" id="count-raws"></span>
+            <button class="icon-btn" id="btn-raws-add" title="上传文档到 raw/">＋</button>
+          </span>
         </div>
-        <div id="folder-tree"></div>
 
-        <div class="nav-section"><span>标签</span></div>
-        <div id="tag-list"></div>
-
-        <div class="nav-section wiki-header" id="wiki-header" title="点击折叠/展开">
-          <span class="wiki-header-title"><span class="chevron" id="wiki-chevron">▾</span> 📖 LLM Wiki</span>
+        <div class="nav-section wiki-header" id="wiki-header" title="点击在列表区展示 Wiki 索引">
+          <span class="wiki-header-title">📖 LLM Wiki</span>
           <button class="icon-btn" id="btn-wiki-ingest" title="吸收新来源">＋</button>
         </div>
-        <div id="wiki-collapse">
-          <div id="wiki-tree"></div>
-          <div class="wiki-ops">
-            <button class="btn btn-ghost" id="btn-wiki-ask">📖 问答</button>
-            <button class="btn btn-ghost" id="btn-wiki-jobs">🗂 作业</button>
+        <div class="nav-submenu">
+          <div class="nav-item nav-sub-item" id="nav-templates">
+            <span>📐 领域模版</span>
+            <span class="nav-count" id="count-tpl"></span>
           </div>
+        </div>
+
+        <div class="nav-section"><span>知识图谱</span><span class="nav-count" id="count-graph">0</span></div>
+        <div class="nav-submenu" id="kg-submenu">
+          <div class="nav-item nav-sub-item" data-tab="overview"><span>🧭 概览</span></div>
+          <div class="nav-item nav-sub-item" data-tab="entities"><span>📍 实体浏览</span></div>
+          <div class="nav-item nav-sub-item" data-tab="graph"><span>🪐 整体图谱</span></div>
+          <div class="nav-item nav-sub-item" data-tab="ontology"><span>📘 本体定义</span></div>
+          <div class="nav-item nav-sub-item" data-tab="ask"><span>💬 KG 问答</span></div>
+        </div>
+
+        <div class="nav-section"><span>作业</span></div>
+        <div class="nav-item" id="nav-jobs">
+          <span><svg class="jobs-icon" width="15" height="15" viewBox="0 0 24 24" fill="none"><defs><linearGradient id="jobsIconG" x1="3" y1="3" x2="21" y2="21"><stop stop-color="#5b8cff"/><stop offset="1" stop-color="#3370ff"/></linearGradient></defs><rect x="3" y="3" width="18" height="18" rx="5" fill="url(#jobsIconG)"/><path d="M8 12.5l2.6 2.6L16.2 9.4" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>作业管理</span>
+          <span class="nav-count" id="count-jobs"></span>
+        </div>
+
+        <div class="nav-section"><span>提示词</span></div>
+        <div class="nav-item" id="nav-prompts">
+          <span>📜 提示词管理</span>
         </div>
       </nav>
       <div class="sidebar-footer">
         <button class="btn btn-ghost" id="btn-settings">⚙ 设置</button>
-        <button class="btn btn-ghost" id="btn-ai-toggle">🤖 AI 问答</button>
+        <button class="btn btn-ghost" id="btn-ai-toggle">✨ AI 问答</button>
       </div>
     </aside>
 
@@ -58,6 +88,7 @@
       <div class="note-list-header">
         <span id="note-list-title">全部笔记</span>
         <span class="note-list-count" id="note-list-count"></span>
+        <button class="icon-btn" id="btn-notelist-hide" title="收起笔记列表">«</button>
       </div>
       <div id="note-list"></div>
     </div>
@@ -75,14 +106,13 @@
       <!-- 作业管理页 -->
       <div class="jobs-view" id="jobs-view" hidden>
         <div class="jobs-toolbar">
-          <span class="jobs-view-title">🗂 作业管理</span>
+          <span class="jobs-view-title"><svg class="jobs-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="5" fill="url(#jobsIconG)"/><path d="M8 12.5l2.6 2.6L16.2 9.4" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>作业管理</span>
           <div class="jobs-filter" id="jobs-filter">
-            <button data-filter="all" class="active">全部</button>
-            <button data-filter="active">进行中</button>
-            <button data-filter="success">成功</button>
-            <button data-filter="failed">失败</button>
+            <button data-filter="all" class="active">全部<i class="jf-count"></i></button>
+            <button data-filter="active">进行中<i class="jf-count"></i></button>
+            <button data-filter="success">成功<i class="jf-count"></i></button>
+            <button data-filter="failed">失败<i class="jf-count"></i></button>
           </div>
-          <span class="jobs-stats" id="jobs-stats"></span>
           <div class="toolbar-actions">
             <button class="btn btn-primary" id="btn-jobs-new-lint" title="提交一个新的 Wiki 体检作业">➕ 新建体检</button>
             <button class="btn btn-ghost" id="btn-jobs-clear" title="清除全部已完成的作业历史">🧹 清空历史</button>
@@ -92,12 +122,132 @@
         <div class="jobs-page-list" id="jobs-page-list"></div>
       </div>
 
+      <!-- 知识图谱模块（五子视图） -->
+      <div class="graph-view" id="graph-view" hidden>
+        <div class="kg-header">
+          <span class="kg-crumb">🕸 知识图谱 / <b id="kg-crumb-sub">概览</b></span>
+          <div class="toolbar-actions">
+            <button class="icon-btn" id="btn-graph-close" title="关闭图谱页">✕</button>
+          </div>
+        </div>
+        <div class="kg-pane" data-pane="overview">
+          <div class="kg-cards" id="kg-overview-cards"></div>
+          <div class="kg-sec" id="kg-overview-types"></div>
+        </div>
+
+        <div class="kg-pane" data-pane="entities" hidden>
+          <div class="kg-filterbar">
+            <select id="kg-f-type" title="一级分类"></select>
+            <select id="kg-f-src" title="二级分类">
+              <option value="">全部来源</option>
+              <option value="wiki">Wiki</option>
+              <option value="notes">笔记</option>
+            </select>
+            <input type="text" id="kg-f-q" placeholder="🔍 按名称搜索…" />
+            <button class="btn btn-ghost" id="kg-f-refresh">🔄 刷新</button>
+          </div>
+          <div class="kg-legend" id="kg-legend"></div>
+          <div class="kg-entities">
+            <div class="kg-elist" id="kg-elist"></div>
+            <aside class="kg-edetail" id="kg-edetail"></aside>
+          </div>
+        </div>
+
+        <div class="kg-pane" data-pane="graph" hidden>
+          <div class="kg-filterbar">
+            <button class="btn btn-ghost" id="btn-graph-focus" hidden title="点击退出邻居视图"></button>
+            <label>领域 <select id="kg-g-domain"></select></label>
+            <label>类型 <select id="kg-g-type"></select></label>
+            <label>最多节点 <select id="kg-g-max"><option value="0">全部</option><option>50</option><option selected>100</option><option>200</option><option>500</option></select></label>
+            <label>排序 <select id="kg-g-sort"><option value="deg">按边数</option><option value="name">按名称</option></select></label>
+            <button class="btn btn-ghost" id="btn-graph-fit" title="自适应：重置缩放并居中适配画布">⤢ 自适应</button>
+            <button class="btn btn-ghost" id="btn-graph-clear" title="清空图谱">🧹 清空</button>
+            <span class="jobs-stats" id="graph-stats"></span>
+          </div>
+          <div class="graph-body">
+            <canvas id="graph-canvas"></canvas>
+            <aside class="graph-detail" id="graph-detail" hidden></aside>
+          </div>
+          <div class="graph-legend" id="graph-legend"></div>
+        </div>
+
+        <div class="kg-pane" data-pane="ontology" hidden>
+          <div class="kg-cards" id="kg-onto-cards"></div>
+          <div class="onto-bar">
+            <div class="kg-tabs" id="kg-onto-tabs">
+              <button data-ot="classes" class="active">🏷 实体类</button>
+              <button data-ot="preds">🔗 谓词</button>
+              <button data-ot="cons">📏 约束</button>
+            </div>
+            <button class="btn btn-ghost" id="btn-onto-add">＋ 新增</button>
+          </div>
+          <div class="kg-onto-body" id="kg-onto-body"></div>
+        </div>
+
+        <div class="kg-pane" data-pane="ask" hidden>
+          <p class="modal-tip">用 LLM 解析问题 → 抽取实体 → 查询邻居事实 → 用事实约束 LLM 回答</p>
+          <div class="kg-ask-box">
+            <textarea id="kg-ask-input" placeholder="例：LLM Wiki 和 RAG 的关系是什么？"></textarea>
+            <div class="kg-ask-opts">
+              <label class="checkbox-row"><input type="checkbox" id="kg-ask-facts" checked /> 附事实清单</label>
+              <label>跳数 <input type="number" id="kg-ask-hops" min="1" max="5" value="3" /></label>
+              <button class="btn btn-primary" id="btn-kg-ask">提问</button>
+            </div>
+          </div>
+          <div class="kg-ask-out" id="kg-ask-out" hidden>
+            <div class="kg-facts" id="kg-facts"></div>
+            <div class="preview markdown-body" id="kg-answer"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 原始文件管理页 -->
+      <div class="raw-view" id="raw-view" hidden>
+        <div class="raw-toolbar">
+          <span class="raw-view-title">🗄 原始文件管理</span>
+          <span class="jobs-stats" id="raw-stats"></span>
+          <div class="toolbar-actions">
+            <button class="btn btn-ghost" id="btn-raw-add-files" title="选择本地文件解析导入到 raw/">＋ 添加文件</button>
+            <button class="btn btn-ghost" id="btn-raw-add-dir" title="导入本地文件或目录（目录递归导入支持格式文件）">＋ 添加目录</button>
+            <button class="btn btn-ghost" id="btn-raw-refresh">🔄 刷新</button>
+            <button class="icon-btn" id="btn-raw-close" title="关闭原始文件页">✕</button>
+          </div>
+        </div>
+        <div class="raw-list" id="raw-list"></div>
+      </div>
+
+      <!-- 领域模版管理页 -->
+      <div class="tpl-view" id="tpl-view" hidden>
+        <div class="tpl-toolbar">
+          <span class="tpl-view-title">📐 领域模版管理</span>
+          <div class="toolbar-actions">
+            <button class="btn btn-ghost" id="btn-tpl-suggest" title="分析全部笔记与原始文件，AI 生成候选领域模版">✨ 智能生成</button>
+            <button class="btn btn-ghost" id="btn-tpl-prompt" title="查看吸收时用于判定所属领域的匹配提示词">匹配提示词</button>
+            <button class="btn btn-primary" id="btn-tpl-new">＋ 新建模版</button>
+            <button class="icon-btn" id="btn-tpl-close" title="关闭模版页">✕</button>
+          </div>
+        </div>
+        <div class="tpl-cards" id="tpl-cards"></div>
+      </div>
+
+      <!-- 提示词管理页（主区域） -->
+      <div class="prompts-view" id="prompts-view" hidden>
+        <div class="tpl-toolbar">
+          <span class="tpl-view-title">📜 提示词管理</span>
+          <div class="toolbar-actions">
+            <button class="icon-btn" id="btn-prompts-close" title="关闭提示词页">✕</button>
+          </div>
+        </div>
+        <p class="modal-tip" style="padding: 0 20px;">集中管理各 AI 能力的系统提示词；留空表示使用内置默认，保存后立即生效</p>
+        <div class="prompts-cards" id="prompt-cards"></div>
+      </div>
+
       <!-- 设置页（主区域 Tab 分类） -->
       <div class="settings-view" id="settings-view" hidden>
         <div class="settings-view-header">
           <span class="settings-view-title">⚙ 设置</span>
           <div class="settings-tabs" id="settings-tabs">
-            <button data-tab="ai" class="active">🤖 AI 服务</button>
+            <button data-tab="ai" class="active">🎛️ 模型配置</button>
             <button data-tab="wiki">📖 存储</button>
             <button data-tab="jobs">🗂 作业</button>
             <button data-tab="ask">💬 问答</button>
@@ -112,16 +262,24 @@
             <div class="settings-pane" data-pane="ai">
               <p class="modal-tip">兼容 OpenAI 接口格式（OpenAI / DeepSeek / 通义千问 / Ollama 等均可）</p>
               <label>接口地址 (Base URL)</label>
-              <input type="text" id="set-baseurl" placeholder="https://api.openai.com/v1" />
+              <input type="text" id="set-baseurl" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
               <label>API Key</label>
               <input type="password" id="set-apikey" placeholder="sk-..." />
               <label>模型名称</label>
-              <input type="text" id="set-model" placeholder="gpt-4o-mini" />
+              <input type="text" id="set-model" placeholder="qianwen3.8-max" />
+              <label>采样温度 temperature（0–2，留空用接口默认）</label>
+              <input type="number" id="set-temperature" min="0" max="2" step="0.1" placeholder="默认（不设置）" />
+              <label>核采样 top_p（0–1，留空用接口默认）</label>
+              <input type="number" id="set-topp" min="0" max="1" step="0.05" placeholder="默认（不设置）" />
+              <label>最大 tokens max_tokens（留空用接口默认）</label>
+              <input type="number" id="set-maxtokens" min="1" max="1000000" placeholder="默认（不设置）" />
             </div>
             <div class="settings-pane" data-pane="wiki" hidden>
+              <label>数据根目录（数据库/附件/Wiki 统一存储）</label>
+              <input type="text" id="set-dataroot" placeholder="默认 <安装目录>/data" />
+              <p class="modal-tip">修改后重启应用生效；留空保存恢复默认根目录</p>
               <label>Wiki 根目录（LLM Wiki）</label>
               <input type="text" id="set-wikiroot" placeholder="留空则自动探测" />
-              <label class="checkbox-row"><input type="checkbox" id="set-wikicollapsed" /> 默认折叠 Wiki 目录树</label>
               <label>数据文件位置（SQLite）</label>
               <input type="text" id="set-dbpath" placeholder="留空则使用默认位置" />
               <p class="modal-tip">修改后将整个数据库迁移到新路径并立即生效；留空保存则恢复默认位置</p>
@@ -149,6 +307,8 @@
                 <option value="edit">编辑</option>
                 <option value="preview">预览</option>
               </select>
+              <label>AI 辅助提示词（编辑器 ✨ AI 按钮，留空使用默认润色提示词）</label>
+              <textarea id="set-aiassist" rows="4" placeholder="默认：润色所选/全文，修正错别字与语病、优化表达，保持原意与 Markdown 结构"></textarea>
             </div>
             <div class="settings-view-actions">
               <span class="modal-data-path" id="data-path"></span>
@@ -161,7 +321,10 @@
       <!-- Wiki 页面阅读器 -->
       <div class="wiki-viewer" id="wiki-viewer" hidden>
         <div class="wiki-viewer-header">
-          <span class="wiki-path" id="wiki-page-path"></span>
+          <div class="wiki-head-titles">
+            <h2 id="wiki-title"></h2>
+            <span class="wiki-path" id="wiki-page-path"></span>
+          </div>
           <div class="toolbar-actions">
             <button class="icon-btn" id="btn-wiki-source" title="切换源码/渲染视图">≡</button>
             <button class="icon-btn" id="btn-wiki-close" title="关闭">✕</button>
@@ -175,19 +338,29 @@
         <div class="editor-toolbar">
           <input type="text" id="note-title" placeholder="无标题笔记" />
           <div class="toolbar-actions">
+            <button class="icon-btn" id="btn-notelist-show" title="展开笔记列表" hidden>»</button>
+            <div class="tb-group">
+              <button class="tb-btn tb-ai" id="btn-ai-assist" title="AI 辅助：默认润色所选/全文，提示词可在 设置→编辑器 配置">✨ AI</button>
+              <button class="tb-btn" id="btn-versions" title="历史版本：AI 改动前/后自动各存一版，可查看/恢复">🕘</button>
+              <button class="tb-btn" id="btn-format" title="格式：加粗/斜体/标题/列表/引用">格式</button>
+              <button class="tb-btn" id="btn-checklist" title="核对清单">☑</button>
+              <button class="tb-btn" id="btn-table" title="添加表格">⊞</button>
+              <button class="tb-btn" id="btn-attach" title="附加文件 / 照片 / 扫描文稿">🖼<span class="caret">▾</span></button>
+            </div>
             <div class="mode-switch">
               <button id="mode-edit" class="active" title="编辑模式">编辑</button>
               <button id="mode-split" title="分屏模式">分屏</button>
               <button id="mode-preview" title="预览模式">预览</button>
             </div>
             <button class="icon-btn" id="btn-pin" title="置顶">📌</button>
-            <button class="icon-btn" id="btn-export" title="导出为文件">⬇</button>
+            <button class="icon-btn" id="btn-export" title="打开笔记所在的文件夹">📂</button>
             <button class="icon-btn danger" id="btn-delete" title="删除笔记">🗑</button>
           </div>
         </div>
         <div class="editor-meta">
           <select id="note-folder"></select>
           <input type="text" id="note-tags" placeholder="标签，用逗号分隔，如：工作, 学习" />
+          <span class="meta-date" id="note-date"></span>
           <span class="meta-time" id="note-time"></span>
         </div>
         <div class="editor-body" id="editor-body">
@@ -209,9 +382,10 @@
           <button class="icon-btn" id="btn-ai-close" title="关闭">✕</button>
         </div>
       </div>
-      <div class="ai-mode-switch">
-        <button id="ai-mode-notes" class="active">📝 笔记问答</button>
-        <button id="ai-mode-wiki">📖 Wiki 问答</button>
+      <div class="ai-mode-switch ai-sources">
+        <label class="src-cb"><input type="checkbox" id="ai-src-notes" checked /> 📝 笔记</label>
+        <label class="src-cb"><input type="checkbox" id="ai-src-wiki" checked /> 📖 Wiki</label>
+        <label class="src-cb"><input type="checkbox" id="ai-src-graph" checked /> 🕸 知识图谱</label>
       </div>
       <div class="ai-hint" id="ai-hint">基于你的知识库内容回答问题，发送前会自动检索相关笔记。</div>
       <div class="ai-messages" id="ai-messages"></div>
@@ -220,6 +394,34 @@
         <button class="btn btn-primary" id="btn-ai-send">发送</button>
       </div>
     </aside>
+  </div>
+
+  <!-- 工具栏弹出菜单（fixed 定位，置于 .app 外：避开编辑区的容器查询 containment，否则包含块变为编辑区导致弹出错位） -->
+  <div class="tb-menu" id="format-menu" hidden>
+    <div class="fm-row">
+      <button data-fmt="bold" title="加粗"><b>B</b></button>
+      <button data-fmt="italic" title="斜体"><i>I</i></button>
+      <button data-fmt="underline" title="下划线"><u>U</u></button>
+      <button data-fmt="strike" title="删除线"><s>S</s></button>
+      <button data-fmt="code" title="行内代码">&lt;/&gt;</button>
+    </div>
+    <hr />
+    <button data-fmt="h1" class="fm-h1">标题</button>
+    <button data-fmt="h2" class="fm-h2">小标题</button>
+    <button data-fmt="h3" class="fm-h3">副标题</button>
+    <button data-fmt="p">正文</button>
+    <button data-fmt="mono">等宽样式</button>
+    <hr />
+    <button data-fmt="ul">•&ensp;项目符号列表</button>
+    <button data-fmt="ol">1.&ensp;编号列表</button>
+    <button data-fmt="quote">❝&ensp;块引用</button>
+  </div>
+  <!-- 附加菜单 -->
+  <div class="tb-menu" id="attach-menu" hidden>
+    <button data-act="file">附加文件…</button>
+    <button data-act="photo">照片…</button>
+    <hr />
+    <button data-act="scan">📄 扫描文稿（AI 识别）</button>
   </div>
 
   <!-- 通用输入弹窗（替代 window.prompt） -->
@@ -234,6 +436,53 @@
     </div>
   </div>
 
+  <!-- 图片存储方式选择弹窗 -->
+  <div class="modal-mask" id="image-storage-modal" hidden>
+    <div class="modal" style="width:380px">
+      <h3>图片存储方式</h3>
+      <label class="radio-row"><input type="radio" name="img-store" value="local" checked /> 保存为本地文件（笔记标题目录）并引用</label>
+      <label class="radio-row"><input type="radio" name="img-store" value="embed" /> base64 内嵌到笔记</label>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="btn-imgstore-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-imgstore-ok">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 本地文件/目录导入选择器（自定义浏览，可看到目录内具体文件） -->
+  <div class="modal-mask" id="pickdir-modal" hidden>
+    <div class="modal" style="width:640px">
+      <h3>导入本地文件 / 目录</h3>
+      <p class="modal-tip">点击文件夹进入浏览；勾选文件可直接导入；点「导入此目录」递归导入当前目录下全部支持格式文件</p>
+      <div class="pickdir-path" id="pickdir-path"></div>
+      <div class="pickdir-list" id="pickdir-list"></div>
+      <div class="modal-actions">
+        <span class="pickdir-info" id="pickdir-info"></span>
+        <button class="btn btn-ghost" id="btn-pickdir-cancel">取消</button>
+        <button class="btn btn-ghost" id="btn-pickdir-files" disabled>导入所选文件</button>
+        <button class="btn btn-primary" id="btn-pickdir-dir">导入此目录</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 笔记历史版本：右侧抽屉 -->
+  <aside class="versions-drawer" id="versions-drawer" hidden>
+    <div class="versions-drawer-head">
+      <span class="versions-drawer-title" id="versions-drawer-title">🕘 历史版本</span>
+      <button class="icon-btn" id="btn-versions-back" title="返回版本列表" hidden>←</button>
+      <button class="icon-btn" id="btn-versions-close" title="关闭">✕</button>
+    </div>
+    <p class="modal-tip" id="versions-tip">AI 改动前/后自动各存一版（版本号 = 日期+时间精确到秒）；恢复前会自动备份当前内容防丢失</p>
+    <div class="version-list" id="version-list"></div>
+    <div class="versions-compare-bar" id="versions-compare-bar">
+      <span id="versions-compare-hint">勾选两个版本进行对比</span>
+      <button class="btn btn-primary" id="btn-versions-compare" disabled>对比所选</button>
+    </div>
+    <textarea class="version-view-body" id="version-view-body" readonly hidden></textarea>
+    <div class="version-diff" id="version-diff-body" hidden></div>
+  </aside>
+
+  <!-- 提示词管理抽屉 -->
   <!-- 吸收来源弹窗 -->
   <div class="modal-mask" id="ingest-modal" hidden>
     <div class="modal" style="width:560px">
@@ -282,9 +531,117 @@
     </div>
   </div>
 
+  <!-- 领域模版新建/编辑：右侧抽屉 -->
+  <aside class="tpl-drawer" id="tpl-modal" hidden>
+      <div class="tpl-modal-head">
+        <h3 id="tpl-modal-title">新建领域模版</h3>
+        <button class="icon-btn" id="btn-tpl-modal-close" title="关闭">✕</button>
+      </div>
+      <div class="tpl-modal-body" id="tpl-modal-body">
+        <label>模版 ID（英文标识符）<i class="tpl-req">*</i></label>
+        <input type="text" id="tpl-id" data-req="1" placeholder="如: rental_service" />
+        <label>名称 <i class="tpl-req">*</i></label>
+        <input type="text" id="tpl-name" data-req="1" placeholder="如: 租房服务" />
+        <label>描述 <i class="tpl-req">*</i></label>
+        <textarea id="tpl-desc" data-req="1" rows="3" placeholder="该领域的简要描述"></textarea>
+        <div class="tpl-ai-banner">
+          <div class="tpl-ai-row">
+            <button class="btn" id="btn-tpl-ai">✨ AI 自动生成模版</button>
+            <span>只需填写名称即可生成（描述可选）：自动补全模版 ID、关键词、实体/概念类型与提取规则</span>
+          </div>
+          <div class="tpl-gen-status" id="tpl-gen-status" hidden></div>
+        </div>
+        <label>关键词（逗号分隔）<i class="tpl-req">*</i></label>
+        <input type="text" id="tpl-keywords" data-req="1" placeholder="如: 租房, 楼盘, 租金, 保租房" />
+        <label>实体类型 <i class="tpl-req">*</i></label>
+        <div class="tpl-rows" id="tpl-entity-rows"></div>
+        <button class="btn btn-ghost tpl-add" id="btn-tpl-add-entity">＋ 添加实体类型</button>
+        <p class="tpl-warn" id="tpl-entity-warn">⚠️ 请至少添加一个实体类型并填写名称</p>
+        <label>概念类型 <i class="tpl-req">*</i></label>
+        <div class="tpl-rows" id="tpl-concept-rows"></div>
+        <button class="btn btn-ghost tpl-add" id="btn-tpl-add-concept">＋ 添加概念类型</button>
+        <p class="tpl-warn" id="tpl-concept-warn">⚠️ 请至少添加一个概念类型并填写名称</p>
+        <label>提取规则 — 必须提取（逗号分隔）<i class="tpl-req">*</i></label>
+        <input type="text" id="tpl-must" data-req="1" placeholder="如: 楼盘名称, 价格信息, 时间节点" />
+        <label>提取规则 — 忽略内容（逗号分隔）<i class="tpl-req">*</i></label>
+        <input type="text" id="tpl-ignore" data-req="1" placeholder="如: 通用客套话, 非业务寒暄" />
+        <label>质量标准 <i class="tpl-req">*</i></label>
+        <textarea id="tpl-quality" data-req="1" rows="3" placeholder="对页面内容的质量要求"></textarea>
+        <label>核心页面骨架 <i class="tpl-req">*</i></label>
+        <div class="tpl-rows" id="tpl-skel-rows"></div>
+        <button class="btn btn-ghost tpl-add" id="btn-tpl-add-skel">＋ 添加骨架页面</button>
+        <p class="tpl-warn" id="tpl-skel-warn">⚠️ 请至少添加一个骨架页面并填写标题</p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="btn-tpl-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-tpl-save">创建</button>
+      </div>
+  </aside>
+
+  <!-- 领域匹配提示词预览弹窗 -->
+  <div class="modal-mask" id="tpl-prompt-modal" hidden>
+    <div class="modal" style="width:640px">
+      <h3>匹配提示词</h3>
+      <p class="modal-tip">吸收新来源时，AI 依据该提示词判定内容所属的领域模版；{{SOURCE_EXCERPT}} 会替换为来源内容摘录</p>
+      <pre class="tpl-prompt-pre" id="tpl-prompt-pre"></pre>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="btn-tpl-prompt-close">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 智能生成候选领域模版弹窗 -->
+  <div class="modal-mask" id="tpl-suggest-modal" hidden>
+    <div class="modal tpl-modal">
+      <div class="tpl-modal-head">
+        <h3>✨ 候选领域模版</h3>
+        <button class="icon-btn" id="btn-tpl-suggest-close" title="关闭">✕</button>
+      </div>
+      <p class="modal-tip">基于全部笔记与管理的原始文件由 AI 归纳；点击「采纳并编辑」可在抽屉中调整后保存</p>
+      <div class="tpl-modal-body" id="tpl-suggest-list"></div>
+      <div class="modal-actions">
+        <button class="btn" id="btn-tpl-suggest-done">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 本体定义编辑弹窗（实体类/谓词/约束 增改共用） -->
+  <div class="modal-mask" id="onto-modal" hidden>
+    <div class="modal" style="width:480px">
+      <h3 id="onto-modal-title">新增实体类</h3>
+      <div id="onto-f-key">
+        <label id="onto-key-label">标识键（英文标识符）<i class="tpl-req">*</i></label>
+        <input type="text" id="onto-key" placeholder="如: concept" />
+      </div>
+      <div id="onto-f-label">
+        <label>名称 <i class="tpl-req">*</i></label>
+        <input type="text" id="onto-label" placeholder="如: 抽象概念" />
+      </div>
+      <div id="onto-f-desc">
+        <label id="onto-desc-label">描述</label>
+        <input type="text" id="onto-desc" placeholder="一句话说明" />
+      </div>
+      <div id="onto-f-ex">
+        <label>示例（逗号分隔）</label>
+        <input type="text" id="onto-ex" placeholder="如: RAG, 本体层" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="btn-onto-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-onto-save">保存</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast" hidden></div>
 
   <script src="lib/marked.min.js"></script>
-  <script src="app.js"></script>
+  <!-- 渲染进程按模块分文件加载：公共 → 笔记 → Wiki → 问答 → 作业 → 图谱 → 入口 -->
+  <script src="renderer/common.js"></script>
+  <script src="renderer/notes.js"></script>
+  <script src="renderer/wiki.js"></script>
+  <script src="renderer/chat.js"></script>
+  <script src="renderer/jobs.js"></script>
+  <script src="renderer/graph.js"></script>
+  <script src="renderer/app.js"></script>
 </body>
 </html>
