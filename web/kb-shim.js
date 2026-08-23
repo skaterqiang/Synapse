@@ -4,9 +4,11 @@
   window.__KB_WEB__ = true; // 网页模式标记：渲染层据此改写 kb-asset 图片地址
   const subs = {
     'ai:chunk': [],
+    'ai:step': [],
     'ai:done': [],
     'ai:error': [],
     'wiki:refs': [],
+    'tpl:gen-chunk': [],
     'jobs:update': [],
     'kg:facts': [],
     'kg:stage': [],
@@ -48,9 +50,12 @@
 
     // AI 问答（流式事件经 SSE 下发）
     askAI: (payload) => call('ai:ask', payload),
+    aiStop: () => call('ai:stop'),
+    listModels: (settings) => call('ai:listModels', settings),
     onAiChunk: on('ai:chunk'),
     onAiDone: on('ai:done'),
     onAiError: on('ai:error'),
+    onAiStep: on('ai:step'),
 
     // LLM Wiki
     wikiDefaultRoot: () => call('wiki:defaultRoot'),
@@ -72,6 +77,20 @@
 
     // 原始文件管理（目录选择在浏览器不可用，返回 canceled 由前端提示）
     rawList: (settings) => call('raw:list', settings),
+    rawSearch: (payload) => call('raw:search', payload),
+    readAttachments: (payload) => call('ai:readAttachments', payload),
+    rawAddSource: (payload) => call('raw:addSource', payload),
+    skillRead: (payload) => call('skill:read', payload),
+    chatGetHistory: () => call('chat:getHistory'),
+    chatSaveHistory: (list) => call('chat:saveHistory', list),
+    chatGetSessions: () => call('chat:getSessions'),
+    chatSaveSessions: (list) => call('chat:saveSessions', list),
+    mcpTest: (cfg) => call('mcp:test', cfg),
+    skillRun: (payload) => call('skill:run', payload),
+    openPath: (payload) => call('shell:openPath', payload),
+    revealPath: (payload) => call('shell:revealPath', payload),
+    rawPickDir: () => Promise.resolve({ ok: false, canceled: false }),
+    openExternal: (url) => { try { window.open(url, '_blank'); return Promise.resolve({ ok: true }); } catch (e) { return Promise.resolve({ ok: false, error: e.message }); } },
     rawOpen: () => Promise.resolve({ ok: false, error: '网页模式不支持打开本地文件，请在桌面端使用' }),
     rawRemove: (payload) => call('raw:remove', payload),
     rawRemoveDir: (payload) => call('raw:removeDir', payload),

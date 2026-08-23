@@ -11,11 +11,14 @@ const filesMod = require('../wiki/files');
 const raws = require('../wiki/raws');
 const { makeTaskTracker } = require('./tasks');
 const { num } = require('../common/config');
+const settingsMod = require('../common/settings');
 
 let jobs = [];
 let jobSeq = 0;
-let runningJobId = null;
+// 并发执行池：runningIds 记录运行中作业，上限由设置 maxConcurrentJobs 控制
+const runningIds = new Set();
 const jobQueue = [];
+const maxConcurrent = () => num(settingsMod.getSettings(), 'maxConcurrentJobs', 3, 1, 8);
 
 // 主窗口引用由入口注入，避免模块直接依赖窗口全局
 let getWindow = () => null;
@@ -162,18 +165,22 @@ function setStage(job, key, status, detail) {
   emitJobs();
 }
 
-// ---------- 队列执行 ----------
-async function pumpJobQueue() {
-  if (runningJobId) return;
-  const id = jobQueue.shift();
-  if (!id) return;
-  const job = jobs.find((j) => j.id === id);
-  if (!job) return pumpJobQueue();
-  runningJobId = id;
-  job.status = 'running';
-  job.startedAt = Date.now();
+// ---------- 队列执行（可配置并发） ----------
+function pumpJobQueue() {
+  while (runningIds.size < maxConcurrent() && jobQueue.length) {
+    const id = jobQueue.shift();
+    const job = jobs.find((j) => j.id === id);
+    if (!job) continue;
+    runningIds.add(id);
+    job.status = 'running';
+    job.startedAt = Date.now();
+    runJob(job);
+  }
   persistJobs();
   emitJobs();
+}
+
+async function runJob(job) {
   try {
     job.result = await JOB_RUNNERS[job.type](job);
     job.status = 'success';
@@ -188,8 +195,7 @@ async function pumpJobQueue() {
     if (st) { st.status = 'failed'; st.detail = err.message; }
   }
   job.finishedAt = Date.now();
-  // 保留 payload 于内存以供「原作业重试」复用（入库时 persistJobs 会剥离）
-  runningJobId = null;
+  runningIds.delete(job.id);
   persistJobs();
   emitJobs();
   pumpJobQueue();
@@ -268,14 +274,16 @@ const JOB_RUNNERS = {
       makeTaskTracker(job, () => { persistJobs(); emitJobs(); }).init(rawPaths.map((p) => String(p).replace(/^raw\//, '')));
     } else {
       setStage(job, 'save', 'running', '开始…');
-      const total = (files ? files.length : 0) + (url || text ? 1 : 0) + (Array.isArray(noteSources) ? noteSources.length : 0);
+      // 空内容笔记会被跳过（见下方 continue），进度分母须按剔除后的来源数计，避免出现「3/5」这类永不达标的计数
+      const activeNotes = (noteSources || []).filter((ns) => (ns.content || '').trim());
+      const total = (files ? files.length : 0) + (url || text ? 1 : 0) + activeNotes.length;
       // 任务列表：每个来源一个独立 task，随保存进度更新（与处理顺序一致，空笔记已剔除）
       const tracker = makeTaskTracker(job, () => { persistJobs(); emitJobs(); });
       tracker.init([
         ...(files || []).map((f) => '文件·' + f.name),
         ...(url ? [String(url)] : []),
         ...(text ? ['粘贴文本'] : []),
-        ...(noteSources || []).filter((ns) => (ns.content || '').trim()).map((ns) => '笔记·' + (ns.title || '')),
+        ...activeNotes.map((ns) => '笔记·' + (ns.title || '')),
       ]);
       let ti = 0;
       const doneNext = () => { tracker.setDone(ti); ti++; };

@@ -2,9 +2,9 @@
 const { app, dialog, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const llm = require('../common/llm');
+const llm = require('../ai/llm');
 const paths = require('../common/paths');
-const { getPrompt } = require('../common/prompts');
+const { getPrompt } = require('../ai/prompts');
 const db = require('../common/db');
 const store = require('./store');
 

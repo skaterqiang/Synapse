@@ -13,6 +13,8 @@ const jobs = require('./src/main/jobs/jobs');
 const wiki = require('./src/main/wiki/wiki');
 const raws = require('./src/main/wiki/raws');
 const settingsMod = require('./src/main/common/settings');
+const mcpMod = require('./src/main/mcp/mcp');
+const skillsMod = require('./src/main/skills/skills');
 
 // 产品改名为 Synapse 后，userData 仍固定旧目录，避免已有 knowledge.db 等数据失联
 // 注：须在 app ready 后调用，过早调用会导致主进程静默崩溃
@@ -89,6 +91,8 @@ app.whenReady().then(async () => {
   wiki.migrateWikiToDomainDirs(); // 存量 Wiki 页迁移到 wiki/<领域>/<类型>/ 结构
   raws.migrateAutoRaws(settingsMod.getSettings()); // 存量自动生成 raw 移入 raw/_auto/，原始文件只管本机添加
   raws.migrateFileRefsToDirs(); // 存量按目录添加的单文件引用升级为目录引用（实时遍历）
+  mcpMod.seedWebSearchMcp(); // 一次性植入阿里云百炼 WebSearch MCP（API Key 复用模型配置）
+  skillsMod.seedSampleSkills(settingsMod); // 一次性植入示例 skill 文件包（目录引用）
   jobs.init(getWindow);
   jobs.loadJobs();
   registerIpc(getWindow);

@@ -70,6 +70,8 @@ const paths = require(path.join(SRC, 'main', 'common', 'paths'));
 const wiki = require(path.join(SRC, 'main', 'wiki', 'wiki'));
 const raws = require(path.join(SRC, 'main', 'wiki', 'raws'));
 const settingsMod = require(path.join(SRC, 'main', 'common', 'settings'));
+const mcpMod = require(path.join(SRC, 'main', 'mcp', 'mcp'));
+const skillsMod = require(path.join(SRC, 'main', 'skills', 'skills'));
 const { registerIpc } = require(path.join(SRC, 'main', 'ipc'));
 
 async function start() {
@@ -80,6 +82,8 @@ async function start() {
   wiki.migrateWikiToDomainDirs();
   raws.migrateAutoRaws(settingsMod.getSettings());
   raws.migrateFileRefsToDirs();
+  mcpMod.seedWebSearchMcp();
+  skillsMod.seedSampleSkills(settingsMod);
   jobs.init(() => shimWindow);
   jobs.loadJobs();
   registerIpc(() => shimWindow);

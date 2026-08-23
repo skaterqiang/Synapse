@@ -2,9 +2,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('kb', {
   // 应用级默认值（单一配置源 defaults.js，供渲染层展示占位与兜底）
-  defaults: require('./src/main/common/defaults').DEFAULTS,
+  defaults: require('./src/main/ai/defaults').DEFAULTS,
   // 模型名归一：未设置/历史错误值 → 当前默认（与主进程同一实现）
-  normalizeModel: require('./src/main/common/defaults').normalizeModel,
+  normalizeModel: require('./src/main/ai/defaults').normalizeModel,
   // 数据
   loadData: () => ipcRenderer.invoke('data:load'),
   saveData: (store) => ipcRenderer.invoke('data:save', store),
@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld('kb', {
 
   // AI 问答（流式）
   askAI: (payload) => ipcRenderer.invoke('ai:ask', payload),
+  // 停止当前回答（回答中时发送按钮变为“停止”）
+  aiStop: () => ipcRenderer.invoke('ai:stop'),
+  // 列出接口可用模型（设置页「获取模型」）
+  listModels: (settings) => ipcRenderer.invoke('ai:listModels', settings),
   onAiChunk: (callback) => {
     const handler = (_event, chunk) => callback(chunk);
     ipcRenderer.on('ai:chunk', handler);
@@ -26,6 +30,11 @@ contextBridge.exposeInMainWorld('kb', {
     const handler = (_event, message) => callback(message);
     ipcRenderer.on('ai:error', handler);
     return () => ipcRenderer.removeListener('ai:error', handler);
+  },
+  onAiStep: (callback) => {
+    const handler = (_event, step) => callback(step);
+    ipcRenderer.on('ai:step', handler);
+    return () => ipcRenderer.removeListener('ai:step', handler);
   },
 
   // LLM Wiki
@@ -60,6 +69,22 @@ contextBridge.exposeInMainWorld('kb', {
 
   // 原始文件管理
   rawList: (settings) => ipcRenderer.invoke('raw:list', settings),
+  // 原始文件关键字检索（作为 AI 问答知识源）
+  rawSearch: (payload) => ipcRenderer.invoke('raw:search', payload),
+  readAttachments: (payload) => ipcRenderer.invoke('ai:readAttachments', payload),
+  rawAddSource: (payload) => ipcRenderer.invoke('raw:addSource', payload),
+  skillRead: (payload) => ipcRenderer.invoke('skill:read', payload),
+  chatGetHistory: () => ipcRenderer.invoke('chat:getHistory'),
+  chatSaveHistory: (list) => ipcRenderer.invoke('chat:saveHistory', list),
+  chatGetSessions: () => ipcRenderer.invoke('chat:getSessions'),
+  chatSaveSessions: (list) => ipcRenderer.invoke('chat:saveSessions', list),
+  mcpTest: (cfg) => ipcRenderer.invoke('mcp:test', cfg),
+  rawPickDir: () => ipcRenderer.invoke('dialog:pickDir'),
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  // 技能脚本执行与本地文件打开（产物卡片用）
+  skillRun: (payload) => ipcRenderer.invoke('skill:run', payload),
+  openPath: (payload) => ipcRenderer.invoke('shell:openPath', payload),
+  revealPath: (payload) => ipcRenderer.invoke('shell:revealPath', payload),
   rawOpen: (payload) => ipcRenderer.invoke('raw:open', payload),
   rawRemove: (payload) => ipcRenderer.invoke('raw:remove', payload),
   rawRemoveDir: (payload) => ipcRenderer.invoke('raw:removeDir', payload),

@@ -95,30 +95,94 @@ function bindEvents() {
     });
   });
 
-  // AI 面板（分隔条随面板显隐）
-  $('btn-ai-toggle').addEventListener('click', () => {
-    setAiPanelVisible($('ai-panel').hidden);
-    if (!$('ai-panel').hidden) $('ai-input').focus();
-  });
+  // AI 问答：点击左下入口打开主框架 AI 页
+  $('btn-ai-toggle').addEventListener('click', () => { showAiView(); });
   $('btn-ai-close').addEventListener('click', () => { setAiPanelVisible(false); });
   $('btn-ai-clear').addEventListener('click', () => {
     aiHistory = [];
+    saveAiHistory();
     $('ai-messages').innerHTML = '';
   });
   $('btn-ai-send').addEventListener('click', sendAiQuestion);
+  initAiPanelResize();
+  bindAiExtPicker();
+  // AI 主框架页
+  $('btn-ai-newtask').addEventListener('click', aiNewTask);
+  $('btn-ai-view-send').addEventListener('click', sendAiViewQuestion);
+  // 📎 上传文件：仅作为本次提问的上文，不写入知识库
+  $('btn-ai-attach').addEventListener('click', pickAiAttachments);
+  bindAiExtPicker('btn-ai-src', 'ai-menu-src', ['sources']);
+  bindAiExtPicker('btn-ai-mcp', 'ai-menu-mcp', ['mcp']);
+  bindAiExtPicker('btn-ai-skill', 'ai-menu-skill', ['skills']);
+  bindAiModelPicker();
+  // 模型卡片（设置→模型配置）：新增直接追加一张卡，编辑在卡内完成
+  $('btn-model-add').addEventListener('click', addModelCard);
+  $('ai-view-input').addEventListener('keydown', (e) => {
+    // 中文/日文等 IME 候选选词的回车会触发 keydown（isComposing===true 或 keyCode===229），
+    // 只有当前未处于输入法拼写阶段时才发送，避免选词回车误发
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    if (e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    sendAiViewQuestion();
+  });
+  $('ai-view-suggest').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-q]'); if (!b) return;
+    $('ai-view-input').value = b.dataset.q;
+    $('ai-view-input').focus();
+  });
   $('ai-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendAiQuestion();
-    }
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    if (e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    sendAiQuestion();
   });
 
   // 设置（主区域 Tab 页）
   $('btn-settings').addEventListener('click', showSettingsView);
+  // 拦截所有链接点击：http 用系统浏览器打开，内部路径走 Wiki，防止整窗导航白屏
+  document.addEventListener('click', (e) => {
+    const a = e.target && e.target.closest ? e.target.closest('a') : null;
+    if (!a) return;
+    const href = a.getAttribute('href') || '';
+    if (!href || href.startsWith('#')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (/^https?:\/\//i.test(href)) { if (window.kb.openExternal) window.kb.openExternal(href); return; }
+    if (typeof openWikiPage === 'function') openWikiPage(href.replace(/^\//, ''));
+  }, true);
   $('btn-notelist-hide').addEventListener('click', () => setNoteListHidden(true));
   $('btn-notelist-show').addEventListener('click', () => setNoteListHidden(false));
+  $('btn-sidebar-hide').addEventListener('click', () => setSidebarHidden(true));
+  $('btn-sidebar-show').addEventListener('click', () => setSidebarHidden(false));
+  // 图标栏：点击派发到对应导航项，避免重复一份点击逻辑
+  $('sidebar-rail').addEventListener('click', (e) => {
+    const btn = e.target.closest('.rail-btn[data-click]');
+    if (!btn) return;
+    const target = document.querySelector(btn.dataset.click);
+    if (target) target.click();
+  });
   $('btn-settings-close').addEventListener('click', hideSettingsView);
-  $('btn-settings-save').addEventListener('click', saveSettings);
+  // 设置表单自动保存：委派监听 set-* 字段的 change（失焦/提交时触发）；
+  // 数据根目录与数据文件位置会迁移数据，排除在外，改由各自的「应用」按钮触发
+  $('settings-view').addEventListener('change', (e) => {
+    const t = e.target;
+    if (!t || !t.id || t.id.indexOf('set-') !== 0) return;
+    if (t.id === 'set-dataroot' || t.id === 'set-dbpath') return;
+    saveSettingsFields();
+  });
+  $('btn-apply-dataroot').addEventListener('click', applyDataRoot);
+  $('btn-apply-dbpath').addEventListener('click', applyDbPath);
+  $('set-provider').addEventListener('change', applyProviderPreset);
+  $('btn-fetch-models').addEventListener('click', fetchMainModels);
+  // 模型名称输入框右侧 ▾：下拉列出全部已获取模型（原生 datalist 会按当前值过滤）
+  bindModelDropdown('model-options', 'btn-model-dd', 'model-dd', 'set-model');
+  $('btn-mcp-add').addEventListener('click', () => extAddRow('mcp'));
+  $('btn-mcp-json-save').addEventListener('click', saveMcpJson);
+  $('btn-mcp-json-cancel').addEventListener('click', () => { $('mcp-json-modal').hidden = true; });
+  $('btn-skill-add').addEventListener('click', addSkillByDir);
+  $('btn-skill-edit-save').addEventListener('click', saveSkillEdit);
+  $('btn-skill-edit-cancel').addEventListener('click', () => { $('skill-edit-modal').hidden = true; });
+  $('skill-search').addEventListener('input', renderSkillGrid);
   $('settings-tabs').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-tab]');
     if (btn) switchSettingsTab(btn.dataset.tab);
@@ -219,6 +283,9 @@ function bindEvents() {
 
   // AI 数据源多选
   loadAiSources();
+  loadAiExt();
+  loadAiModel();
+  loadAiHistory();
   bindAiSources();
   applyAiSources();
 
@@ -315,6 +382,8 @@ async function init() {
   bindTplEvents();
   bindRawEvents();
   state.noteListHidden = localStorage.getItem('kb.noteListHidden') === '1';
+  state.sidebarHidden = localStorage.getItem('kb.sidebarHidden') === '1';
+  syncSidebarVisibility();
   initResizers();
   // 默认编辑器模式读设置（缺省分屏）
   state.editorMode = EDITOR_MODES.includes(state.settings.defaultEditorMode) ? state.settings.defaultEditorMode : 'split';

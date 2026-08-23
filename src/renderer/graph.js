@@ -6,14 +6,7 @@ const GRAPH_TYPE_NAMES = { concept: '概念', entity: '实体', topic: '主题',
 const graphSim = { nodes: [], edges: [], zoom: 1, ox: 0, oy: 0, drag: null, selected: null, raf: 0, running: false, alpha: 1 };
 
 function showGraphView() {
-  $('wiki-viewer').hidden = true;
-  $('settings-view').hidden = true;
-  $('jobs-view').hidden = true;
-  $('tpl-view').hidden = true;
-  $('raw-view').hidden = true;
-  $('prompts-view').hidden = true;
-  $('prompt-editor-view').hidden = true;
-  promptEditing = null;
+  hideMainViews();
   $('graph-view').hidden = false;
   renderEditor();
   renderSidebar();
@@ -48,7 +41,7 @@ function renderGraphDomainFilter() {
     const t = (state.templates || []).find((x) => x.id === id);
     return t ? t.name : id;
   };
-  const domains = [...new Set(state.graph.nodes.map((n) => n.domain || 'general'))];
+  const domains = [...new Set([...(state.templates || []).map((t) => t.id), ...state.graph.nodes.map((n) => n.domain || 'general')])];
   sel.innerHTML = '<option value="">全部领域</option>' + domains.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(name(d))}</option>`).join('');
   sel.value = domains.includes(cur) ? cur : '';
 }
@@ -451,7 +444,10 @@ function cleanupKgListeners() { kgListeners.forEach((off) => off()); kgListeners
 let kgBusy = false; // KG 问答独立忙标记：不被 AI 面板残留的 aiBusy 静默阻断
 
 async function kgAskFlow() {
-  const question = $('kg-ask-input').value.trim();
+  const ta = $('kg-ask-input');
+  // 空输入时直接用占位示例作为默认问题，可直接点击提问
+  let question = ta.value.trim();
+  if (!question) question = (ta.placeholder || '').replace(/^例[：:]\s*/, '').trim();
   if (!question || kgBusy) return;
   kgBusy = true;
   state.aiBusy = true; // 流式事件共用，期间阻止 AI 面板并发提问

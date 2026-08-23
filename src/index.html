@@ -2,16 +2,34 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: kb-asset:" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: kb-asset: https://www.google.com" />
   <title>Synapse</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="lib/hljs-atom-one-dark.min.css" />
 </head>
 <body>
   <div class="app">
+    <!-- 侧边栏收起后的图标栏：保留主入口图标，点击派发到对应导航项
+         （不能放在笔记列表工具栏：主框架页下笔记列表也会隐藏） -->
+    <div class="sidebar-rail" id="sidebar-rail" hidden>
+      <button class="rail-btn rail-expand" id="btn-sidebar-show" title="展开侧边栏">»</button>
+      <div class="rail-sep"></div>
+      <button class="rail-btn" data-click="#nav-all-notes" title="全部笔记">📝</button>
+      <button class="rail-btn" data-click="#nav-raws" title="原始文件">🗄</button>
+      <button class="rail-btn" data-click="#wiki-header" title="LLM Wiki">📖</button>
+      <button class="rail-btn" data-click="#nav-templates" title="领域模版">📐</button>
+      <button class="rail-btn" data-click="#kg-submenu [data-tab=&quot;overview&quot;]" title="知识图谱">🪐</button>
+      <button class="rail-btn" data-click="#nav-jobs" title="作业管理">🗂</button>
+      <button class="rail-btn" data-click="#nav-prompts" title="提示词管理">📜</button>
+      <div class="rail-spacer"></div>
+      <button class="rail-btn" data-click="#btn-ai-toggle" title="AI 问答">✨</button>
+      <button class="rail-btn" data-click="#btn-settings" title="设置">⚙️</button>
+    </div>
     <!-- 左侧导航 -->
     <aside class="sidebar">
       <div class="sidebar-header">
         <div class="logo">📚 Synapse</div>
+        <button class="icon-btn" id="btn-sidebar-hide" title="收起侧边栏">«</button>
       </div>
       <div class="sidebar-search">
         <input type="text" id="search-input" placeholder="🔍 搜索笔记 / 原始文件 / Wiki / 图谱…" />
@@ -207,8 +225,8 @@
           <span class="raw-view-title">🗄 原始文件管理</span>
           <span class="jobs-stats" id="raw-stats"></span>
           <div class="toolbar-actions">
-            <button class="btn btn-ghost" id="btn-raw-add-files" title="选择本地文件解析导入到 raw/">＋ 添加文件</button>
-            <button class="btn btn-ghost" id="btn-raw-add-dir" title="导入本地文件或目录（目录递归导入支持格式文件）">＋ 添加目录</button>
+            <button class="btn btn-ghost" id="btn-raw-add-dir" title="浏览本机：可勾选单个/多个文件，也可整目录递归导入">＋ 添加文件/目录</button>
+            <button class="btn btn-ghost" id="btn-raw-add-url" title="拉取网页链接保存为原始来源">🔗 添加链接</button>
             <button class="btn btn-ghost" id="btn-raw-refresh">🔄 刷新</button>
             <button class="icon-btn" id="btn-raw-close" title="关闭原始文件页">✕</button>
           </div>
@@ -256,6 +274,51 @@
         <textarea class="prompt-editor-input" id="prompt-editor-input" placeholder="（使用内置默认）" spellcheck="false"></textarea>
       </div>
 
+      <!-- AI 问答主框架页：左侧会话历史 + 中间欢迎/对话 + 大输入框 -->
+      <div class="ai-view" id="ai-view" hidden>
+        <div class="ai-view-left">
+          <button class="btn btn-primary ai-newtask" id="btn-ai-newtask">＋ 新的任务</button>
+          <div class="ai-session-list" id="ai-session-list"></div>
+        </div>
+        <div class="ai-view-main">
+          <div class="ai-view-welcome" id="ai-view-welcome">请输入您要完成的任务</div>
+          <div class="ai-view-messages" id="ai-view-messages" hidden></div>
+          <div class="ai-view-status" id="ai-view-status" hidden></div>
+          <div class="ai-view-composer">
+            <div class="ai-attach-bar" id="ai-attach-bar" hidden></div>
+            <textarea id="ai-view-input" rows="2" placeholder="请输入您的问题"></textarea>
+            <div class="ai-composer-bar">
+              <div class="ai-composer-left">
+                <div class="ai-ext-picker">
+                  <button class="icon-btn ai-model-btn" id="btn-ai-model" title="选择模型（provider → 具体模型）"><span id="ai-model-label">选择模型</span></button>
+                  <div class="ai-ext-menu ai-model-menu" id="ai-menu-model" hidden></div>
+                </div>
+                <div class="ai-ext-picker">
+                  <button class="icon-btn" id="btn-ai-src" title="选择知识源（笔记/Wiki/图谱）">📚</button>
+                  <div class="ai-ext-menu" id="ai-menu-src" hidden></div>
+                </div>
+                <div class="ai-ext-picker">
+                  <button class="icon-btn" id="btn-ai-mcp" title="选择 MCP 服务器">🧩</button>
+                  <div class="ai-ext-menu" id="ai-menu-mcp" hidden></div>
+                </div>
+                <div class="ai-ext-picker">
+                  <button class="icon-btn" id="btn-ai-skill" title="选择技能">⚡</button>
+                  <div class="ai-ext-menu" id="ai-menu-skill" hidden></div>
+                </div>
+                <button class="icon-btn" id="btn-ai-attach" title="上传文件（仅用于本次提问，不写入知识库）">📎</button>
+              </div>
+              <button class="btn btn-primary" id="btn-ai-view-send">发送</button>
+            </div>
+          </div>
+          <div class="ai-view-suggest" id="ai-view-suggest">
+            <button data-q="你能做些什么">❓ 你能做些什么</button>
+            <button data-q="写一份研究报告">📄 写一份研究报告</button>
+            <button data-q="总结当前知识库">📚 总结当前知识库</button>
+            <button data-q="检索相关知识">🔍 检索相关知识</button>
+          </div>
+        </div>
+      </div>
+
       <!-- 设置页（主区域 Tab 分类） -->
       <div class="settings-view" id="settings-view" hidden>
         <div class="settings-view-header">
@@ -266,6 +329,8 @@
             <button data-tab="jobs">🗂 作业</button>
             <button data-tab="ask">💬 问答</button>
             <button data-tab="editor">✏️ 编辑器</button>
+            <button data-tab="mcp">🧩 MCP</button>
+            <button data-tab="skills">⚡ 技能</button>
           </div>
           <div class="toolbar-actions">
             <button class="icon-btn" id="btn-settings-close" title="关闭设置">✕</button>
@@ -274,43 +339,98 @@
         <div class="settings-view-body">
           <div class="settings-form">
             <div class="settings-pane" data-pane="ai">
-              <p class="modal-tip">兼容 OpenAI 接口格式（OpenAI / DeepSeek / 通义千问 / Ollama 等均可）</p>
-              <label>接口地址 (Base URL)</label>
-              <input type="text" id="set-baseurl" placeholder="" />
-              <label>API Key</label>
-              <input type="password" id="set-apikey" placeholder="sk-..." />
-              <label>模型名称</label>
-              <input type="text" id="set-model" placeholder="" />
-              <label>采样温度 temperature（0–2，留空用接口默认）</label>
+              <div class="ext-sec-head"><b>模型</b><span style="margin-left:auto"><button class="btn btn-ghost" id="btn-model-add">＋ 添加模型</button></span></div>
+              <p class="modal-tip">兼容 OpenAI 接口格式。每个模型一张卡片，默认收起，点标题行展开单独配置；第一张为<b>默认模型</b>，其余可在 AI 问答输入区按 provider 两级选择</p>
+              <div id="model-cards"></div>
+              <!-- 默认模型的字段（id 被自动保存/获取模型/provider 预设多处引用，不能重建）：
+                   渲染时整体搬进第一张卡片，重渲染前先搬回这个暂存区 -->
+              <div id="model-fields-stash" hidden>
+                <div id="primary-model-fields">
+                  <label>服务商 Provider（选择后自动带出 Base URL/模型）</label>
+                  <select id="set-provider">
+                    <option value="dashscope">阿里云百炼（DashScope）</option>
+                    <option value="ollama">Ollama（本地）</option>
+                  </select>
+                  <label>接口地址 (Base URL)</label>
+                  <input type="text" id="set-baseurl" placeholder="" />
+                  <label>API Key</label>
+                  <input type="password" id="set-apikey" placeholder="sk-..." />
+                  <label>模型名称</label>
+                  <div class="setting-row">
+                    <div class="model-input-wrap">
+                      <input type="text" id="set-model" placeholder="" />
+                      <button type="button" class="model-dd-btn" id="btn-model-dd" title="从已获取的模型中选择">▾</button>
+                      <div class="model-dd" id="model-dd" hidden></div>
+                    </div>
+                    <button class="btn btn-ghost" id="btn-fetch-models">获取模型</button>
+                  </div>
+                  <p class="modal-tip" id="model-fetch-tip">点「获取模型」拉取可用模型；点输入框右侧 ▾ 下拉选择全部已获取模型</p>
+                </div>
+              </div>
+
+              <div class="ext-sec-head" style="margin-top:16px"><b>生成参数</b></div>
+              <p class="modal-tip">对<b>所有模型</b>生效（不属于单个模型）；留空则用接口默认值</p>
+              <label>采样温度 temperature（0–2）</label>
               <input type="number" id="set-temperature" min="0" max="2" step="0.1" placeholder="默认（不设置）" />
-              <label>核采样 top_p（0–1，留空用接口默认）</label>
+              <label>核采样 top_p（0–1）</label>
               <input type="number" id="set-topp" min="0" max="1" step="0.05" placeholder="默认（不设置）" />
-              <label>最大 tokens max_tokens（留空用接口默认）</label>
+              <label>最大 tokens max_tokens</label>
               <input type="number" id="set-maxtokens" min="1" max="1000000" placeholder="默认（不设置）" />
+            </div>
+
+            <div class="settings-pane" data-pane="mcp" hidden>
+              <p class="modal-tip">配置 MCP 服务器：stdio 类型填 命令+参数+环境变量；远程类型（sse/http）填 URL。保存后生效，可在 AI 问答中勾选使用</p>
+              <div class="ext-sec-head"><b>MCP 服务器</b><span style="margin-left:auto"><button class="btn btn-ghost" id="btn-mcp-add">＋ 添加</button></span></div>
+              <p class="modal-tip">每个服务器默认收起，点标题行展开可查看其配置（只读 JSON）与连通性测试；改配置点行内「编辑」，新增点右上「＋ 添加」</p>
+              <div id="mcp-list"></div>
+            </div>
+
+            <div class="settings-pane" data-pane="skills" hidden>
+              <div class="skill-mgr-head">
+                <b>技能 Skills</b>
+                <input type="text" id="skill-search" placeholder="🔍 搜索技能" />
+                <button class="btn btn-primary" id="btn-skill-add">＋ 创建技能</button>
+              </div>
+              <p class="modal-tip">以目录方式管理技能（含 SKILL.md）。点击卡片启用/停用，可在 AI 问答中选择使用</p>
+              <div class="skill-grid" id="skill-grid"></div>
             </div>
             <div class="settings-pane" data-pane="wiki" hidden>
               <label>数据根目录（数据库/附件/Wiki 统一存储）</label>
-              <input type="text" id="set-dataroot" placeholder="默认 <安装目录>/data" />
-              <p class="modal-tip">修改后重启应用生效；留空保存恢复默认根目录</p>
+              <div class="setting-row">
+                <input type="text" id="set-dataroot" placeholder="默认 <安装目录>/data" />
+                <button class="btn btn-ghost" id="btn-apply-dataroot">应用</button>
+              </div>
+              <p class="modal-tip">改动后点「应用」生效（需重启应用）；留空应用则恢复默认根目录。此项不自动保存，避免误改导致数据位置变动</p>
               <label>Wiki 根目录（LLM Wiki）</label>
               <input type="text" id="set-wikiroot" placeholder="留空则自动探测" />
               <label>数据文件位置（SQLite）</label>
-              <input type="text" id="set-dbpath" placeholder="留空则使用默认位置" />
-              <p class="modal-tip">修改后将整个数据库迁移到新路径并立即生效；留空保存则恢复默认位置</p>
+              <div class="setting-row">
+                <input type="text" id="set-dbpath" placeholder="留空则使用默认位置" />
+                <button class="btn btn-ghost" id="btn-apply-dbpath">应用</button>
+              </div>
+              <p class="modal-tip">点「应用」将整个数据库迁移到新路径并立即生效；留空应用则恢复默认位置。此项不自动保存</p>
             </div>
             <div class="settings-pane" data-pane="jobs" hidden>
               <label>作业历史保留条数</label>
               <input type="number" id="set-maxhistory" min="1" max="500" placeholder="默认 50" />
               <label>失败重试次数（网络/5xx 等瞬时错误自动重试）</label>
               <input type="number" id="set-retries" min="0" max="5" placeholder="默认 1" />
+              <label>总并发任务数量（同时运行的作业数）</label>
+              <input type="number" id="set-maxconcurrent" min="1" max="8" placeholder="默认 3" />
               <label>网页拉取超时（秒）</label>
               <input type="number" id="set-urltimeout" min="1" max="600" placeholder="默认 30" />
               <label>来源内容截断阈值（字符，防提示词过长）</label>
               <input type="number" id="set-sourcechars" min="1000" max="1000000" placeholder="默认 60000" />
+              <label>单目录文件数上限（「＋ 添加目录」递归计数）</label>
+              <input type="number" id="set-rawdirmax" min="10" max="100000" placeholder="默认 500" />
+              <p class="modal-tip">目录引用会在每次列表刷新时实时遍历源目录，因此过大的目录会拖慢界面：超过上限的目录将拒绝添加；已存在的超限引用仅列出前 N 个并在列表顶部告警。调高会相应变慢</p>
             </div>
             <div class="settings-pane" data-pane="ask" hidden>
               <label>Wiki 问答最大引用页数</label>
               <input type="number" id="set-askpages" min="1" max="20" placeholder="默认 5" />
+              <label>工具调用最大轮数（自动选工具的智能体循环，多步任务需更多轮数）</label>
+              <input type="number" id="set-toolrounds" min="1" max="12" placeholder="默认 6" />
+              <p class="modal-tip">未在输入区勾选 MCP 时，会自动把全部已启用服务器的工具交给模型，由它自行选择并可多步调用；显式勾选则只用勾选的服务器（并强制搜索一次）</p>
               <label>日志展示行数（log.md 尾部）</label>
               <input type="number" id="set-loglines" min="1" max="500" placeholder="默认 30" />
             </div>
@@ -326,7 +446,7 @@
             </div>
             <div class="settings-view-actions">
               <span class="modal-data-path" id="data-path"></span>
-              <button class="btn btn-primary" id="btn-settings-save">保存设置</button>
+              <span class="settings-autosave" id="settings-autosave"></span>
             </div>
           </div>
         </div>
@@ -389,6 +509,7 @@
 
     <!-- AI 问答面板 -->
     <aside class="ai-panel" id="ai-panel" hidden>
+      <div class="ai-resize" id="ai-resize" title="拖动调整宽度"></div>
       <div class="ai-header">
         <span>🤖 AI 智能问答</span>
         <div>
@@ -400,10 +521,15 @@
         <label class="src-cb"><input type="checkbox" id="ai-src-notes" checked /> 📝 笔记</label>
         <label class="src-cb"><input type="checkbox" id="ai-src-wiki" checked /> 📖 Wiki</label>
         <label class="src-cb"><input type="checkbox" id="ai-src-graph" checked /> 🕸 知识图谱</label>
+        <label class="src-cb"><input type="checkbox" id="ai-src-raws" checked /> 🗄 原始文件</label>
       </div>
       <div class="ai-hint" id="ai-hint">基于你的知识库内容回答问题，发送前会自动检索相关笔记。</div>
       <div class="ai-messages" id="ai-messages"></div>
       <div class="ai-input-row">
+        <div class="ai-ext-picker">
+          <button class="icon-btn" id="btn-ai-ext" title="显式选择技能 / MCP 调用">🧩</button>
+          <div class="ai-ext-menu" id="ai-ext-menu" hidden></div>
+        </div>
         <textarea id="ai-input" rows="2" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
         <button class="btn btn-primary" id="btn-ai-send">发送</button>
       </div>
@@ -440,9 +566,10 @@
 
   <!-- 通用输入弹窗（替代 window.prompt） -->
   <div class="modal-mask" id="prompt-modal" hidden>
-    <div class="modal" style="width:360px">
+    <div class="modal" id="prompt-box" style="width:360px">
       <h3 id="prompt-title">请输入</h3>
       <input type="text" id="prompt-input" style="margin-top:12px" />
+      <textarea id="prompt-textarea" rows="10" style="margin-top:12px" hidden></textarea>
       <div class="modal-actions">
         <button class="btn btn-ghost" id="btn-prompt-cancel">取消</button>
         <button class="btn btn-primary" id="btn-prompt-ok">确定</button>
@@ -463,18 +590,51 @@
     </div>
   </div>
 
-  <!-- 本地文件/目录导入选择器（自定义浏览，可看到目录内具体文件） -->
+  <!-- 模型配置已改为卡片内联编辑（见设置→模型配置），不再使用弹窗 -->
+
+  <!-- 技能编辑弹窗 -->
+  <div class="modal-mask" id="skill-edit-modal" hidden>
+    <div class="modal" style="width:560px">
+      <h3>编辑技能</h3>
+      <label>名称</label>
+      <input type="text" id="skill-edit-name" />
+      <label>目录（含 SKILL.md）</label>
+      <input type="text" id="skill-edit-dir" readonly style="opacity:.7" />
+      <label>描述（何时使用）</label>
+      <input type="text" id="skill-edit-desc" />
+      <label>指令正文（覆盖 SKILL.md 主体，可留空）</label>
+      <textarea id="skill-edit-instr" rows="8" spellcheck="false" style="width:100%;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px"></textarea>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="btn-skill-edit-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-skill-edit-save">💾 保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask" id="mcp-json-modal" hidden>
+    <div class="modal" style="width:640px">
+      <h3 id="mcp-json-title">Configure MCP Servers</h3>
+      <p class="modal-tip" id="mcp-json-tip">cline_mcp_settings.json 格式：{ "mcpServers": { 名称: { command/args/env 或 url/type } } }</p>
+      <textarea id="mcp-json-text" rows="16" spellcheck="false" style="width:100%;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px"></textarea>
+      <div class="modal-actions">
+        <span id="mcp-json-err" style="color:var(--danger);font-size:12px"></span>
+        <button class="btn btn-ghost" id="btn-mcp-json-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-mcp-json-save">💾 保存</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-mask" id="pickdir-modal" hidden>
     <div class="modal" style="width:640px">
       <h3>导入本地文件 / 目录</h3>
-      <p class="modal-tip">点击文件夹进入浏览；勾选文件可直接导入；点「导入此目录」递归导入当前目录下全部支持格式文件</p>
+      <p class="modal-tip">点击文件夹进入浏览；勾选一个或多个文件后点「导入所选文件」；若要整目录递归导入，点「导入整个当前目录」</p>
       <div class="pickdir-path" id="pickdir-path"></div>
       <div class="pickdir-list" id="pickdir-list"></div>
       <div class="modal-actions">
         <span class="pickdir-info" id="pickdir-info"></span>
         <button class="btn btn-ghost" id="btn-pickdir-cancel">取消</button>
-        <button class="btn btn-ghost" id="btn-pickdir-files" disabled>导入所选文件</button>
-        <button class="btn btn-primary" id="btn-pickdir-dir">导入此目录</button>
+        <button class="btn btn-ghost" id="btn-pickdir-dir">导入整个当前目录</button>
+        <button class="btn btn-primary" id="btn-pickdir-files" disabled>导入所选文件</button>
       </div>
     </div>
   </div>
@@ -650,6 +810,9 @@
   <div class="toast" id="toast" hidden></div>
 
   <script src="lib/marked.min.js"></script>
+  <!-- Markdown 安全与代码高亮：marked 解析 → DOMPurify 消毒 → hljs 高亮（均为 UMD 单文件，无构建链） -->
+  <script src="lib/purify.min.js"></script>
+  <script src="lib/highlight.min.js"></script>
   <!-- 渲染进程按模块分文件加载：公共 → 笔记 → Wiki → 问答 → 作业 → 图谱 → 入口 -->
   <script src="renderer/common.js"></script>
   <script src="renderer/notes.js"></script>

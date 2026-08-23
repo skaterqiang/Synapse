@@ -1,15 +1,24 @@
 // 渲染进程·作业模块：作业管理页与作业事件刷新
 // 任务输出折叠状态（会话内）：key = jobId:taskNo
 const taskCollapsed = {};
+
+// 复制任务完整输出到剪贴板
+async function copyTaskOutput(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('已复制完整输出（' + text.length + ' 字符）');
+  } catch (_) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); toast('已复制完整输出'); } catch (e) { toast('复制失败', 2500); }
+    ta.remove();
+  }
+}
 // ---------- 作业管理（专属页面） ----------
 function showJobsView() {
-  $('wiki-viewer').hidden = true;
-  $('settings-view').hidden = true;
-  $('graph-view').hidden = true;
-  $('tpl-view').hidden = true;
-  $('raw-view').hidden = true;
-  $('prompts-view').hidden = true;
-  $('prompt-editor-view').hidden = true;
+  hideMainViews();
   promptEditing = null;
   $('jobs-view').hidden = false;
   renderEditor();
@@ -195,7 +204,15 @@ function buildJobDetail(job) {
       row.className = 'job-task ' + (t.status || '') + (t.output ? ' has-out' : '');
       const chev = t.output ? `<span class="task-chev">${collapsed ? '▸' : '▾'}</span>` : '';
       row.innerHTML = `${t.no ? `<span class="job-task-no">${t.no}</span>` : ''}${chev}${ico}<span class="job-task-label">${escapeHtml(t.label)}</span>`;
-      if (t.output) row.addEventListener('click', () => { taskCollapsed[key] = !taskCollapsed[key]; renderJobsView(); });
+      if (t.output) {
+        const cp = document.createElement('button');
+        cp.className = 'task-copy';
+        cp.textContent = '复制';
+        cp.title = '复制该任务的完整输出文本';
+        cp.addEventListener('click', (e) => { e.stopPropagation(); copyTaskOutput(String(t.output)); });
+        row.appendChild(cp);
+        row.addEventListener('click', () => { taskCollapsed[key] = !taskCollapsed[key]; renderJobsView(); });
+      }
       wrap.appendChild(row);
       if (t.output && !collapsed) {
         const pre = document.createElement('pre');

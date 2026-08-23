@@ -3,8 +3,11 @@ const { app } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const TurndownService = require('turndown');
-const { chatOnce, streamChat, extractJson } = require('../common/llm');
-const { getPrompt } = require('../common/prompts');
+const { chatOnce, streamChat, extractJson, agenticChat, ASK_PROTOCOL } = require('../ai/llm');
+const mcpClient = require('../mcp/mcpClient');
+const mcpMod = require('../mcp/mcp');
+const runner = require('../skills/runner');
+const { getPrompt } = require('../ai/prompts');
 const graph = require('../graph/graph');
 const paths = require('../common/paths');
 const { num } = require('../common/config');
@@ -294,10 +297,14 @@ async function saveRawSource(settings, { title, content, sourceUrl, auto }) {
 }
 
 // ---------- Wiki 问答：两步检索 + 流式合成 ----------
-async function wikiAsk(event, { settings, question, notesContext, includeGraph }) {
+async function wikiAsk(event, { settings, question, notesContext, rawsContext, attachContext, includeGraph, extHint, history, extMcp }) {
   try {
     const ctx = bundleContext(settings, { includeFullPages: false });
     const maxPages = num(settings, 'wikiAskMaxPages', 5, 1, 20);
+    // 选页是一次完整的非流式模型调用，本地大模型下可能很慢；
+    // 下发阶段步骤，避免界面长时间只停在“思考中”而没任何反馈
+    const pageCount = String(ctx.listing || '').split('\n').filter((x) => x.trim()).length;
+    event.sender.send('ai:step', { kind: 'thought', text: `正在从 ${pageCount} 个 Wiki 页面中筛选与问题相关的页面…` });
     const pickAnswer = await chatOnce(settings, [
       { role: 'system', content: getPrompt(settings, 'wikiPickPrompt') },
       {
@@ -315,24 +322,75 @@ async function wikiAsk(event, { settings, question, notesContext, includeGraph }
       const content = readIfExists(abs);
       if (content) loaded.push({ path: String(rel).replace(/^\//, ''), content });
     }
+    // 选页失败时回退带上 index（仅作为上下文兜底）；它不是真正的依据来源，不当引用上报
+    let pagesFallback = false;
     if (loaded.length === 0) {
-      // 回退：带上全部页面清单与 index
+      pagesFallback = true;
       loaded.push({ path: 'index.md', content: ctx.indexContent });
     }
     // 知识图谱勾选时召回本体层上下文；命中实体随引用事件一并下发，供前端展示查询明细
     const recall = includeGraph ? graph.recallFor(question) : { context: '', hits: [] };
-    event.sender.send('wiki:refs', { pages: loaded.map((x) => x.path), graph: recall.hits });
+    event.sender.send('wiki:refs', { pages: pagesFallback ? [] : loaded.map((x) => x.path), graph: recall.hits });
+    event.sender.send('ai:step', {
+      kind: 'thought',
+      text: pagesFallback
+        ? '未选中具体页面，改用 index 概览作为上下文'
+        : `已选中 ${loaded.length} 个页面：${loaded.map((x) => x.path).join('、')}`,
+    });
 
     const contextText = loaded.map((x) => `=== 页面: ${x.path} ===\n${x.content}`).join('\n\n');
     const graphCtx = recall.context;
     const notesBlock = notesContext ? `【笔记检索结果】\n${notesContext}` : '';
+    // 原始文件为关键字（grep 式）命中，未经语义校对，必须如实告知模型自行取舍，
+    // 否则容易把碰巧命中的片段当成依据
+    // 上传附件是用户本次明确指定的材料，优先级高于检索所得，
+    // 与关键字命中区分开，不应要求模型“自行取舍相关性”
+    const attachBlock = attachContext
+      ? `【用户本次上传的文件】以下内容由用户直接提供，是本次提问的主要依据，请优先依据它作答：\n${attachContext}\n`
+      : '';
+    const rawsBlock = rawsContext
+      ? `【原始文件关键字命中】以下片段由关键字检索得到，未经语义校对，可能含不相关内容：\n${rawsContext}\n`
+        + '请只采用与问题真正相关的片段，引用时注明文件名；若均不相关，就当作没有相关资料，不得强行引用。'
+      : '';
+    // 先装载 MCP 工具，再定提示词策略：
+    // 未勾选时自动装载全部 enabled 服务器（由模型自行选工具）；
+    // 装载失败→剔除提示词里的 MCP 描述并下发告警步骤，避免模型在无工具时“声称已搜索”
+    const { cfgs: mcpCfgs } = mcpMod.resolveMcpCfgs({ settings, extMcp });
+    if (mcpCfgs.length) event.sender.send('ai:step', { kind: 'thought', text: `正在装载 ${mcpCfgs.length} 个 MCP 服务器的工具…` });
+    const tools = [];
+    const toolErrs = [];
+    for (const cfg of mcpCfgs) {
+      try { tools.push(...await mcpMod.listToolsCached(cfg, settings)); }
+      catch (e) { toolErrs.push(`${cfg.name || cfg.url}: ${e.message}`); }
+    }
+    let hint = extHint || '';
+    if (!tools.length && mcpCfgs.length) {
+      hint = hint.replace(/可用 MCP 服务器：[^;。]*/g, '').replace(/【可用扩展能力】\s*[;；]\s*/, '【可用扩展能力】');
+      if (!/启用技能|可用 MCP/.test(hint)) hint = '';
+      event.sender.send('ai:step', { kind: 'thought', text: `⚠️ MCP 工具装载失败（${toolErrs.join('；')}），本轮不会调用外部工具` });
+    }
+    const toolRule = tools.length
+      ? '【工具使用约定】本会话已接入外部工具（function calling），可用工具：'
+        + tools.map((t) => t.function && t.function.name).filter(Boolean).join('、') + '。'
+        + '凡涉及实时/最新/事实性/外部数据的问题，或上述页面与笔记不足以回答时，'
+        + '必须先自行选择并调用合适的工具获取依据，再基于工具结果作答并注明来源；'
+        + '不得仅因“知识库没有”就拒答。工具返回空结果时如实说明。未实际调用工具时，不得声称“已搜索/已联网/已调用”。\n\n'
+      : '';
+    // 已启用的 MCP 默认全部参与，调哪个工具由模型自行判断（不再无条件强制搜索）
+    // 可执行技能（docx/pptx/xlsx）激活时注入脚本执行工具
+    const execTool = runner.execToolIfActive(settings);
+    if (execTool) tools.push(execTool);
+    if (tools.length) event.sender.send('ai:step', { kind: 'thought', text: `已装载 ${tools.length} 个工具，由模型自行选择是否调用` });
+    event.sender.send('ai:step', { kind: 'thought', text: '正在生成回答…' });
     const messages = [
       {
         role: 'system',
-        content: `${getPrompt(settings, 'wikiAskPrompt')}\n以下是知识库中的相关页面：\n\n${contextText}\n\n${notesBlock ? notesBlock + '\n\n' : ''}${graphCtx ? graphCtx + '\n\n' : ''}请基于上述内容回答用户问题，使用 Markdown 格式；引用具体页面时使用形如 [页面标题](/路径.md) 的链接。若内容中没有答案，请如实说明。`,
+        content: `${getPrompt(settings, 'wikiAskPrompt')}\n以下是知识库中的相关页面：\n\n${contextText}\n\n${attachBlock ? attachBlock + '\n\n' : ''}${notesBlock ? notesBlock + '\n\n' : ''}${rawsBlock ? rawsBlock + '\n\n' : ''}${graphCtx ? graphCtx + '\n\n' : ''}${hint ? hint + '\n\n' : ''}${toolRule}请基于上述内容回答用户问题，使用 Markdown 格式；引用具体页面时使用形如 [页面标题](/路径.md) 的链接。若内容中没有答案，请如实说明。\n\n${ASK_PROTOCOL}`,
       },
+      ...(Array.isArray(history) ? history : []),
       { role: 'user', content: question },
     ];
+    if (tools.length) return agenticChat(event, settings, messages, tools, (t, args) => (t._builtin === 'run' ? runner.runNodeScript(args) : mcpClient.callTool(t._server, settings, t._tool, args)));
     await streamChat(event, settings, messages);
   } catch (err) {
     event.sender.send('ai:error', err.message);

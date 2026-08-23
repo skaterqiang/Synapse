@@ -1,12 +1,12 @@
 // Ingest 编排：读来源 → 匹配领域模版 → AI 编译页面计划 → 落盘（拆分步骤，供作业系统分阶段上报）
 const path = require('path');
 const fs = require('fs');
-const { chatOnce, extractJson } = require('../common/llm');
+const { chatOnce, extractJson } = require('../ai/llm');
 const { safeJoin, readIfExists, appendLog, OKF_TYPES, rebuildIndex } = require('./wiki');
 const { readRawText } = require('./files');
 const { matchTemplate, templateGuidance, listTemplates } = require('./templates');
 const { num } = require('../common/config');
-const { getPrompt } = require('../common/prompts');
+const { getPrompt } = require('../ai/prompts');
 
 async function loadIngestRaws(settings, ctx, rawPaths) {
   const raws = [];

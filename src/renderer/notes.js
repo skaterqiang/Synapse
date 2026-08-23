@@ -147,6 +147,7 @@ function renderFolderSelect() {
 function renderEditor() {
   const empty = $('editor-empty');
   const content = $('editor-content');
+  syncNoteListVisibility();
   // 作业管理页打开时，编辑区让位
   if (!$('jobs-view').hidden) {
     empty.hidden = true;
@@ -195,6 +196,12 @@ function renderEditor() {
     content.hidden = true;
     return;
   }
+  // AI 问答主页打开时，编辑区让位
+  if ($('ai-view') && !$('ai-view').hidden) {
+    empty.hidden = true;
+    content.hidden = true;
+    return;
+  }
   const note = currentNote();
   if (!note) {
     empty.hidden = false;
@@ -217,6 +224,7 @@ function renderEditor() {
 
   applyEditorMode();
   updatePreview();
+  syncNoteListVisibility();
 }
 
 function applyEditorMode() {

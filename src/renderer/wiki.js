@@ -124,6 +124,8 @@ function renderWikiFm(fm) {
 async function openWikiPage(relPath) {
   const res = await window.kb.wikiRead({ settings: state.settings, relPath });
   if (!res.ok) { toast('无法打开：' + res.error); return; }
+  // 从 AI 问答等主视图跳转时先统一让位，避免阅读器被旧视图遮住导致“点不动”
+  hideMainViews({ keepWikiViewer: true });
   state.wikiPage = relPath;
   const { fm, body } = parseWikiFrontmatter(res.content);
   const pageTitle = fm.title || '';
@@ -135,11 +137,6 @@ async function openWikiPage(relPath) {
   $('wiki-raw-text').value = res.content;
   $('wiki-body').hidden = false;
   $('wiki-raw-text').hidden = true;
-  $('jobs-view').hidden = true;
-  $('settings-view').hidden = true;
-  $('graph-view').hidden = true;
-  $('tpl-view').hidden = true;
-  $('raw-view').hidden = true;
   $('wiki-viewer').hidden = false;
   renderEditor();
   renderNoteList();
@@ -357,13 +354,7 @@ async function runLint() {
 let tplEditingId = null; // 当前编辑的模版 id（null = 新建）
 
 function showTplView() {
-  $('wiki-viewer').hidden = true;
-  $('settings-view').hidden = true;
-  $('jobs-view').hidden = true;
-  $('graph-view').hidden = true;
-  $('raw-view').hidden = true;
-  $('prompts-view').hidden = true;
-  $('prompt-editor-view').hidden = true;
+  hideMainViews();
   promptEditing = null;
   $('tpl-view').hidden = false;
   renderEditor();
@@ -654,13 +645,7 @@ function bindTplEvents() {
 
 // ---------- 原始文件管理 ----------
 function showRawView() {
-  $('wiki-viewer').hidden = true;
-  $('settings-view').hidden = true;
-  $('jobs-view').hidden = true;
-  $('graph-view').hidden = true;
-  $('tpl-view').hidden = true;
-  $('prompts-view').hidden = true;
-  $('prompt-editor-view').hidden = true;
+  hideMainViews();
   promptEditing = null;
   $('raw-view').hidden = false;
   renderEditor();
@@ -675,7 +660,12 @@ function hideRawView() {
 }
 
 async function loadRaws() {
-  state.raws = (await window.kb.rawList(state.settings)) || [];
+  // 兼容旧形状（直接返回数组）与新形状 {list, truncated}
+  const res = await window.kb.rawList(state.settings);
+  const list = Array.isArray(res) ? res : ((res && res.list) || []);
+  state.raws = list;
+  state.rawTruncated = (!Array.isArray(res) && res && res.truncated) || [];
+  state.rawMaxDirFiles = (!Array.isArray(res) && res && res.maxDirFiles) || 500;
   $('count-raws').textContent = state.raws.length || '';
   $('raw-stats').textContent = state.raws.length ? `共 ${state.raws.length} 个原始来源` : '';
   renderRawList();
@@ -690,8 +680,27 @@ function fmtBytes(n) {
 function renderRawList() {
   const box = $('raw-list');
   box.innerHTML = '';
+  // 已存在的超限目录引用：置顶告警并给一键解除（仅列出了前 N 个，且每次刷新都要遍历）
+  for (const t of (state.rawTruncated || [])) {
+    const limit = state.rawMaxDirFiles || 500;
+    const warn = document.createElement('div');
+    warn.className = 'raw-warn';
+    const totalTxt = t.total && t.total > t.shown ? `约 ${t.total}${t.total >= limit * 20 ? '+' : ''} 个` : '过多';
+    warn.innerHTML = `<span class="raw-warn-ico">⚠️</span>
+      <span class="raw-warn-txt">目录 <b>${escapeHtml(t.dir)}</b> 含文件${totalTxt}，超过上限 ${limit}，当前仅列出前 ${t.shown} 个。
+      它会在每次刷新时被遍历，建议解除后改选具体子目录；或在设置→作业中调高上限。</span>`;
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-ghost raw-warn-act';
+    btn.textContent = '解除该目录';
+    btn.addEventListener('click', () => removeRawDir(t.dir, t.dir, t.shown));
+    warn.appendChild(btn);
+    box.appendChild(warn);
+  }
   if (!state.raws.length) {
-    box.innerHTML = '<div class="raw-empty">暂无原始来源。点右上「＋ 添加文件 / ＋ 添加目录」导入本地数据，或在「📖 LLM Wiki」点 ＋ 吸收网页/文本。</div>';
+    const empty = document.createElement('div');
+    empty.className = 'raw-empty';
+    empty.textContent = '暂无原始来源。点右上「＋ 添加文件/目录」导入本地数据（可勾选单个文件，也可整目录导入），或在「📖 LLM Wiki」点 ＋ 吸收网页/文本。';
+    box.appendChild(empty);
     return;
   }
   const makeRow = (r, indent) => {
@@ -773,20 +782,26 @@ function renderRawList() {
       fh.style.paddingLeft = (10 + depth * 14) + 'px';
       fh.title = '右键：对该目录提取 Wiki / 知识图谱';
       fh.innerHTML = `<span class="chevron${collapsed ? ' collapsed' : ''}">▾</span> 📁 ${escapeHtml(name)} <span class="wiki-group-count">${count}</span>`;
+      // 根目录行提供可见的「解除」按钮（仅移除引用，不删本机文件）
+      if (rootDir) {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-ghost danger raw-dir-del';
+        btn.textContent = '解除';
+        btn.title = '解除整个目录引用（不删除本机文件）';
+        btn.addEventListener('click', (e) => { e.stopPropagation(); removeRawDir(rootDir, name, count); });
+        fh.appendChild(btn);
+      }
       fh.addEventListener('click', () => { rawTreeCollapsed[key] = !collapsed; renderRawList(); });
       // 右键菜单：对整个目录提取 Wiki / 知识图谱；根目录额外支持整个目录解除引用
       fh.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
         const paths = files.map((f) => f.path);
+        // 右键菜单只管提取；解除引用走目录行右侧的可见「解除」按钮，避免两处重复
         const items = [
           { label: `📝 提取 Wiki（${paths.length} 个文件）`, action: () => ingestRawPaths(paths, name) },
           { label: `🕸 提取知识图谱（${paths.length} 个文件）`, action: () => graphRawPaths(paths, name) },
         ];
-        if (rootDir) {
-          items.push({ sep: true });
-          items.push({ label: `🗑 解除整个目录引用（${paths.length} 个文件，不删本机文件）`, danger: true, action: () => removeRawDir(rootDir, name, paths.length) });
-        }
         openCtxMenu(e.clientX, e.clientY, items);
       });
       return fh;
@@ -1017,12 +1032,14 @@ async function browseTo(dir) {
   pickdirState.supported = res.supported || [];
   pickdirState.selected = new Set();
   state.lastBrowseDir = res.dir || '';
-  renderPickdirPath(res.dir, res.parent);
+  renderPickdirPath(res.dir);
   renderPickdirList(res);
   updatePickdirActions();
 }
 
-// 路径面包屑：逐段可点击回跳
+// 路径面包屑：逐段可点击回跳。
+// 路径形式按当前目录自身判定（盘符/UNC 为 Windows，否则 POSIX）：
+// 写死反斜杠会在 macOS/Linux 把 /Users/x 拼成相对路径 Users\x 而 ENOENT
 function renderPickdirPath(dir) {
   const el = $('pickdir-path');
   el.innerHTML = '';
@@ -1032,10 +1049,19 @@ function renderPickdirPath(dir) {
   root.addEventListener('click', () => browseTo(''));
   el.appendChild(root);
   if (!dir) return;
+  const isUnc = dir.startsWith('\\\\');
+  const isWin = isUnc || /^[a-zA-Z]:[\\/]/.test(dir);
+  const sepChar = isWin ? '\\' : '/';
   const segs = dir.split(/[\\/]/).filter(Boolean);
   let acc = '';
   for (const s of segs) {
-    acc = acc ? acc + '\\' + s : (s.endsWith(':') ? s + '\\' : s);
+    if (!acc) {
+      if (isUnc) acc = '\\\\' + s;
+      else if (isWin) acc = s.endsWith(':') ? s + '\\' : s;
+      else acc = '/' + s;
+    } else {
+      acc = acc.endsWith(sepChar) ? acc + s : acc + sepChar + s;
+    }
     const target = acc;
     const sep = document.createElement('span');
     sep.className = 'sep';
@@ -1096,20 +1122,56 @@ function renderPickdirList(res) {
 
 function updatePickdirActions() {
   const n = pickdirState.selected.size;
-  $('pickdir-info').textContent = pickdirState.dir ? '当前目录：' + pickdirState.dir : '请选择磁盘';
-  $('btn-pickdir-files').disabled = !n;
-  $('btn-pickdir-files').textContent = n ? `导入所选文件（${n}）` : '导入所选文件';
-  $('btn-pickdir-dir').disabled = !pickdirState.dir;
+  const info = $('pickdir-info');
+  // 长路径从头部省略，保留更关键的尾部（当前文件夹名）；完整路径放 tooltip
+  const shortPath = (p, max = 52) => (p.length > max ? '…' + p.slice(-max) : p);
+  info.textContent = pickdirState.dir ? '当前目录：' + shortPath(pickdirState.dir) : '请选择一个入口目录';
+  info.title = pickdirState.dir || '';
+  const bf = $('btn-pickdir-files');
+  const bd = $('btn-pickdir-dir');
+  bf.disabled = !n;
+  bf.textContent = n ? `导入所选文件（${n}）` : '导入所选文件';
+  bd.disabled = !pickdirState.dir;
+  // 主按钮跟随当前选择：已勾选文件时以「导入所选文件」为主，
+  // 避免勾了文件却误点最显眼的蓝色按钮把整个目录导了进来
+  bf.className = 'btn ' + (n ? 'btn-primary' : 'btn-ghost');
+  bd.className = 'btn ' + (n ? 'btn-ghost' : 'btn-primary');
+}
+
+// 本地导入的统一入口：桌面端走浏览弹窗（文件与目录都能选）；
+// 网页模式拿不到本机路径，退回浏览器文件上传
+async function addRawLocal() {
+  if (window.__KB_WEB__) return addRawFiles();
+  return addRawDir();
 }
 
 async function addRawDir() {
-  if (window.__KB_WEB__) { toast('网页模式不支持导入本地文件，请用「＋ 添加文件」上传', 3200); return; }
+  if (window.__KB_WEB__) { toast('网页模式无法浏览本机目录，已改为文件上传', 3200); return addRawFiles(); }
   const paths = await openPickDir();
   if (!paths || !paths.length) return;
   toast('正在导入所选文件/目录，请稍候…', 3000);
   const r = await window.kb.rawAddDir({ settings: state.settings, paths });
   if (!r.ok) { toast('导入失败：' + r.error, 4000); return; }
-  toast(`已导入 ${r.added} 个文件${r.skipped ? `，超上限跳过 ${r.skipped} 个` : ''}${r.failed.length ? `，${r.failed.length} 个失败` : ''}`, 3600);
+  const failed = r.failed || [];
+  // 超上限等拒绝原因需直接告知，否则只看到“N 个失败”无法得知为何
+  if (failed.length) {
+    const first = failed[0];
+    toast(`${r.added ? `已导入 ${r.added} 个文件；` : ''}${failed.length} 项未导入：${first.error || ''}${failed.length > 1 ? `（共 ${failed.length} 项）` : ''}`, 7000);
+  } else {
+    toast(`已导入 ${r.added} 个文件${r.skipped ? `，超上限跳过 ${r.skipped} 个` : ''}`, 3600);
+  }
+  loadRaws();
+}
+
+// 添加链接：拉取网页保存为原始来源（存 raw/）
+async function addRawUrl() {
+  const url = await askInput('输入网页链接（http/https）：', '', { placeholder: 'https://example.com/article' });
+  if (!url) return;
+  if (!/^https?:\/\//i.test(url.trim())) { toast('链接需以 http:// 或 https:// 开头', 3000); return; }
+  toast('正在拉取网页…', 2500);
+  const r = await window.kb.rawAddSource({ settings: state.settings, url: url.trim() });
+  if (!r.ok) { toast('拉取失败：' + r.error, 4000); return; }
+  toast('已添加链接来源');
   loadRaws();
 }
 
@@ -1132,8 +1194,8 @@ function bindRawEvents() {
   });
   $('btn-raw-close').addEventListener('click', hideRawView);
   $('btn-raw-refresh').addEventListener('click', loadRaws);
-  $('btn-raw-add-files').addEventListener('click', addRawFiles);
-  $('btn-raw-add-dir').addEventListener('click', addRawDir);
+  $('btn-raw-add-dir').addEventListener('click', addRawLocal);
+  $('btn-raw-add-url').addEventListener('click', addRawUrl);
   // 导入选择器弹窗：导入所选文件 / 导入当前目录 / 取消（点遮罩关闭）
   $('btn-pickdir-cancel').addEventListener('click', () => closePickDir(null));
   $('btn-pickdir-files').addEventListener('click', () => closePickDir([...pickdirState.selected]));

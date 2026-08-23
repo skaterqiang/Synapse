@@ -1,7 +1,7 @@
 // 领域模版领域层：模版存储（SQLite kv）、AI 自动生成、吸收时的领域匹配与提取约束注入
 const db = require('../common/db');
-const { chatOnce, extractJson } = require('../common/llm');
-const { getPrompt } = require('../common/prompts');
+const { chatOnce, extractJson } = require('../ai/llm');
+const { getPrompt } = require('../ai/prompts');
 
 const KV_KEY = 'domain_templates';
 

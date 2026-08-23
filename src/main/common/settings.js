@@ -9,4 +9,9 @@ function getSettings() {
   }
 }
 
-module.exports = { getSettings };
+function saveSettings(s) {
+  db.setKv('settings', JSON.stringify(s));
+  db.flush();
+}
+
+module.exports = { getSettings, saveSettings };

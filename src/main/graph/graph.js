@@ -2,9 +2,9 @@
 // 存储：整图 JSON 存于 SQLite kv 表（key='graph'），个人知识库图谱规模小，整体读写开销可忽略
 const db = require('../common/db');
 const notesStore = require('../notes/store');
-const { chatOnce, extractJson, streamChat } = require('../common/llm');
+const { chatOnce, extractJson, streamChat } = require('../ai/llm');
 const { buildTasks } = require('../jobs/tasks');
-const { getPrompt } = require('../common/prompts');
+const { getPrompt } = require('../ai/prompts');
 
 // ---------- 本体层定义（抽取与展示共用的受控词表，可增删改查，持久化在 kv） ----------
 const ONTO_KEY = 'ontology';
@@ -288,15 +288,18 @@ function recallFor(question, maxNodes = 8) {
     .map((n) => {
       const name = n.name.toLowerCase();
       const desc = (n.desc || '').toLowerCase();
-      let score = 0;
-      if (q.includes(name)) score += 5;
+      let nameScore = 0;
+      let descScore = 0;
+      // 全名被问题包含（名称太短时不算，避免单字误命中）
+      if (name.length >= 2 && q.includes(name)) nameScore += 5;
       for (const t of tokens) {
-        if (name.includes(t)) score += 2;
-        if (desc.includes(t)) score += 1;
+        if (name.includes(t)) nameScore += 2;
+        if (desc.includes(t)) descScore += 1;
       }
-      return { n, score };
+      return { n, score: nameScore + descScore, nameScore };
     })
-    .filter((x) => x.score > 0)
+    // 必须名称命中才算召回：仅 desc 里出现「能力」「方法」这类通用词不足以构成引用依据
+    .filter((x) => x.nameScore > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, maxNodes);
   if (!scored.length) return { context: '', hits: [] };
