@@ -107,7 +107,8 @@ function registerIpc(getWindow) {
         + '- 当问题涉及实时/最新/事实性信息（产品规格、新闻、价格、天气、地点等），或提供的知识库/笔记内容不足以回答时，'
         + '必须先自行选择并调用合适的工具获取依据，再基于工具结果作答并注明来源。\n'
         + '- 不得仅因“知识库没有”就直接拒答；先尝试工具。多个子问题可分多步多次调用不同工具。\n'
-        + '- 未实际调用工具时，不得声称“已搜索/已联网/已查询”；工具返回为空时如实说明。',
+        + '- 未实际调用工具时，不得声称“已搜索/已联网/已查询”；工具返回为空时如实说明。\n'
+        + '- 凡有“让我搜索/查询”之类意图，必须立即真实发起工具调用，不得只口头宣告后直接结束回答。',
     } : null;
     const all = [...sysMsgs, ...(toolPolicy ? [toolPolicy] : []), ...messages];
     if (tools.length) return llm.agenticChat(event, payload.settings, all, tools, (t, args) => (t._builtin === 'run' ? require('./skills/runner').runNodeScript(args) : mcpMod.callTool(t._server, payload.settings, t._tool, args)));

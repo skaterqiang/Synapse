@@ -250,6 +250,8 @@ async function agenticChat(event, settings, messages, tools, toolRouter) {
   const toolMap = new Map((tools || []).map((t) => [t.function.name, t]));
   // 工具循环轮数（settings.maxToolRounds 可配）：多步任务（先搜索再查地图再汇总）需要多于 4 轮
   const maxRounds = num(settings, 'maxToolRounds', 6, 1, 12);
+  // “只说不做”补偿标记：小模型常口头说“让我搜索”却不发 tool_calls，检测到后催一次，最多一次避免乒乓循环
+  let nudged = false;
   // 停止控制：用户点“停止”时 abort 当前请求并在下一轮循环/工具间隙退出，避免继续白跑工具轮
   const ctrl = new AbortController();
   aiAbort = ctrl;
@@ -329,6 +331,17 @@ async function agenticChat(event, settings, messages, tools, toolRouter) {
       let resultsText = toolResults.join('\n\n');
       if (resultsText.length > 12000) resultsText = resultsText.slice(0, 12000) + '\n…（结果过长已截断）';
       msgs.push({ role: 'user', _toolResume: true, content: `以上是刚刚工具调用返回的最新结果。请基于这些结果直接回答，若结果已足够则不要再调用工具。\n\n${resultsText}\n\n请继续回答我最初的问题：${lastUserContent}` });
+      continue;
+    }
+    // “只说不做”检测：正文表达搜索/查询意图却没发 tool_calls（小模型常见）→
+    // 把该段正文记入上下文并催一次真实工具调用；正文已实时流出，用户可见，不撤回；
+    // 仅在仍有剩余轮次且未曾催过时触发，避免无限循环
+    const c = acc.content || '';
+    const wantsSearch = /搜索|检索|联网|查找|查询|搜一下|查一下/.test(c) && /让我|我来|尝试|试试|接下来|准备|先去|现在去/.test(c);
+    if (!nudged && openaiTools && round < maxRounds - 1 && wantsSearch) {
+      nudged = true;
+      msgs.push({ role: 'assistant', content: c });
+      msgs.push({ role: 'user', content: '注意：你刚才表示要去搜索/查询，但还没有实际调用任何工具。请不要只做口头说明，现在就立即调用合适的工具（如联网搜索）获取信息，再基于工具结果给出最终回答。' });
       continue;
     }
     if (acc.content && !streamed) event.sender.send('ai:chunk', acc.content);
