@@ -343,14 +343,14 @@ function renderSidebar() {
   const renderFolder = (folder, depth) => {
     const children = childrenOf(folder.id);
     const collapsed = !!state.folderCollapsed[folder.id];
-    // 🗑 垃圾桶是虚拟目录：未分类（folderId=null）的笔记都计入它
+    // 🗑 垃圾桶是虚拟目录：真正被删除（trashed）的笔记计入它；根目录未分类笔记不再混入
     const count = folder.id === '__trash__'
-      ? state.notes.filter((n) => !n.folderId).length
+      ? state.notes.filter((n) => !!n.trashed).length
       : state.notes.filter((n) => descendantIds(folder.id).has(n.folderId)).length;
     // 直属笔记（叶子节点）：参与“可展开”判定，展开符号统一为小三角（▾/▸）
-    // 🗑 垃圾桶是虚拟目录：它的“直属”笔记即未分类（folderId=null），展开可查看
+    // 🗑 垃圾桶是虚拟目录：它的“直属”笔记即被删除（trashed）的，展开可查看
     const ownNotes = state.notes
-      .filter((n) => (folder.id === '__trash__' ? !n.folderId : n.folderId === folder.id))
+      .filter((n) => (folder.id === '__trash__' ? !!n.trashed : n.folderId === folder.id))
       .sort((a, b) => (a.title || '').localeCompare(b.title || '', 'zh'));
     const hasKids = children.length + ownNotes.length > 0;
     const isTrash = folder.id === '__trash__';
@@ -371,7 +371,7 @@ function renderSidebar() {
       e.preventDefault();
       e.stopPropagation();
       if (folder.id === '__trash__') {
-        const n = state.notes.filter((x) => !x.folderId).length;
+        const n = state.notes.filter((x) => !!x.trashed).length;
         openCtxMenu(e.clientX, e.clientY, [{ label: `清空垃圾桶（${n} 篇，不可恢复）`, action: emptyTrash }]);
         return;
       }
@@ -426,6 +426,7 @@ function renderSidebar() {
           if (descIds.has(n.folderId)) {
             n.trashFrom = folderRelPath(n.folderId);
             n.folderId = null;
+            n.trashed = true;
           }
         });
         state.folders = state.folders.filter((f) => !descIds.has(f.id));
@@ -509,29 +510,8 @@ function renderSidebar() {
 }
 
 // ================= 设置 =================
-const EDITOR_MODES = ['edit', 'split', 'preview'];
+// EDITOR_MODES / NUM_SETTING_FIELDS / PROVIDER_PRESETS / DEFAULT_PROVIDER 统一定义于 renderer/constants.js
 
-// 数值配置项表单：id 与钳制范围（留空时主进程回退默认值）
-const NUM_SETTING_FIELDS = {
-  maxJobsHistory: ['set-maxhistory', 1, 500],
-  chatRetries: ['set-retries', 0, 5],
-  maxConcurrentJobs: ['set-maxconcurrent', 1, 8],
-  graphConcurrency: ['set-graphconc', 1, 8],
-  urlFetchTimeout: ['set-urltimeout', 1, 600],
-  sourceMaxChars: ['set-sourcechars', 1000, 1000000],
-  rawDirMaxFiles: ['set-rawdirmax', 10, 100000],
-  maxToolRounds: ['set-toolrounds', 1, 12],
-  logTailLines: ['set-loglines', 1, 500],
-  mineruTimeout: ['set-minerutimeout', 10, 21600],
-};
-
-// 服务商预设：仅支持阿里云百炼与 Ollama（默认阿里云）
-// label 用于模型选择器分组展示；suggest 仅作为「添加模型」时的候选提示，实际可用模型以用户配置为准
-const PROVIDER_PRESETS = {
-  dashscope: { label: '阿里云百炼', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: ((window.kb && window.kb.defaults) || {}).model || 'qwen3.8-max', suggest: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-long'] },
-  ollama: { label: 'Ollama（本地）', url: 'http://localhost:11434/v1', model: '', suggest: ['qwen2.5', 'llama3.1', 'deepseek-r1'] },
-};
-const DEFAULT_PROVIDER = 'dashscope';
 // 归一：遇到已下线或非法的 provider 值（如历史配置）一律回退阿里云
 const normalizeProvider = (p) => (PROVIDER_PRESETS[p] ? p : DEFAULT_PROVIDER);
 const providerLabel = (p) => ((PROVIDER_PRESETS[p] && PROVIDER_PRESETS[p].label) || p || DEFAULT_PROVIDER);
@@ -1207,7 +1187,7 @@ async function addSkillByDir() {
   toast('已添加技能：' + r.name);
 }
 // ---------- 技能在线安装：兼容 npx skills add / skills.sh / GitHub 仓库 ----------
-const DEFAULT_SKILL_INSTALL_CMD = 'npx skills add https://github.com/anthropics/skills --skill docx';
+// DEFAULT_SKILL_INSTALL_CMD 定义于 renderer/constants.js
 let skillInstalling = false;
 function openSkillInstall() {
   const logBox = $('skill-install-log');
@@ -1830,25 +1810,25 @@ async function openMineruTestDir() {
   }
 }
 
-// 清空垃圾桶：永久删除全部未分类笔记（磁盘文件由 persist→saveStore 同步清理）
+// 清空垃圾桶：永久删除全部被删除（trashed）的笔记（磁盘文件由 persist→saveStore 同步清理）
 function emptyTrash() {
-  const count = state.notes.filter((n) => !n.folderId).length;
+  const count = state.notes.filter((n) => !!n.trashed).length;
   if (!count) { toast('垃圾桶已经是空的', 2500); return; }
   if (!confirm(`清空垃圾桶？${count} 篇笔记将被永久删除，不可恢复。`)) return;
-  state.notes = state.notes.filter((n) => n.folderId);
+  state.notes = state.notes.filter((n) => !n.trashed);
   if (state.selectedNoteId && !state.notes.some((n) => n.id === state.selectedNoteId)) state.selectedNoteId = null;
   persist();
   renderAll();
   toast(`已清空垃圾桶，删除 ${count} 篇笔记`, 3000);
 }
 
-// 一键自动安装 MinerU：无环境时在 <安装目录>/plugin/mineru/ 下建 venv、装 mineru、生成包装脚本，
+// 一键自动安装 MinerU：无环境时在 <安装目录>/plugins/mineru/ 下建 venv、装 mineru、生成包装脚本，
 // 完成后自动回填「文档转换命令」并切到 MinerU 解析，一步完成配置；日志复用测试日志展示组件
 let mineruInstalling = false;
 async function installMineruAuto() {
   if (mineruInstalling) return;
   if (!window.kb.mineruInstall) { toast('当前环境不支持一键安装', 3000); return; }
-  if (!confirm('将在 Synapse 安装目录下新建 plugin/mineru 目录，自动创建 Python 虚拟环境并安装 mineru（依赖较多，可能 5–20 分钟）。安装完成后自动回填转换命令并切换到 MinerU 解析。继续？')) return;
+  if (!confirm('将在 Synapse 安装目录下新建 plugins/mineru 目录，自动创建 Python 虚拟环境并安装 mineru（依赖较多，可能 5–20 分钟）。安装完成后自动回填转换命令并切换到 MinerU 解析。继续？')) return;
   mineruInstalling = true;
   const btn = $('btn-install-mineru');
   const tip = $('mineru-install-tip');

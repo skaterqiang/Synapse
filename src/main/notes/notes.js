@@ -47,12 +47,12 @@ async function pickImage(getWindow, { imagesOnly } = {}) {
 }
 
 // 图片落盘：保存到该笔记自身目录（<note根>/<目录>/<笔记标题>/），返回绝对路径供 kb-asset 引用
-async function saveImage({ dataUrl, name, title, folderId }) {
+async function saveImage({ dataUrl, name, title, folderId, trashed }) {
   try {
     const m = /^data:(image\/[a-z0-9+.-]+);base64,(.+)$/i.exec(String(dataUrl || ''));
     if (!m) return { ok: false, error: '图片数据无效' };
     const safe = (s, dft) => (String(s || '').trim().replace(/[\\/:*?"<>|]/g, '-').slice(0, 40) || dft);
-    const dir = store.noteAssetDir(title, folderId);
+    const dir = store.noteAssetDir(title, folderId, !!trashed);
     fs.mkdirSync(dir, { recursive: true });
     const target = path.join(dir, safe(name, 'image.png'));
     fs.writeFileSync(target, Buffer.from(m[2], 'base64'));
@@ -81,9 +81,9 @@ async function scan({ settings, dataUrl }) {
 }
 
 // 在系统文件管理器中打开笔记所在文件夹
-async function openNoteFolder({ folderId }) {
+async function openNoteFolder({ folderId, trashed }) {
   if (!shell) return { ok: false, error: '当前环境不支持打开本地文件夹' };
-  const dir = store.notesDirFor(folderId);
+  const dir = store.notesDirFor(folderId, !!trashed);
   fs.mkdirSync(dir, { recursive: true });
   const err = await shell.openPath(dir);
   if (err) return { ok: false, error: err };

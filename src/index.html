@@ -941,13 +941,14 @@
   <!-- Markdown 安全与代码高亮：marked 解析 → DOMPurify 消毒 → hljs 高亮（均为 UMD 单文件，无构建链） -->
   <script src="lib/purify.min.js"></script>
   <script src="lib/highlight.min.js"></script>
-  <!-- 渲染进程按模块分文件加载：公共 → 笔记/原始文件/模版 → 问答 → 作业 → 图谱 → 入口 -->
-  <script src="renderer/common.js?v=20260829b"></script>
-  <script src="renderer/notes.js?v=20260828h"></script>
-  <script src="renderer/raws.js?v=20260828h"></script>
-  <script src="renderer/chat.js?v=20260828h"></script>
-  <script src="renderer/jobs.js?v=20260828h"></script>
-  <script src="renderer/graph.js?v=20260828h"></script>
-  <script src="renderer/app.js?v=20260828h"></script>
+  <!-- 渲染进程按模块分文件加载：常量 → 公共 → 笔记/原始文件/模版 → 问答 → 作业 → 图谱 → 入口 -->
+  <script src="renderer/constants.js?v=20260829c"></script>
+  <script src="renderer/common.js?v=20260829c"></script>
+  <script src="renderer/notes.js?v=20260829c"></script>
+  <script src="renderer/raws.js?v=20260829c"></script>
+  <script src="renderer/chat.js?v=20260829c"></script>
+  <script src="renderer/jobs.js?v=20260829c"></script>
+  <script src="renderer/graph.js?v=20260829c"></script>
+  <script src="renderer/app.js?v=20260829c"></script>
 </body>
 </html>

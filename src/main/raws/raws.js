@@ -5,27 +5,24 @@ const db = require('../common/db');
 const { num } = require('../common/config');
 const { rawsRoot, safeJoin } = require('./root');
 const { FILE_EXTENSIONS, readRawTextForScan, fetchUrlTitleRich, isPlaceholderTitle } = require('./files');
+// kv 键 / 扫描过滤等常量统一定义于 common/constants.js
+const { RAW_REFS_KEY, RAW_DIRS_KEY, RAW_EXCLUDED_KEY, RAW_URLS_KEY, RAW_INGESTED_KEY, SKIP_DIRS, SKIP_FILES, DEFAULT_MAX_DIR_FILES } = require('../common/constants');
 
 // 本机引用（kv 存储，不复制文件）：
 //  raw_refs 单文件引用；raw_dir_refs 目录引用（实时遍历，随源变化）；raw_excluded 目录引用下被用户移除的路径
-const REFS_KEY = 'raw_refs';
-const DIRS_KEY = 'raw_dir_refs';
-const EXCL_KEY = 'raw_excluded';
-const URLS_KEY = 'raw_url_refs';
-function getRefs() { try { return JSON.parse(db.getKv(REFS_KEY) || '[]'); } catch (_) { return []; } }
-function saveRefs(list) { db.setKv(REFS_KEY, JSON.stringify(list)); db.flush(); }
-function getDirRefs() { try { return JSON.parse(db.getKv(DIRS_KEY) || '[]'); } catch (_) { return []; } }
-function saveDirRefs(list) { db.setKv(DIRS_KEY, JSON.stringify(list)); db.flush(); }
-function getExcl() { try { return JSON.parse(db.getKv(EXCL_KEY) || '[]'); } catch (_) { return []; } }
-function saveExcl(list) { db.setKv(EXCL_KEY, JSON.stringify(list)); db.flush(); }
+function getRefs() { try { return JSON.parse(db.getKv(RAW_REFS_KEY) || '[]'); } catch (_) { return []; } }
+function saveRefs(list) { db.setKv(RAW_REFS_KEY, JSON.stringify(list)); db.flush(); }
+function getDirRefs() { try { return JSON.parse(db.getKv(RAW_DIRS_KEY) || '[]'); } catch (_) { return []; } }
+function saveDirRefs(list) { db.setKv(RAW_DIRS_KEY, JSON.stringify(list)); db.flush(); }
+function getExcl() { try { return JSON.parse(db.getKv(RAW_EXCLUDED_KEY) || '[]'); } catch (_) { return []; } }
+function saveExcl(list) { db.setKv(RAW_EXCLUDED_KEY, JSON.stringify(list)); db.flush(); }
 // 网页链接引用（不下载、不转存，仅保存链接信息）：读取时再按需拉取
-function getUrlRefs() { try { return JSON.parse(db.getKv(URLS_KEY) || '[]'); } catch (_) { return []; } }
-function saveUrlRefs(list) { db.setKv(URLS_KEY, JSON.stringify(list)); db.flush(); }
+function getUrlRefs() { try { return JSON.parse(db.getKv(RAW_URLS_KEY) || '[]'); } catch (_) { return []; } }
+function saveUrlRefs(list) { db.setKv(RAW_URLS_KEY, JSON.stringify(list)); db.flush(); }
 
 // 吸收状态追踪（kv 存储，防重复吸收）：key=来源路径（raw/… 或 local:…）→ {at, mtime, jobId}
-const ING_KEY = 'raw_ingested';
-function getIngested() { try { return JSON.parse(db.getKv(ING_KEY) || '{}'); } catch (_) { return {}; } }
-function saveIngested(map) { db.setKv(ING_KEY, JSON.stringify(map)); db.flush(); }
+function getIngested() { try { return JSON.parse(db.getKv(RAW_INGESTED_KEY) || '{}'); } catch (_) { return {}; } }
+function saveIngested(map) { db.setKv(RAW_INGESTED_KEY, JSON.stringify(map)); db.flush(); }
 
 // 吸收作业成功后记录来源；local: 同时记录当时文件 mtime，供后续判断“吸收后是否被修改”
 function markIngested(rawPaths, jobId) {
@@ -259,12 +256,7 @@ function renameUrl(settings, url, title) {
   return { relPath: 'url:' + clean, title: hit.title || urlDisplayName(clean) };
 }
 
-// 跳过依赖/隐藏/构建产物目录，保留用户内容目录（原样引用多级结构）
-const SKIP_DIRS = new Set(['.venv', 'node_modules', '.git', '.idea', '.vscode', '.qoder', '__pycache__', '.DS_Store', 'dist', 'build', 'target']);
-
-// 噪声文件：系统元数据与办公软件临时文件。它们无可提取内容，
-// 却会占满目录引用的文件数上限、在作业里刷出一堆“不支持的文件格式”失败项，因此扫描阶段就滤掉
-const SKIP_FILES = new Set(['.DS_Store', '.localized', 'Thumbs.db', 'thumbs.db', 'ehthumbs.db', 'desktop.ini', 'Icon\r', '.gitkeep', '.gitignore']);
+// SKIP_DIRS / SKIP_FILES 定义于 common/constants.js（跳过依赖/隐藏/构建产物目录与噪声文件）
 function isNoiseFile(name) {
   const n = String(name || '');
   if (!n || SKIP_FILES.has(n)) return true;
@@ -277,7 +269,7 @@ function isNoiseFile(name) {
 
 // 单个目录引用的文件数上限（递归计数，settings.rawDirMaxFiles 可调）：
 // 目录引用会被实时遍历，过大的目录会拖慢列表与后续吸收，故在添加时就拒绝
-const DEFAULT_MAX_DIR_FILES = 500;
+// DEFAULT_MAX_DIR_FILES 定义于 common/constants.js
 const dirMaxFiles = (settings) => num(settings, 'rawDirMaxFiles', DEFAULT_MAX_DIR_FILES, 10, 100000);
 
 // 递归统计目录下文件数（不计噪声文件，与列表/吸收口径一致）；达到 limit 即提前停止

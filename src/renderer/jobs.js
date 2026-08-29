@@ -37,13 +37,7 @@ function jobStatusMeta(status) {
   return { queued: ['排队中', ''], running: ['执行中', 'running'], success: ['成功', 'success'], failed: ['失败', 'failed'] }[status] || [status, ''];
 }
 
-// 作业类型图标：统一使用 index.html 顶部 SVG sprite 中的线性图标
-const JOB_TYPE_ICONS = {
-  'extract-note': 'notes',
-  ingest: 'download',
-  graph: 'kg',
-  lint: 'checklist',
-};
+// 作业类型图标：统一使用 index.html 顶部 SVG sprite 中的线性图标（JOB_TYPE_ICONS 定义于 renderer/constants.js）
 function jobTypeIcon(type) {
   return icoSvg(JOB_TYPE_ICONS[type] || 'jobs', 15);
 }

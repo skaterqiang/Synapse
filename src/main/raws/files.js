@@ -26,16 +26,8 @@ function appendMineruFallbackLog(absPath, reason) {
   } catch (_) { /* 日志写失败不影响主流程 */ }
 }
 
-// MinerU 官方支持的文件类型（来源：mineru/cli/common.py：pdf/docx/pptx/xlsx + 图片 png,jpeg,jp2,webp,gif,bmp,jpg,tiff）。
-// 内置解析只覆盖文本型文档；这些二进制/图片类型在配置了 MinerU 命令后由插件转换，未配置时导入后读取会报「不支持」并引导去设置
-const MINERU_SUPPORTED_EXTS = ['pdf', 'docx', 'pptx', 'xlsx', 'png', 'jpg', 'jpeg', 'jp2', 'webp', 'gif', 'bmp', 'tiff'];
-
-const FILE_EXTENSIONS = [...new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'md', 'markdown', 'txt', 'csv', 'html', 'htm', ...MINERU_SUPPORTED_EXTS])];
-
-// 笔记导入默认白名单：文档类 + MinerU 支持类型（含图片）。不包含 .java/.xml/.py/.sh 等代码/配置文件——
-// 它们虽然能当纯文本读，但会把大量工程文件灌进笔记、淡化真正的知识内容。
-// 用户可在设置里改（settings.noteImportExts），但默认不替他做这个选择
-const DEFAULT_NOTE_IMPORT_EXTS = [...new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'md', 'markdown', 'txt', 'csv', 'html', 'htm', ...MINERU_SUPPORTED_EXTS])];
+// MINERU_SUPPORTED_EXTS / FILE_EXTENSIONS / DEFAULT_NOTE_IMPORT_EXTS 等常量统一定义于 common/constants.js
+const { MINERU_SUPPORTED_EXTS, FILE_EXTENSIONS, DEFAULT_NOTE_IMPORT_EXTS, MINERU_TIMEOUT_SEC, PLUGINS_DIR, MINERU_PLUGIN_DIR, MINERU_INSTALL_TIMEOUT_MS, MINERU_DEFAULT_VLM_MODEL, MINERU_DEFAULT_OLLAMA_URL, MINERU_ASCII_ALIAS_CANDIDATES, MINERU_EXTRA_PACKAGES } = require('../common/constants');
 
 // 解析配置为扩展名集合：容许逗号/空格/分号/换行分隔，容许带不带前导点、大小写不敏感；
 // 未配置或配成空则回退默认白名单（避免误操作把导入能力整个关死）
@@ -102,8 +94,7 @@ function createChildStreamDecoder() {
 // 用户在 设置→文档解析 里配置一条命令模板（mineruConvertCmd），占位符：
 //   {input}  源文件绝对路径   {output}  输出目录（临时目录，转换后自动清理）
 // 未写占位符时按「命令 {input} {output}」追加。命令非 0 退出、超时或未产出 Markdown 均视为转换失败。
-// 大文档（数百页扫描件）转换常需数十分钟，默认 1 小时，可在设置里调（mineruTimeout）
-const MINERU_TIMEOUT_SEC = 3600;
+// MINERU_TIMEOUT_SEC 定义于 common/constants.js
 
 function mineruCmdParts(settings) {
   // 解析方式开关：mineruMode='builtin' 时即使配置了命令也强制走内置解析；
@@ -333,10 +324,8 @@ async function runMineruTest(settings, { pdfBase64, fileName, event } = {}) {
 // junction 指向安装目录，经别名路径启动 python，使进程内 __file__/模型路径全部为 ASCII。
 // junction 用 fs.symlinkSync(type=junction) 创建，Win10+ 无需管理员权限。
 function ensureAsciiAlias(pluginDir, send) {
-  const candidates = [];
-  const progData = process.env.ProgramData || 'C:\\ProgramData';
-  candidates.push(path.join(progData, 'synapse-mineru'));
-  candidates.push(path.join((process.env.SystemDrive || 'C:') + '\\', 'synapse-mineru'));
+  // 纯 ASCII 别名目录候选列表定义于 common/constants.js
+  const candidates = MINERU_ASCII_ALIAS_CANDIDATES(process.env);
   for (const alias of candidates) {
     let target = null;
     try { target = fs.readlinkSync(alias); } catch (_) { /* 不存在或不是 reparse 点 */ }
@@ -354,14 +343,14 @@ function ensureAsciiAlias(pluginDir, send) {
 }
 
 // ============ MinerU 一键安装 ============
-// 本机没有 MinerU 环境时，在 <安装目录>/plugin/mineru/ 下自动创建：
+// 本机没有 MinerU 环境时，在 <安装目录>/plugins/mineru/ 下自动创建：
 //   venv/            Python 虚拟环境（python -m venv + pip install mineru）
 //   mineru-run.sh    包装脚本（固化 hybrid-http-client 后端 + 本机 Ollama VLM 端点）
 // 完成后返回包装脚本路径，前端据此回填「文档转换命令」并切到 MinerU 解析，完成配置。
 // 中间日志经 event 以 'mineru:install-log' 流式推送，复用测试日志的展示组件。
 function installMineru(settings, { event } = {}) {
   const send = (line, replace) => { try { if (event && event.sender) event.sender.send('mineru:install-log', { line, replace: !!replace }); } catch (_) { /* 忽略 */ } };
-  const installTimeoutMs = 30 * 60 * 1000; // pip 安装 mineru 依赖较多，给 30 分钟
+  const installTimeoutMs = MINERU_INSTALL_TIMEOUT_MS; // pip 安装 mineru 依赖较多，给 30 分钟
   const run = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
     // 强制 Python 子进程（venv/pip）输出 UTF-8，配合流式解码器消除 Windows GBK 乱码
     const child = spawn(cmd, args, { ...opts, env: childUtf8Env(opts.env) });
@@ -392,7 +381,7 @@ function installMineru(settings, { event } = {}) {
   });
   return (async () => {
     const appDir = path.resolve(dataRoot(), '..'); // 数据根默认 <安装目录>/data，其上级即安装目录
-    const pluginDir = path.join(appDir, 'plugin', 'mineru');
+    const pluginDir = path.join(appDir, PLUGINS_DIR, MINERU_PLUGIN_DIR);
     const venvDir = path.join(pluginDir, 'venv');
     const isWin = process.platform === 'win32';
     const pyBin = isWin ? path.join(venvDir, 'Scripts', 'python.exe') : path.join(venvDir, 'bin', 'python');
@@ -438,12 +427,12 @@ function installMineru(settings, { event } = {}) {
       // mineru 3.4.x 的 hybrid 后端运行期还用到一批未在 extras 里声明的包（如 six、pandas、accelerate），
       // 缺了会在首次转换时报 hybrid 依赖错误，这里一并装上，保证一键安装后开箱即用
       send('📦 补装运行期附加依赖（six/pandas/accelerate 等）…');
-      await run(pyBin, ['-m', 'pip', 'install', 'six', 'pandas', 'accelerate', 'psutil', 'Pygments', 'orjson', 'python-dateutil', 'pytz', 'rich'], { timeout: 10 * 60 * 1000 });
+      await run(pyBin, ['-m', 'pip', 'install', ...MINERU_EXTRA_PACKAGES], { timeout: 10 * 60 * 1000 });
     }
     if (!fs.existsSync(mineruBin)) throw new Error('安装完成但未找到 mineru 可执行文件：' + mineruBin);
     // 包装脚本：与既有手动脚本同款语义（hybrid-http-client + 本机 Ollama 端点）
-    const ollamaUrl = String((settings && settings.mineruOllamaUrl) || 'http://127.0.0.1:11434');
-    const vlmModel = String((settings && settings.mineruVlmModel) || 'qwen3.8:27b');
+    const ollamaUrl = String((settings && settings.mineruOllamaUrl) || MINERU_DEFAULT_OLLAMA_URL);
+    const vlmModel = String((settings && settings.mineruVlmModel) || MINERU_DEFAULT_VLM_MODEL);
     writeMineruRunnerScript({ pluginDir, venvDir, aliasDir, runnerPath, ollamaUrl, vlmModel, apiKey: '' });
     send(`✅ 安装完成：${runnerPath}`);
     return { ok: true, runner: runnerPath, venvDir, pluginDir };
@@ -453,7 +442,7 @@ function installMineru(settings, { event } = {}) {
   });
 }
 
-// 包装脚本生成：把后端参数与模型端点固化进 plugin/mineru 下的 bat/sh。
+// 包装脚本生成：把后端参数与模型端点固化进 plugins/mineru 下的 bat/sh。
 // 一键安装与「应用模型」共用，保证两条路径产物一致。
 // Windows 两条硬约束：1) cmd.exe 按 GBK 解析 .bat 且不认 UTF-8 BOM，bat 内容必须纯 ASCII；
 // 2) fasttext C++ 层打不开含中文的模型路径，python 必须经纯 ASCII 路径启动（aliasDir 为 junction 别名）
@@ -498,7 +487,7 @@ function applyMineruModel(settings, entry = {}, { event } = {}) {
     if (!model || !baseUrl) return { ok: false, error: '所选模型缺少模型名或 Base URL，请先在「模型配置」补全' };
     const ollamaUrl = baseUrl.replace(/\/+$/, '').replace(/\/v1$/i, '');
     const appDir = path.resolve(dataRoot(), '..'); // 数据根默认 <安装目录>/data，其上级即安装目录
-    const pluginDir = path.join(appDir, 'plugin', 'mineru');
+    const pluginDir = path.join(appDir, PLUGINS_DIR, MINERU_PLUGIN_DIR);
     const venvDir = path.join(pluginDir, 'venv');
     const isWin = process.platform === 'win32';
     const mineruBin = isWin ? path.join(venvDir, 'Scripts', 'mineru.exe') : path.join(venvDir, 'bin', 'mineru');

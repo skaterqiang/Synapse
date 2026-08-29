@@ -1,9 +1,7 @@
 // 渲染进程·图谱模块：图谱视图、力导向布局、KG 子视图与 KG 问答
 // ================= 知识图谱 =================
 // 类型配色（蓝-青-紫-橙-灰）：图例/画布/详情徽标共用同一套，保证各子视图颜色一致
-const GRAPH_PALETTE = ['#3370ff', '#0fbfa1', '#7a5af8', '#f5a623', '#8a919f'];
-const GRAPH_COLORS = { entity: '#3370ff', source: '#0fbfa1', concept: '#7a5af8', topic: '#f5a623', note: '#8a919f' };
-const GRAPH_TYPE_NAMES = { concept: '抽象概念', entity: '实体', topic: '主题', source: '来源', note: '笔记' };
+// GRAPH_PALETTE / GRAPH_COLORS / GRAPH_TYPE_NAMES 统一定义于 renderer/constants.js
 // 画布模拟运行时状态（坐标/缩放/拖拽），与持久化数据分离
 const graphSim = { nodes: [], edges: [], zoom: 1, ox: 0, oy: 0, drag: null, selected: null, raf: 0, running: false, alpha: 1 };
 
@@ -405,7 +403,7 @@ function kgFilteredGraph() {
   return { nodes, edges, truncated };
 }
 
-const KG_TAB_NAMES = { overview: '概览', entities: '实体浏览', graph: '整体图谱', ontology: '本体定义', ask: '自然语言问答' };
+// KG_TAB_NAMES 定义于 renderer/constants.js
 
 function switchKgTab(tab) {
   state.kg.tab = tab;

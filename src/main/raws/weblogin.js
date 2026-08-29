@@ -8,7 +8,8 @@ const electron = require('electron');
 const { pickPageTitle, isPlaceholderTitle } = require('./files');
 const urlcookies = require('./urlcookies');
 
-const UA = 'Mozilla/5.0 (personal-kb)';
+// User-Agent 常量定义于 common/constants.js
+const { HTTP_USER_AGENT: UA } = require('../common/constants');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function hasBrowser() {

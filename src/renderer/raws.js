@@ -8,7 +8,7 @@ const rawTreeCollapsed = {}; // 原始文件目录树折叠状态（会话内）
 // timeoutMs：主进程侧 LLM 判定的限时，超时后自动降级为关键词兜底，不会永远卡在“正在匹配领域模板…”
 // 返回值：{ id, name, tpl }（具体模板或 general）；'skip' → 预检查不可用，回退作业内匹配；null → 用户取消
 // 图谱的领域预匹配只用于附加类型约束，模型慢时宁可放弃约束也要尽快把作业排上去
-const GRAPH_MATCH_TIMEOUT = 10000;
+// GRAPH_MATCH_TIMEOUT 定义于 renderer/constants.js
 let tplPendingIngest = null; // { resolve } — 手工新建模板后继续提取的待办回调
 
 async function checkDomainBeforeIngest({ rawPaths = [], texts = [], allowCreate = true, timeoutMs }) {

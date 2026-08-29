@@ -5,12 +5,12 @@ function getFilteredNotes() {
   let list = state.notes.slice();
 
   if (type === 'all') {
-    // 目录浏览模式：只看根目录直属笔记（未分类/垃圾桶），子目录笔记进入目录后逐层浏览
-    list = list.filter((n) => !n.folderId);
+    // 目录浏览模式：只看根目录直属笔记（未分类），子目录笔记进入目录后逐层浏览；被删除的笔记不在此列
+    list = list.filter((n) => !n.folderId && !n.trashed);
   } else if (type === 'folder') {
     if (id === '__trash__') {
-      // 🗑 垃圾桶是虚拟目录：未分类（folderId=null）的笔记都归它
-      list = list.filter((n) => !n.folderId);
+      // 🗑 垃圾桶是虚拟目录：真正被删除（trashed）的笔记归它，根目录未分类笔记不再混入
+      list = list.filter((n) => !!n.trashed);
     } else {
       // 含子目录：侧边栏计数本来就是递归的，列表只看直属会出现
       // “目录显示有 N 篇、点开却是空”（层级深的导入目录尤其明显）
@@ -95,8 +95,8 @@ function buildNoteCard(note, q, sub) {
     e.stopPropagation();
     const inTrash = state.view.type === 'folder' && state.view.id === '__trash__';
     const items = [];
-    // 垃圾桶视图内所有笔记可还原；其他视图中带 trashFrom 标记（曾被移入垃圾桶）的也可还原
-    if (inTrash || note.trashFrom != null) items.push({ label: '还原到原来的位置', action: () => restoreNoteFromTrash(note) }, { sep: true });
+    // 垃圾桶视图内所有笔记可还原；其他视图中带 trashed 标记（曾被移入垃圾桶）的也可还原
+    if (inTrash || note.trashed) items.push({ label: '还原到原来的位置', action: () => restoreNoteFromTrash(note) }, { sep: true });
     items.push(
       { label: '提取知识图谱', action: () => { selectNote(note.id); noteToGraph(); } },
       { label: '移动到目录…', action: () => openMoveFolderMenu(note, e.clientX, e.clientY) },
@@ -147,6 +147,7 @@ function restoreNoteFromTrash(note) {
     folderId = parent;
   }
   delete note.trashFrom;
+  delete note.trashed;
   note.folderId = folderId;
   note.updatedAt = Date.now();
   persist();
@@ -154,7 +155,7 @@ function restoreNoteFromTrash(note) {
   toast(folderId ? `已还原到「${folderPathOf(note)}」` : '已还原到根目录', 2500);
 }
 
-// 右键「移动到目录」：先选顶级目录，含子目录则弹二级菜单；🗑 垃圾桶=未分类
+// 右键「移动到目录」：先选顶级目录，含子目录则弹二级菜单；🗑 垃圾桶=被删除的笔记
 function openMoveFolderMenu(note, x, y) {
   const byId = new Map(state.folders.map((f) => [f.id, f]));
   const fullPath = (f) => {
@@ -164,9 +165,16 @@ function openMoveFolderMenu(note, x, y) {
     return chain.join(' / ');
   };
   const doMove = (folderId) => {
-    if ((note.folderId || null) === (folderId || null)) return;
-    if (!folderId && note.folderId) note.trashFrom = folderRelPath(note.folderId); // 移入垃圾桶：记录原位置
-    if (folderId) delete note.trashFrom; // 移出垃圾桶：还原标记不再需要
+    if (folderId ? note.folderId === folderId : !!note.trashed) return;
+    if (!folderId) {
+      // 移入垃圾桶：记录原位置（''=根目录）并打上 trashed 标记，未分类笔记不再自动进垃圾桶
+      note.trashFrom = note.folderId ? folderRelPath(note.folderId) : '';
+      note.trashed = true;
+    } else {
+      // 移出垃圾桶：还原标记不再需要，笔记回到正常目录（或根目录）
+      delete note.trashFrom;
+      note.trashed = false;
+    }
     note.folderId = folderId || null;
     note.updatedAt = Date.now();
     persist();
@@ -184,7 +192,7 @@ function openMoveFolderMenu(note, x, y) {
     desc.forEach((s) => items.push({ label: `↳ ${fullPath(s)}`, action: () => doMove(s.id) }));
     openCtxMenu(x, y, items);
   }
-  const topItems = [{ label: '垃圾桶（未分类）', action: () => doMove(null) }];
+  const topItems = [{ label: '垃圾桶', action: () => doMove(null) }];
   const tops = state.folders.filter((f) => !f.parentId);
   if (tops.length) topItems.push({ sep: true });
   tops.forEach((f) => topItems.push({ label: f.name, action: () => pickWithin(f) }));
@@ -235,10 +243,10 @@ function buildFolderRow(folder) {
 // 目录可点击逐层进入，与侧边栏目录树的浏览体验一致
 function renderBrowseList() {
   const container = $('note-list');
-  // 🗑 垃圾桶是虚拟目录（内容=未分类笔记），根目录笔记组已展示，避免重复
+  // 🗑 垃圾桶是虚拟目录（内容=被删除的笔记），根目录笔记组已展示，避免重复；被删除的笔记不计入根目录笔记
   const roots = state.folders.filter((f) => !f.parentId && f.id !== '__trash__');
   const rootNotes = state.notes
-    .filter((n) => !n.folderId)
+    .filter((n) => !n.folderId && !n.trashed)
     .sort((a, b) => {
       if (!!b.pinned !== !!a.pinned) return b.pinned ? 1 : -1;
       return b.updatedAt - a.updatedAt;
@@ -513,12 +521,12 @@ function uniqueNoteTitle(base, exceptId) {
   return `${b} ${i}`;
 }
 
-// 删除：普通目录下的笔记移入垃圾桶（记录原位置 trashFrom，可右键还原）；
+// 删除：普通目录/根目录下的笔记移入垃圾桶（记录原位置 trashFrom 与 trashed 标记，可右键还原）；
 // 垃圾桶内的笔记删除即永久删除（不可恢复）
 function deleteNote() {
   const note = currentNote();
   if (!note) return;
-  if (!note.folderId) {
+  if (note.trashed) {
     if (!confirm(`永久删除笔记"${note.title || '无标题'}"？此操作不可恢复。`)) return;
     delete note.trashFrom;
     state.notes = state.notes.filter((n) => n.id !== note.id);
@@ -527,6 +535,7 @@ function deleteNote() {
   } else {
     if (!confirm(`确定删除笔记"${note.title || '无标题'}"？将移入"垃圾桶"，可在垃圾桶内右键还原。`)) return;
     note.trashFrom = folderRelPath(note.folderId);
+    note.trashed = true;
     note.folderId = null;
     toast('已移入垃圾桶，可在垃圾桶内右键还原', 2500);
   }
@@ -675,7 +684,7 @@ async function attachAction(act) {
     if (choice === 'embed') {
       insertAtCursor(`\n![${pick.name}](${pick.dataUrl})\n`);
     } else {
-      const res = await window.kb.noteSaveImage({ dataUrl: pick.dataUrl, name: pick.name, title: (currentNote() && currentNote().title) || '', folderId: (currentNote() && currentNote().folderId) || null });
+      const res = await window.kb.noteSaveImage({ dataUrl: pick.dataUrl, name: pick.name, title: (currentNote() && currentNote().title) || '', folderId: (currentNote() && currentNote().folderId) || null, trashed: !!(currentNote() && currentNote().trashed) });
       if (!res.ok) { toast('保存图片失败：' + res.error, 4000); return; }
       insertAtCursor(`\n![${pick.name}](kb-asset://file${encodeURI(res.path)})\n`);
     }

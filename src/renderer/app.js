@@ -25,7 +25,7 @@ function bindEvents() {
   $('btn-export').addEventListener('click', async () => {
     const note = currentNote();
     if (!note) return;
-    const res = await window.kb.noteOpenFolder({ folderId: note.folderId });
+    const res = await window.kb.noteOpenFolder({ folderId: note.folderId, trashed: !!note.trashed });
     if (!res.ok) toast('无法打开文件夹：' + (res.error || '未知错误'), 3000);
   });
 

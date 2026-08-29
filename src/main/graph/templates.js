@@ -3,34 +3,8 @@ const db = require('../common/db');
 const { chatOnce, extractJson } = require('../ai/llm');
 const { getPrompt } = require('../ai/prompts');
 
-const KV_KEY = 'domain_templates';
-
-// 内置通用模版：不可删除，未匹配到特定领域时兜底
-const GENERAL_TEMPLATE = {
-  id: 'general',
-  name: '通用',
-  desc: '通用知识领域模版，适用于未匹配到特定领域的文档',
-  keywords: [],
-  entityTypes: [
-    { name: '人物', desc: '文中出现的关键人物' },
-    { name: '组织', desc: '公司、机构、团队' },
-    { name: '产品/工具', desc: '被提及的产品、软件或工具' },
-  ],
-  conceptTypes: [
-    { name: '方法', desc: '方法论、流程、最佳实践' },
-    { name: '术语', desc: '专业名词及其定义' },
-    { name: '原则', desc: '观点、结论、原则' },
-  ],
-  mustExtract: ['核心概念定义', '关键事实与数据', '结论与要点'],
-  ignoreContent: ['广告与推广内容', '页面导航等无关文本'],
-  quality: '信息准确、要点完整、语言凝练，保留来源中的关键数据与结论。',
-  skeleton: [
-    { title: '概览', desc: '主题背景与核心内容摘要' },
-    { title: '核心概念', desc: '关键概念与术语解释' },
-    { title: '要点清单', desc: '重要事实、结论与待办' },
-  ],
-  builtin: true,
-};
+// KV_KEY / GENERAL_TEMPLATE 定义于 common/constants.js
+const { DOMAIN_TEMPLATES_KEY: KV_KEY, GENERAL_TEMPLATE } = require('../common/constants');
 
 const trimStr = (v, max = 2000) => String(v ?? '').trim().slice(0, max);
 // 逗号分隔字符串或数组 → 去空去重的字符串数组

@@ -42,7 +42,7 @@ function initAiPanelResize() {
 
 // ================= 问答附件（仅作用于本次提问，不写入 raw/知识库） =================
 let aiAttachments = []; // [{path, name}]
-const MAX_ATTACH = 5;
+// MAX_ATTACH 定义于 renderer/constants.js
 
 function renderAttachBar() {
   const bar = $('ai-attach-bar');
@@ -721,7 +721,7 @@ function loadAiSources() {
 // 知识源定义（key/图标/名称）：以主进程 knowledge 层的注册表为准，
 // 这里的内置值仅作为 IPC 还未返回前的兜底（新增知识源只需在主进程 register）
 // 图标列统一为 SVG sprite 的 symbol 名（渲染时用 icoSvg 展开）
-const AI_SRC_ICON_MAP = { notes: 'notes', graph: 'kg', raws: 'folder-open' };
+// AI_SRC_ICON_MAP 定义于 renderer/constants.js
 let AI_SOURCE_DEFS = [
   ['notes', 'notes', '笔记'],
   ['graph', 'kg', '知识图谱'],
@@ -1588,7 +1588,7 @@ function renderFavorites() {
 }
 
 // ================= 使用手册（应用内查看 docs/ 目录 Markdown） =================
-const DOCS_INDEX = 'README.md';
+// DOCS_INDEX 定义于 renderer/constants.js
 // GitHub 风格标题锚点：小写、去标点、空格换连字符（与文档内 #anchor 链接一致）
 function docAnchorSlug(text) {
   return String(text || '').toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s+/g, '-');
@@ -1606,7 +1606,7 @@ async function openDocs(file, anchor) {
 function docAssetUrl(rel, root) {
   return window.__KB_WEB__ ? '/docs/' + rel : 'kb-doc://file' + (root + '/' + rel).replace(/\\/g, '/');
 }
-const DOC_ASSET_IMG_RE = /\.(png|jpe?g|gif|svg|webp|bmp)$/i;
+// DOC_ASSET_IMG_RE 定义于 renderer/constants.js
 // 应用内大图预览弹层：点击任意处关闭；加载失败给提示并可新窗口打开，避免黑屏空白
 function showDocImageOverlay(url, label) {
   const ov = document.createElement('div');

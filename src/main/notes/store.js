@@ -14,9 +14,9 @@ function safeName(s, dft) {
   return String(s || '').trim().replace(/[\\/:*?"<>|]/g, '-').slice(0, 80) || dft;
 }
 
-// 「垃圾桶」目录：未分类（folderId=null）的笔记统一落盘到 <note根>/trash/，
-// 不再平铺在 note 根下；该目录为系统保留目录，不参与目录树合成、不会被空目录清理删除
-const TRASH_DIR = 'trash';
+// 垃圾桶目录名 / 虚拟文件夹 id 常量统一定义于 common/constants.js
+// trash/ 为系统保留目录：真正被删除的笔记落盘于此；不参与目录树合成、不会被空目录清理删除
+const { TRASH_DIR, TRASH_FOLDER_ID } = require('../common/constants');
 const isTrashRel = (rel) => rel === TRASH_DIR || rel.startsWith(TRASH_DIR + '/');
 
 // ---------- frontmatter 序列化/解析 ----------
@@ -157,18 +157,22 @@ function loadNotesFromDisk(folders, scan) {
     const n = parseNoteFile(file);
     const relDir = path.dirname(path.relative(root, file)).split(path.sep).join('/');
     const folderRel = relDir === '.' ? '' : relDir;
-    // trash/ 下（含意外残留的更深层级）的笔记归为未分类，不合成目录记录
-    const folderId = isTrashRel(folderRel) ? null : (relToId.get(folderRel) || null);
+    // trash/ 下（含意外残留的更深层级）的笔记不合成目录记录
+    const inTrash = isTrashRel(folderRel);
+    const folderId = inTrash ? null : (relToId.get(folderRel) || null);
     const title = n.title || path.basename(file).replace(/\.md$/, '');
+    // trashed：仅「在 trash/ 内且携带 trashFrom」的笔记才是真正被丢进垃圾桶的；
+    // 历史/种子笔记落在 trash/ 但没有 trashFrom 时视为根目录笔记，下次存盘由 targetPathFor 自动迁回笔记根
+    const trashed = inTrash && n.trashFrom != null;
     // 历史 assets/ 附件引用归一到笔记自身目录，并回写磁盘
-    const fixed = normalizeAssetRefs(n.content, title, folderId);
+    const fixed = normalizeAssetRefs(n.content, title, folderId, trashed);
     if (fixed !== n.content) {
       n.content = fixed;
       try { fs.writeFileSync(file, serializeNote({ ...n, id: n.id || id, title }), 'utf-8'); } catch (_) {}
     }
     // 仅垃圾桶内笔记携带 trashFrom（原目录相对路径），其余目录残留的该字段不暴露给前端
-    const trashFrom = isTrashRel(folderRel) ? (n.trashFrom != null ? n.trashFrom : '') : undefined;
-    notes.push({ ...n, id: n.id || id, title, folderId, trashFrom });
+    const trashFrom = trashed ? n.trashFrom : undefined;
+    notes.push({ ...n, id: n.id || id, title, folderId, trashFrom, trashed });
   }
   notes.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   return { notes, dirs, noteDirs, hasAnyNoteFile: files.length > 0 };
@@ -179,9 +183,9 @@ function escapeRe(s) {
 }
 
 // 正文中的 kb-asset 附件引用统一指向笔记自身目录（兼容历史 assets/ 与旧 appData 路径）
-function normalizeAssetRefs(content, title, folderId) {
+function normalizeAssetRefs(content, title, folderId, trashed) {
   if (!content || !content.includes('kb-asset://file')) return content;
-  const newPrefix = 'kb-asset://file' + encodeURI(noteAssetDir(title, folderId)) + '/';
+  const newPrefix = 'kb-asset://file' + encodeURI(noteAssetDir(title, folderId, trashed)) + '/';
   const roots = [paths.assetsDir(), path.join(paths.legacyUserData(), 'assets')];
   let out = content;
   for (const r of roots) {
@@ -235,7 +239,7 @@ function loadStore() {
   const realDirs = [...dirs].filter((d) => !noteDirs.has(d) && !isTrashRel(d) && !invalidDirs.has(d));
   const allFolders = [...cleanFolders, ...synthesizeMissingFolders(cleanFolders, realDirs)];
   // 垃圾桶是虚拟根级目录：UI 显示「垃圾桶」，但不落 folders 表
-  if (!allFolders.some((f) => f.id === '__trash__')) allFolders.push({ id: '__trash__', name: '垃圾桶', parentId: null });
+  if (!allFolders.some((f) => f.id === TRASH_FOLDER_ID)) allFolders.push({ id: TRASH_FOLDER_ID, name: '垃圾桶', parentId: null });
   const { notes, hasAnyNoteFile } = loadNotesFromDisk(allFolders, scan);
   // hasAnyNoteFile：磁盘是否存在任何笔记文件——前端「首启种子笔记」据此判断，
   // 避免瞬时异常读到空列表时误种子并回写空列表导致磁盘笔记被清理
@@ -245,7 +249,8 @@ function loadStore() {
 // ---------- 写入 ----------
 // 目标文件路径：目录 + 安全标题；同目录重名（极端情况）追加短 id 后缀
 function targetPathFor(root, dirMap, note, taken) {
-  const rel = note.folderId ? dirMap.get(note.folderId) || '' : TRASH_DIR;
+  // 被丢进垃圾桶（trashed）的笔记统一落 trash/；未分类（folderId=null）笔记落在笔记根，不再混入垃圾桶
+  const rel = note.trashed ? TRASH_DIR : (note.folderId ? dirMap.get(note.folderId) || '' : '');
   const dir = rel ? path.join(root, rel) : root;
   let base = safeName(note.title, 'untitled');
   let candidate = path.join(dir, base + '.md');
@@ -280,6 +285,15 @@ function writeNotesToDisk(folders, notes) {
       } else {
         // 垃圾桶外的文件：移入垃圾桶保留，绝不直接删除，防止异常空列表回写造成数据丢失
         fs.mkdirSync(trashDir, { recursive: true });
+        // 补写 trashFrom 标记（原目录相对路径）：否则下次加载会被判为根目录笔记又迁回去，防御就失效了
+        try {
+          const parsed = parseNoteFile(file);
+          if (parsed.trashFrom == null) {
+            const relDir0 = path.dirname(path.relative(root, file)).split(path.sep).join('/');
+            parsed.trashFrom = relDir0 === '.' ? '' : relDir0;
+            fs.writeFileSync(file, serializeNote({ ...parsed, id: parsed.id || id }), 'utf-8');
+          }
+        } catch (_) {}
         let target = path.join(trashDir, path.basename(file));
         if (fs.existsSync(target)) target = path.join(trashDir, `${path.basename(file, '.md')}-${String(id).replace(/[^A-Za-z0-9]/g, '').slice(-6)}.md`);
         fs.renameSync(file, target);
@@ -321,7 +335,7 @@ function writeNotesToDisk(folders, notes) {
 
 function saveStore(store) {
   // 🗑 垃圾桶是虚拟目录（loadStore 每次合成），不落 folders 表
-  const folders = (Array.isArray(store.folders) ? store.folders : []).filter((f) => f.id !== '__trash__');
+  const folders = (Array.isArray(store.folders) ? store.folders : []).filter((f) => f.id !== TRASH_FOLDER_ID);
   db.transaction(() => {
     db.run('DELETE FROM folders');
     for (const f of folders) {
@@ -394,17 +408,17 @@ function rewriteNoteFiles(from, to) {
   if (n) console.log('笔记文件附件引用已重写:', n, '篇');
 }
 
-// 笔记附件目录：<note根>/<目录链>/<安全标题>/（与笔记文件同级）
-function noteAssetDir(title, folderId) {
+// 笔记附件目录：<note根>/<目录链>/<安全标题>/（与笔记文件同级）；trashed 笔记落在 trash/ 下
+function noteAssetDir(title, folderId, trashed) {
   const folders = loadFolders();
-  const dirRel = folderId ? folderDirMap(folders).get(folderId) || '' : TRASH_DIR;
+  const dirRel = trashed ? TRASH_DIR : (folderId ? folderDirMap(folders).get(folderId) || '' : '');
   return path.join(notesRoot(), dirRel || '.', safeName(title, 'untitled'));
 }
 
-// 笔记文件所在目录（<note根>/<目录链>），用于「打开文件夹」
-function notesDirFor(folderId) {
+// 笔记文件所在目录（<note根>/<目录链>），用于「打开文件夹」；trashed 笔记定位到 trash/
+function notesDirFor(folderId, trashed) {
   const folders = loadFolders();
-  const rel = folderId ? folderDirMap(folders).get(folderId) || '' : TRASH_DIR;
+  const rel = trashed ? TRASH_DIR : (folderId ? folderDirMap(folders).get(folderId) || '' : '');
   return rel ? path.join(notesRoot(), rel) : notesRoot();
 }
 
@@ -447,7 +461,7 @@ function importNote(title, content, folderRel, source) {
       const relDir = path.dirname(path.relative(notesRoot(), file)).split(path.sep).join('/');
       let target = file;
       let folderId = relDir === '.' ? null : ([...dirMap].find(([, rel]) => rel === relDir) || [null])[0];
-      if (isTrashRel(relDir) && parentId) {
+      if ((isTrashRel(relDir) || old.trashed) && parentId) {
         target = targetPathFor(notesRoot(), dirMap, { id: merged.id, title: merged.title, folderId: parentId }, taken);
         if (target !== file) {
           fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -465,6 +479,9 @@ function importNote(title, content, folderRel, source) {
           }
         }
         folderId = parentId;
+        // 移出垃圾桶的笔记清除 trashed 标记，否则下次存盘又会被 targetPathFor 搬回 trash/
+        merged.trashed = false;
+        delete merged.trashFrom;
       }
       fs.writeFileSync(target, serializeNote(merged), 'utf-8');
       db.flush();

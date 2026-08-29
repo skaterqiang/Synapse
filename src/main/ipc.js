@@ -321,7 +321,7 @@ function registerIpc(getWindow) {
     }
   });
 
-  // MinerU 一键安装：无环境时在 <安装目录>/plugin/mineru/ 下建 venv、装 mineru、生成包装脚本；
+  // MinerU 一键安装：无环境时在 <安装目录>/plugins/mineru/ 下建 venv、装 mineru、生成包装脚本；
   // 中间日志经 event 以 mineru:install-log 流式推送，前端复用测试日志展示组件
   ipcMain.handle('mineru:install', async (event, payload = {}) => {
     try {

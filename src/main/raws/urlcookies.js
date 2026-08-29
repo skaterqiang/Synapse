@@ -6,14 +6,15 @@
 // 按 Cookie 自身域名（而非登录入口 URL）存储，天然兼容 SSO 多域跳转场景。
 const db = require('../common/db');
 
-const KEY = 'url_cookies';
+// kv 键定义于 common/constants.js
+const { URL_COOKIES_KEY } = require('../common/constants');
 
 function loadAll() {
-  try { return JSON.parse(db.getKv(KEY) || '{}'); } catch (_) { return {}; }
+  try { return JSON.parse(db.getKv(URL_COOKIES_KEY) || '{}'); } catch (_) { return {}; }
 }
 
 function saveAll(map) {
-  db.setKv(KEY, JSON.stringify(map));
+  db.setKv(URL_COOKIES_KEY, JSON.stringify(map));
   db.flush();
 }
 

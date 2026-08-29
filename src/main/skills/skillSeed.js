@@ -2,7 +2,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_SKILLS_DIR = '/Users/qiang/sample_center-release/backend/resource/skills';
+// 技能种子目录常量定义于 common/constants.js
+const { DEFAULT_SKILLS_DIR } = require('../common/constants');
 
 function findSkillFile(dir) {
   const names = ['SKILL.md', 'skill.md', 'SKILL.MD'];

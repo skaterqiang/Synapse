@@ -2,9 +2,8 @@
 // 会话化设计：一次会话内完成 initialize → notifications/initialized → 多次请求。
 // 远程 SSE 传输的会话状态绑定在长连接上，若每次调用都重开连接，服务端会把未初始化的
 // 请求拒为 -32602，因此列工具与调用工具必须复用同一会话（见 openSession）。
-const PROTOCOL = '2024-11-05';
-const CONNECT_MS = 20000; // 建连 / 取 SSE endpoint 超时
-const REQUEST_MS = 30000; // 单次请求超时（搜索类工具较慢）
+// 协议版本与超时常量统一定义于 common/constants.js
+const { MCP_PROTOCOL: PROTOCOL, MCP_CONNECT_MS: CONNECT_MS, MCP_REQUEST_MS: REQUEST_MS } = require('../common/constants');
 
 // 远程传输探测缓存：url → { kind, sseUrl }，避免每次调用都重复付出 405 回退的往返
 const probeCache = new Map();

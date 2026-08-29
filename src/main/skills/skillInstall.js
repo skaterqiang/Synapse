@@ -12,9 +12,8 @@ const { findSkillFile, readSkill } = require('./skills');
 // paths 依赖 electron（app 路径），延迟到执行期加载，便于纯 Node 单测
 function dataRoot() { return require('../common/paths').dataRoot(); }
 
-const UA = 'Mozilla/5.0 (personal-kb)';
-const TIMEOUT_MS = 300000; // 慢网络下大包下载耗时较长，放宽到 5 分钟
-const MAX_ZIP_BYTES = 60 * 1024 * 1024;
+// UA / 下载超时 / 包大小上限统一定义于 common/constants.js
+const { HTTP_USER_AGENT: UA, SKILL_DOWNLOAD_TIMEOUT_MS: TIMEOUT_MS, SKILL_MAX_ZIP_BYTES: MAX_ZIP_BYTES } = require('../common/constants');
 
 // ---------- 输入解析 ----------
 // 从任意输入中提取 GitHub owner/repo、可选 skill 名；返回 { owner, repo, ref, skills[], source }

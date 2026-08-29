@@ -8,44 +8,20 @@ const { buildTasks } = require('../jobs/tasks');
 const { getPrompt } = require('../ai/prompts');
 
 // ---------- 本体层定义（抽取与展示共用的受控词表，可增删改查，持久化在 kv） ----------
-const ONTO_KEY = 'ontology';
-const DEFAULT_ONTOLOGY = {
-  classes: [
-    { key: 'concept', label: '抽象概念', desc: '方法/原理/术语/抽象想法', examples: ['RAG', '本体层'] },
-    { key: 'entity', label: '实体', desc: '人/组织/产品/工具等具体个体', examples: ['通义千问', 'SQLite'] },
-    { key: 'topic', label: '主题', desc: '领域/议题/主题综合页', examples: ['LLM Wiki'] },
-    { key: 'source', label: '来源', desc: '文档/网页/资料等原始材料', examples: ['OKF 规范'] },
-    { key: 'note', label: '笔记', desc: '用户手工记录的 Markdown 条目', examples: ['快速上手'] },
-  ],
-  predicates: [
-    { key: '属于', desc: '实例归于某类/某集合' },
-    { key: '包含', desc: '整体与部分/集合成员' },
-    { key: '依赖', desc: '运行或成立以前者为条件' },
-    { key: '相关', desc: '弱关联兜底关系' },
-    { key: '引用', desc: '内容援引后者' },
-    { key: '应用于', desc: '前者作用于后者场景' },
-    { key: '衍生自', desc: '由后者演化/抽象而来' },
-    { key: '矛盾于', desc: '与后者冲突/互斥' },
-  ],
-  constraints: [
-    '节点类型须从五个实体类中选取，其余回退为 concept',
-    '关系谓词须从受控词表选取，其余回退为「相关」',
-    '禁止自环边（from == to）',
-    '节点按规范化名称去重；边按 (from, to, rel) 去重',
-  ],
-};
+// ONTOLOGY_KEY / DEFAULT_ONTOLOGY 定义于 common/constants.js
+const { ONTOLOGY_KEY, DEFAULT_ONTOLOGY } = require('../common/constants');
 
 // 读取当前本体定义（未持久化时回退默认）
 function getOntologyDef() {
   try {
-    const o = JSON.parse(db.getKv(ONTO_KEY) || 'null');
+    const o = JSON.parse(db.getKv(ONTOLOGY_KEY) || 'null');
     if (o && Array.isArray(o.classes) && o.classes.length && Array.isArray(o.predicates) && o.predicates.length) return o;
   } catch (_) {}
   return DEFAULT_ONTOLOGY;
 }
 
 function persistOntology(o) {
-  db.setKv(ONTO_KEY, JSON.stringify(o));
+  db.setKv(ONTOLOGY_KEY, JSON.stringify(o));
   db.flush();
 }
 
