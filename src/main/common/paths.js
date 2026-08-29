@@ -91,4 +91,16 @@ function assetsDir() {
   return path.join(dataRoot(), 'assets');
 }
 
-module.exports = { dataRoot, setDataRoot, ensureUnifiedRoot, consumeAssetsRewrite, assetsDir, legacyUserData };
+// 把本地绝对路径编码为 kb-asset://file URL（Markdown 图片引用）。
+// encodeURI 不编码 ( ) '，而笔记目录常含「 (更新版)」等括号——未编码的 ( 会让 Markdown 解析器
+// 提前截断 ![](...) 的 URL，导致整条图片引用损坏看不到图。故 encodeURI 后手动补编码 markdown 定界符。
+// 跨平台：统一正斜杠；Windows 盘符保留冒号（D:/...），Mac 绝对路径保留前导 /（/Users/...）。
+// 解析端（main.js protocol.handle / web /api/asset）用 path.resolve(decodeURIComponent(pathname)) 还原，
+// 与旧格式（kb-asset://fileD:%5C...，host 并入路径）结构兼容，仅需处理 Windows 盘符前导斜杠。
+function kbAssetUrlFor(absPath) {
+  const p = String(absPath).replace(/\\/g, '/'); // 统一正斜杠
+  const enc = encodeURI(p).replace(/[()']/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return 'kb-asset://file' + enc;
+}
+
+module.exports = { dataRoot, setDataRoot, ensureUnifiedRoot, consumeAssetsRewrite, assetsDir, legacyUserData, kbAssetUrlFor };

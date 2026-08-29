@@ -148,8 +148,9 @@ async function init() {
 function rewriteAssetPrefix(from, to) {
   // 仅表存在时生效（笔记落文件后由 rewriteNoteFiles 接管）
   if (!all("SELECT name FROM sqlite_master WHERE type='table' AND name='notes'").length) return;
+  // search 须匹配存量正文里的旧格式（encodeURI，不编码括号）；replace 统一为新格式（kbAssetUrlFor，括号安全）
   const search = 'kb-asset://file' + encodeURI(from);
-  const replace = 'kb-asset://file' + encodeURI(to);
+  const replace = paths.kbAssetUrlFor(to);
   for (const row of all('SELECT id, content FROM notes')) {
     if (typeof row.content === 'string' && row.content.includes(search)) {
       run('UPDATE notes SET content = ? WHERE id = ?', [row.content.split(search).join(replace), row.id]);

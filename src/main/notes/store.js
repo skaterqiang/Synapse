@@ -185,11 +185,11 @@ function escapeRe(s) {
 // 正文中的 kb-asset 附件引用统一指向笔记自身目录（兼容历史 assets/ 与旧 appData 路径）
 function normalizeAssetRefs(content, title, folderId, trashed) {
   if (!content || !content.includes('kb-asset://file')) return content;
-  const newPrefix = 'kb-asset://file' + encodeURI(noteAssetDir(title, folderId, trashed)) + '/';
+  const newPrefix = paths.kbAssetUrlFor(noteAssetDir(title, folderId, trashed)) + '/';
   const roots = [paths.assetsDir(), path.join(paths.legacyUserData(), 'assets')];
   let out = content;
   for (const r of roots) {
-    const re = new RegExp('kb-asset://file' + escapeRe(encodeURI(r)) + '/[^/]+/', 'g');
+    const re = new RegExp(escapeRe(paths.kbAssetUrlFor(r)) + '/[^/]+/', 'g');
     out = out.replace(re, newPrefix);
   }
   return out;
@@ -243,7 +243,10 @@ function loadStore() {
   const { notes, hasAnyNoteFile } = loadNotesFromDisk(allFolders, scan);
   // hasAnyNoteFile：磁盘是否存在任何笔记文件——前端「首启种子笔记」据此判断，
   // 避免瞬时异常读到空列表时误种子并回写空列表导致磁盘笔记被清理
-  return { folders: allFolders, notes, settings: settings.getSettings(), hasAnyNoteFile };
+  let trashedFolders = [];
+  try { trashedFolders = JSON.parse(db.getKv('trashedFolders') || '[]') || []; } catch (_) { trashedFolders = []; }
+  if (!Array.isArray(trashedFolders)) trashedFolders = [];
+  return { folders: allFolders, notes, settings: settings.getSettings(), hasAnyNoteFile, trashedFolders };
 }
 
 // ---------- 写入 ----------
@@ -346,6 +349,7 @@ function saveStore(store) {
       ]);
     }
     db.setKv('settings', JSON.stringify(store.settings || {}));
+    db.setKv('trashedFolders', JSON.stringify(Array.isArray(store.trashedFolders) ? store.trashedFolders : []));
   });
   writeNotesToDisk(folders, Array.isArray(store.notes) ? store.notes : []);
   db.flush();
@@ -394,8 +398,8 @@ function migrateDbNotesToFiles() {
 function rewriteNoteFiles(from, to) {
   const root = notesRoot();
   if (!fs.existsSync(root)) return;
-  const search = 'kb-asset://file' + encodeURI(from);
-  const replace = 'kb-asset://file' + encodeURI(to);
+  const search = paths.kbAssetUrlFor(from);
+  const replace = paths.kbAssetUrlFor(to);
   const { files } = scanNotes(root);
   let n = 0;
   for (const file of files) {
@@ -472,8 +476,8 @@ function importNote(title, content, folderRel, source) {
           if (fs.existsSync(oldAttach) && oldAttach !== newAttach) {
             try {
               fs.renameSync(oldAttach, newAttach);
-              const oldPrefix = 'kb-asset://file' + encodeURI(oldAttach) + '/';
-              const newPrefix = 'kb-asset://file' + encodeURI(newAttach) + '/';
+              const oldPrefix = paths.kbAssetUrlFor(oldAttach) + '/';
+              const newPrefix = paths.kbAssetUrlFor(newAttach) + '/';
               if (merged.content.includes(oldPrefix)) merged.content = merged.content.split(oldPrefix).join(newPrefix);
             } catch (_) { /* 附件目录随迁失败不影响笔记本体移出 trash */ }
           }
@@ -558,8 +562,8 @@ function migrateAssetsToNoteDirs() {
       if (!fs.existsSync(to)) fs.renameSync(path.join(oldDir, f), to);
     }
     try { fs.rmdirSync(oldDir); } catch (_) {}
-    const oldPrefix = 'kb-asset://file' + encodeURI(oldDir);
-    const newPrefix = 'kb-asset://file' + encodeURI(noteDir);
+    const oldPrefix = paths.kbAssetUrlFor(oldDir);
+    const newPrefix = paths.kbAssetUrlFor(noteDir);
     const text = fs.readFileSync(target, 'utf-8');
     if (text.includes(oldPrefix)) fs.writeFileSync(target, text.split(oldPrefix).join(newPrefix), 'utf-8');
     moved++;

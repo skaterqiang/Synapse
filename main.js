@@ -85,7 +85,7 @@ async function createWindow() {
   });
   if (process.argv.includes('--kb-debug')) mainWindow.webContents.openDevTools({ mode: 'detach' });
   // 版本 query 使 index.html 自身绕开 file:// 缓存（内部脚本引用另带各自版本号）
-  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'), { query: { v: '20260829c' } });
+  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'), { query: { v: '20260829e' } });
 }
 
 app.whenReady().then(async () => {
@@ -97,7 +97,21 @@ app.whenReady().then(async () => {
   const legacyAssets = path.join(paths.legacyUserData(), 'assets');
   const noteRoot = require('./src/main/notes/store').notesRoot();
   protocol.handle('kb-asset', (request) => {
-    const p = path.resolve(decodeURIComponent(new URL(request.url).pathname));
+    // 兼容两种历史/现行格式：
+    //  新格式 kb-asset://fileD:/<encodeURI 路径>（盘符后带 /，host=fileD，new URL 可解析）
+    //  旧格式 kb-asset://fileD:%5C<encodeURI 路径>（盘符后无 /，host 并入路径导致 new URL 抛 Invalid URL）
+    let p = null;
+    try {
+      let pathname = decodeURIComponent(new URL(request.url).pathname);
+      // Windows 盘符前导斜杠：/D:/x → D:/x，否则 path.resolve 出 D:\D:\x
+      if (/^\/[A-Za-z]:[\/]/.test(pathname)) pathname = pathname.slice(1);
+      p = path.resolve(pathname);
+    } catch (_) {
+      // 旧格式：new URL 解析失败，直接从原始串剥掉 'kb-asset://file' 前缀后解码还原
+      const raw = request.url.replace(/^kb-asset:\/\/file/i, '');
+      try { p = path.resolve(decodeURIComponent(raw)); } catch (_) { p = null; }
+    }
+    if (!p) return new Response('bad request', { status: 400 });
     const allowed = p.startsWith(assetsRoot + path.sep) || p.startsWith(legacyAssets + path.sep) || p.startsWith(noteRoot + path.sep);
     if (!allowed) {
       return new Response('forbidden', { status: 403 });

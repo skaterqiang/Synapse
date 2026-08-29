@@ -11,7 +11,7 @@ const XLSX = require('xlsx');
 const { PDFParse } = require('pdf-parse');
 const { rawsRoot } = require('./root');
 const { num } = require('../common/config');
-const { dataRoot } = require('../common/paths');
+const { dataRoot, kbAssetUrlFor } = require('../common/paths');
 
 // MinerU 失败回退内置解析时，把原因落盘到 <数据根>/mineru-fallback.log（保留最近 30 行）。
 // 回退本身是静默的（任务仍记 success），没有这份日志用户只能看到笔记质量变差却无从定位
@@ -202,7 +202,8 @@ function attachMineruImages(notePath, imagesDir) {
     }
     if (moved) {
       const text = fs.readFileSync(notePath, 'utf-8');
-      const prefix = 'kb-asset://file' + encodeURI(assetDir) + '/';
+      // 附件目录引用统一走 kbAssetUrlFor：逐段编码 ( ) 等保留字符，防目录名含括号时 Markdown 截断 URL
+      const prefix = kbAssetUrlFor(assetDir) + '/';
       const updated = text.split('](images/').join('](' + prefix);
       if (updated !== text) fs.writeFileSync(notePath, updated, 'utf-8');
     }
@@ -532,7 +533,7 @@ async function extractFileContentRaw(absPath, settings, opts = {}) {
   // 配置了外部转换（本地 MinerU 等）时，二进制文档优先走插件：扫描件 PDF/图片等内置解析拿不到
   // 文本，插件产出结构化 Markdown 质量更高；插件失败再回退内置解析。纯文本类仍走内置（快且稳）
   const external = mineruCmdParts(settings);
-  const preferExternal = !['.md', '.markdown', '.txt', '.csv', '.json', '.log', '.html', '.htm'].includes(ext);
+  const preferExternal = !TEXTUAL_EXTS.includes(ext);
   // 强制 MinerU 模式（作业「用 MinerU 重跑」）：未配置转换命令直接报错，不做内置回退
   if (opts.forceMineru && preferExternal && !(external && external.length)) {
     throw new Error('未配置 MinerU 转换命令（设置→文档解析），无法强制 MinerU 解析');
@@ -629,6 +630,11 @@ async function extractFileContentRaw(absPath, settings, opts = {}) {
 // forceMineru（作业「用 MinerU 重跑」）不读缓存，保证强制重跑语义。
 const EXTRACT_CACHE_DIR = () => path.join(dataRoot(), 'extract-cache');
 const CACHE_MAX_BYTES = 5 * 1024 * 1024; // 单条缓存上限：检索本就只取头部，超大全文不必落盘
+// 文本型扩展：按设计固定走内置解析，不经过 MinerU（与 extractFileContentRaw 的 preferExternal 同口径）
+const TEXTUAL_EXTS = ['.md', '.markdown', '.txt', '.csv', '.json', '.log', '.html', '.htm'];
+// MinerU 失败回退产物的缓存有效期：期内复用避免扫描/作业反复跑分钟级且必失败的转换；
+// 过期自动视为未命中重试 MinerU（修好代理/模型后无需手动清缓存）。「用 MinerU 重跑」始终绕过缓存
+const FALLBACK_CACHE_TTL_MS = 10 * 60 * 1000;
 let cachePrunedAt = 0;
 function extractCacheKey(absPath) {
   let st;
@@ -637,21 +643,38 @@ function extractCacheKey(absPath) {
   return { id, size: st.size, mtime: Math.round(st.mtimeMs) };
 }
 function extractCachePath(id) { return path.join(EXTRACT_CACHE_DIR(), `${id}.json`); }
-function readExtractCache(absPath) {
+function readExtractCache(absPath, settings) {
   const key = extractCacheKey(absPath);
   if (!key) return null;
   try {
     const j = JSON.parse(fs.readFileSync(extractCachePath(key.id), 'utf-8'));
-    if (j && j.size === key.size && j.mtime === key.mtime) return String(j.text || '');
+    if (j && j.size === key.size && j.mtime === key.mtime) {
+      const textual = TEXTUAL_EXTS.includes(path.extname(String(absPath)).toLowerCase());
+      const mineruOn = !!(mineruCmdParts(settings) || []).length;
+      const out = { text: String(j.text || ''), reason: String(j.reason || '') };
+      if (j.method === 'mineru') return { ...out, method: 'mineru' };
+      if (j.method === 'fallback') {
+        // MinerU 已不再配置：回退文本即正确结果；仍在 TTL 内：复用避免反复跑必失败的转换
+        if (!mineruOn || Date.now() - (j.at || 0) <= FALLBACK_CACHE_TTL_MS) return { ...out, method: 'builtin' };
+        return null; // TTL 过期：重试 MinerU
+      }
+      if (j.method === 'builtin') {
+        // 文本型或未配 MinerU：内置结果一直有效；二进制型后来配置了 MinerU 则应重试 MinerU
+        if (textual || !mineruOn) return { ...out, method: 'builtin' };
+        return null;
+      }
+      // 无解析方式标记的旧条目（可能是失败回退的低质量文本）：视为未命中，重新提取并覆盖
+      return null;
+    }
   } catch (_) { /* 无缓存/损坏 → 重新提取 */ }
   return null;
 }
-function writeExtractCache(absPath, text) {
+function writeExtractCache(absPath, text, method, reason) {
   const key = extractCacheKey(absPath);
   if (!key || String(text || '').length > CACHE_MAX_BYTES) return;
   try {
     fs.mkdirSync(EXTRACT_CACHE_DIR(), { recursive: true });
-    fs.writeFileSync(extractCachePath(key.id), JSON.stringify({ path: String(absPath), size: key.size, mtime: key.mtime, at: Date.now(), text: String(text || '') }));
+    fs.writeFileSync(extractCachePath(key.id), JSON.stringify({ path: String(absPath), size: key.size, mtime: key.mtime, at: Date.now(), method: method || 'builtin', reason: String(reason || ''), text: String(text || '') }));
     // 低频清理：缓存目录超 60MB 时按修改时间保留最新 200 条（扫描路径高频调用，不能每次全量排序）
     const now = Date.now();
     if (now - cachePrunedAt > 60000) {
@@ -670,23 +693,32 @@ function writeExtractCache(absPath, text) {
   } catch (_) { /* 缓存写失败不影响主流程 */ }
 }
 // 对外入口：带缓存的提取。静态属性（lastParseMethod/lastExternalError，jobs.js 读取）
-// 在真实跑解析时由 extractFileContentRaw 维护；命中缓存时标记 parseMethod=cache。
+// 在真实跑解析时由 extractFileContentRaw 维护；命中缓存时沿用条目记录的解析方式（如实展示）。
 async function extractFileContent(absPath, settings, opts = {}) {
   if (!(opts && opts.forceMineru)) {
-    const hit = readExtractCache(absPath);
-    if (hit !== null) {
-      extractFileContent.lastParseMethod = 'cache';
-      extractFileContent.lastExternalError = '';
+    const hit = readExtractCache(absPath, settings);
+    if (hit) {
+      extractFileContent.lastParseMethod = hit.method;
+      extractFileContent.lastExternalError = hit.reason;
       if (opts && opts.info) {
-        opts.info.parseMethod = 'cache';
-        opts.info.externalError = '';
+        opts.info.parseMethod = hit.method;
+        opts.info.externalError = hit.reason;
         opts.info.imagesDir = null;
+        opts.info.fromCache = true;
       }
-      return hit;
+      return hit.text;
     }
   }
   const text = await extractFileContentRaw(absPath, settings, opts);
-  writeExtractCache(absPath, text);
+  // 落盘策略：MinerU 产物昂贵（单次几十秒到分钟）长期复用；文本型/未配 MinerU 的内置结果也长期复用；
+  // 二进制型在配了 MinerU 时的失败回退产物只缓存 TTL 期（reason 一并落盘，命中时作业能展示真实失败原因），
+  // 过期自动重试 MinerU，避免低质量文本被永久固化
+  const method = (opts.info && opts.info.parseMethod) || extractFileContentRaw.lastParseMethod || 'builtin';
+  const textual = TEXTUAL_EXTS.includes(path.extname(String(absPath)).toLowerCase());
+  const mineruOn = !!(mineruCmdParts(settings) || []).length;
+  if (method === 'mineru') writeExtractCache(absPath, text, 'mineru');
+  else if (!mineruOn || textual) writeExtractCache(absPath, text, 'builtin');
+  else writeExtractCache(absPath, text, 'fallback', (opts.info && opts.info.externalError) || extractFileContentRaw.lastExternalError || 'MinerU 转换失败');
   return text;
 }
 extractFileContent.lastParseMethod = '';
@@ -1065,12 +1097,8 @@ async function readRawText(settings, relPath) {
   if (['.md', '.markdown', '.txt', '.csv', '.json', '.log'].includes(ext)) {
     return fs.existsSync(abs) ? fs.readFileSync(abs, 'utf-8') : '';
   }
-  // 富文本先查提取缓存：问答扫描不再每次整篇重转（MinerU 配置下单 PDF 可达分钟级）
-  const hit = readExtractCache(abs);
-  if (hit !== null) return hit;
-  const text = await extractFileContent(abs, settings);
-  writeExtractCache(abs, text);
-  return text;
+  // 富文本走带缓存包装层：MinerU 产物落盘复用，问答扫描不再每次整篇重转（MinerU 配置下单 PDF 可达分钟级）
+  return extractFileContent(abs, settings);
 }
 // 检索友好的轻量读取：纯文本读头部；富文本优先磁盘缓存，未命中才整篇提取并落缓存。
 // 与 readRawText 的区别：不返回全文（检索只需头部打分），避免大文档整篇进内存
@@ -1096,10 +1124,7 @@ async function readRawTextForScan(settings, relPath, maxBytes) {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch (_) {} }
     }
   }
-  const hit = readExtractCache(abs);
-  if (hit !== null) return hit;
   const text = await extractFileContent(abs, settings);
-  writeExtractCache(abs, text);
   return String(text || '');
 }
 

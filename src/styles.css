@@ -907,6 +907,9 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .settings-view-actions .modal-data-path { flex: 1; }
 /* 璁剧疆鑷姩淇濆瓨鎻愮ず */
 .settings-autosave { font-size: 12.5px; color: #2ea121; white-space: nowrap; }
+/* 指示器挂在「文档解析方式」卡片右上角 */
+.config-card { position: relative; }
+.config-card > .settings-autosave { position: absolute; top: 16px; right: 16px; }
 /* 杈撳叆？+ 琛屽唴鎸夐挳锛堥渶鏄惧紡搴旂敤鐨勮矾寰勯」銆佽幏鍙栨ā鍨嬬瓑？*/
 .settings-pane .setting-row, .modal .setting-row { display: flex; gap: 8px; align-items: center; }
 .settings-pane .setting-row input, .modal .setting-row input { flex: 1; min-width: 0; }
@@ -996,6 +999,8 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 /* 鍗曢€夐」鍙充晶鐨勭伆鑹茶鏄庯紙棰嗗煙閫夋嫨寮圭獥锛夛細璺熷湪閫夐」鏂囧瓧鍚庯紝涓嶆姠涓绘枃鏈殑娉ㄦ剰？*/
 .radio-hint { flex: 1; min-width: 0; font-size: 11.5px; font-style: normal; color: var(--text-sub); line-height: 1.5; }
+/* 解析方式行的短提示不换行，避免「仅支持 PDF」折成两行 */
+.mineru-mode-row .radio-hint { flex: 0 0 auto; white-space: nowrap; }
 #domain-pick-sel { width: 100%; margin: -4px 0 4px 26px; max-width: calc(100% - 26px); }
 #domain-pick-sel:disabled { opacity: 0.5; }
 .wiki-group-toggle { cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none; }

@@ -1,4 +1,11 @@
 // 渲染进程·笔记模块：过滤、列表、编辑器、笔记操作、仿备忘录工具栏
+// 本地绝对路径 → kb-asset://file URL。与主进程 paths.kbAssetUrlFor 同逻辑（渲染层不能 require 主进程模块）：
+// encodeURI 后手动补编码 ( ) '，防笔记标题含括号时 Markdown 截断图片 URL；Windows 盘符保留冒号。
+function kbAssetUrlFor(absPath) {
+  const p = String(absPath).replace(/\\/g, '/');
+  const enc = encodeURI(p).replace(/[()']/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return 'kb-asset://file' + enc;
+}
 // ================= 笔记过滤 =================
 function getFilteredNotes() {
   const { type, id, query } = state.view;
@@ -150,6 +157,34 @@ function restoreNoteFromTrash(note) {
   delete note.trashed;
   note.folderId = folderId;
   note.updatedAt = Date.now();
+  // 清理已无笔记归属的被删目录快照（避免还原单条笔记后，垃圾桶里残留空目录节点）
+  if (Array.isArray(state.trashedFolders) && state.trashedFolders.length) {
+    const usedRel = new Set(state.notes.filter((n) => !!n.trashed).map((n) => String(n.trashFrom || '')));
+    const byId = new Map(state.trashedFolders.map((f) => [f.id, f]));
+    const hasNotes = (tf) => {
+      let rel = '';
+      const chain = [];
+      let cur = tf;
+      const safe = (s) => String(s || '').trim().replace(/[\\/:*?"<>|]/g, '-').slice(0, 80) || 'untitled';
+      while (cur) { chain.unshift(safe(cur.name)); cur = cur.parentId ? byId.get(cur.parentId) : null; }
+      rel = chain.join('/');
+      return usedRel.has(rel);
+    };
+    // 保留自身或任一后代仍有笔记的快照；自叶向上反复剔除空节点
+    let keep = state.trashedFolders.slice();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const keepIds = new Set(keep.map((f) => f.id));
+      keep = keep.filter((f) => {
+        if (hasNotes(f)) return true;
+        if (keep.some((c) => c.parentId === f.id && keepIds.has(c.id))) return true; // 有子快照保留
+        changed = true;
+        return false;
+      });
+    }
+    state.trashedFolders = keep;
+  }
   persist();
   renderAll();
   toast(folderId ? `已还原到「${folderPathOf(note)}」` : '已还原到根目录', 2500);
@@ -686,7 +721,7 @@ async function attachAction(act) {
     } else {
       const res = await window.kb.noteSaveImage({ dataUrl: pick.dataUrl, name: pick.name, title: (currentNote() && currentNote().title) || '', folderId: (currentNote() && currentNote().folderId) || null, trashed: !!(currentNote() && currentNote().trashed) });
       if (!res.ok) { toast('保存图片失败：' + res.error, 4000); return; }
-      insertAtCursor(`\n![${pick.name}](kb-asset://file${encodeURI(res.path)})\n`);
+      insertAtCursor(`\n![${pick.name}](${kbAssetUrlFor(res.path)})\n`);
     }
     return;
   }

@@ -297,9 +297,12 @@ const JOB_RUNNERS = {
     // 该来源是否会实际尝试 MinerU：文本型扩展（含 html）按设计固定走内置解析，不会调用 MinerU，
     // 也不存在「回退」一说；文案须如实区分，避免用户误以为 MinerU 失败
     const usesMineru = (name) => mineruOn && !BUILTIN_EXTS.includes(path.extname(String(name)).toLowerCase());
-    const parseLabel = (name, used) => used === 'mineru'
-      ? 'MinerU 解析'
-      : (usesMineru(name) ? '内置解析（MinerU 失败回退）' : '内置解析');
+    // 解析方式如实标注：缓存命中时带上「缓存」字样，避免用户以为本次重新跑了 MinerU
+    const parseLabel = (name, used, fromCache) => {
+      const suffix = fromCache ? '（缓存命中，未重跑）' : '';
+      if (used === 'mineru') return `MinerU 解析${suffix}`;
+      return usesMineru(name) ? `内置解析（MinerU 失败回退）${suffix}` : '内置解析';
+    };
     // 回退记录：MinerU 失败静默回退内置是「笔记质量与 MinerU 测试不一致」的根因，
     // 这里逐文件收集回退原因，写入子任务输出与作业结果，前端据此展示警示与「用 MinerU 重跑」
     const fallbacks = [];
@@ -336,14 +339,14 @@ const JOB_RUNNERS = {
           onLog: (line, replace) => jobLog(job, `[${record.name}] ${line}`, replace),
         });
         const used = info.parseMethod || 'builtin';
-        // 按来源类型计数（阶段摘要用）：二进制/图片型会经 MinerU，文本型（含 html）按设计固定内置
-        if (!forceMineru) { if (usesMineru(record.name)) mineruFiles++; else builtinOnlyFiles++; }
+        // 按来源类型计数（阶段摘要用）：二进制/图片型会经 MinerU（含缓存命中的 MinerU 产物），文本型（含 html）按设计固定内置
+        if (!forceMineru) { if (used === 'mineru' || usesMineru(record.name)) mineruFiles++; else builtinOnlyFiles++; }
         if (!String(text || '').trim()) throw new Error('来源内容为空');
         setStage(job, 'save', 'running', `写入笔记 ${record.name}（${no}/${rawPaths.length}）`);
-        // 单文件引用（无 root/rel）用文件所在父目录名作笔记目录，避免新提取笔记因缺目录信息落入垃圾桶
-        const rootName = record.root
-          ? path.basename(String(record.root).replace(/[\\/]+$/, ''))
-          : (relPath.startsWith('local:') ? path.basename(path.dirname(relPath.slice('local:'.length))) : '');
+        // 目录归属：仅「按目录添加」（record.root 非空）保留来源目录结构（根目录名 + 子目录）；
+        // 单文件（local:）添加不再套父目录名——否则文件恰好在「Synapse」这类目录下时，笔记会多套一层
+        // 以父目录命名的目录（如 D:\个人助手\Synapse\test.pdf → Synapse/ 目录），与用户「根目录添加即未分类」的直觉相悖
+        const rootName = record.root ? path.basename(String(record.root).replace(/[\\/]+$/, '')) : '';
         const childDir = record.root && record.rel ? path.dirname(record.rel) : '';
         const folderRel = [rootName, childDir].filter((v) => v && v !== '.').join(path.sep);
         // 标题取文件名并解码 URL 编码（%E7%9F%A5… → 知识图谱…），与 MinerU 测试展示的文件名一致；
@@ -360,7 +363,7 @@ const JOB_RUNNERS = {
           : '';
         if (fbReason) fallbacks.push({ path: relPath, name: record.name, reason: fbReason, note: relNotePath(res.path) });
         // 子任务输出带上笔记落盘的具体位置，便于用户直接定位文件；回退时附原因警示
-        tracker.setOutput(i, `${res.updated ? '已更新已有笔记' : '已新建笔记'} · ${parseLabel(record.name, used)} → ${relNotePath(res.path)}${imgCount ? `（含 ${imgCount} 张图）` : ''}${fbReason ? `\n⚠ MinerU 失败已回退内置解析（${fbReason}），笔记质量可能低于 MinerU 解析，可在作业上「用 MinerU 重跑」` : ''}`);
+        tracker.setOutput(i, `${res.updated ? '已更新已有笔记' : '已新建笔记'} · ${parseLabel(record.name, used, info.fromCache)} → ${relNotePath(res.path)}${imgCount ? `（含 ${imgCount} 张图）` : ''}${fbReason ? `\n⚠ MinerU 失败已回退内置解析（${fbReason}），笔记质量可能低于 MinerU 解析，可在作业上「用 MinerU 重跑」` : ''}`);
         tracker.setDone(i);
       } catch (err) {
         failed.push({ path: relPath, name: record.name, error: err.message });

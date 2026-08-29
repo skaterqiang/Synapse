@@ -259,6 +259,7 @@ async function init() {
   state.folders = store.folders || [];
   state.notes = store.notes || [];
   state.settings = store.settings || {};
+  state.trashedFolders = store.trashedFolders || [];
 
   // 首次使用生成示例笔记：仅当磁盘确实没有任何笔记文件时才种子，
   // 防止瞬时异常读到空列表时误种子并回写，触发磁盘笔记清理

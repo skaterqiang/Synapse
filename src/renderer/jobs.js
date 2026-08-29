@@ -399,6 +399,7 @@ function handleJobsUpdate(list) {
       window.kb.loadData().then((data) => {
         state.folders = data.folders || [];
         state.notes = data.notes || [];
+        state.trashedFolders = data.trashedFolders || [];
         renderAll();
       });
       toast('笔记提取完成');

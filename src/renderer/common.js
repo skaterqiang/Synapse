@@ -23,6 +23,7 @@ const state = {
   templates: [],                      // 领域模版列表
   raws: [],                           // raw/ 原始来源列表
   folderCollapsed: {},                // 目录树折叠状态
+  trashedFolders: [],                 // 已删除目录的快照 [{id,name,parentId}]，垃圾桶内分组展示/整目录还原用
 };
 
 let saveTimer = null;
@@ -302,11 +303,180 @@ function persist() {
       folders: state.folders,
       notes: state.notes,
       settings: state.settings,
+      trashedFolders: state.trashedFolders,
     }).then((res) => {
       if (res && !res.ok) toast('保存失败：' + (res.error || '未知错误'));
     });
   }, 400);
 }
+
+// ================= 垃圾桶·被删目录分组 =================
+// 被删目录快照（trashedFolders）构成一棵小森林，parentId 仍指向快照内父目录；
+// 笔记的 trashFrom 是其原目录的相对路径（如 "Synapse/子目录"），据此把笔记归到对应被删目录节点。
+// 被删目录的相对路径（与 folderRelPath 同规则：safeName 后按 / 拼接）
+function trashedFolderRel(tf) {
+  const byId = new Map((state.trashedFolders || []).map((f) => [f.id, f]));
+  const safe = (s) => String(s || '').trim().replace(/[\\/:*?"<>|]/g, '-').slice(0, 80) || 'untitled';
+  const chain = [];
+  let cur = tf;
+  while (cur) { chain.unshift(safe(cur.name)); cur = cur.parentId ? byId.get(cur.parentId) : null; }
+  return chain.join('/');
+}
+
+// 笔记归属的被删目录根节点 id（其 trashFrom 前缀匹配某个被删目录链时返回该链的根快照 id，否则 null）
+function trashGroupRootOf(note) {
+  const rel = String(note.trashFrom || '');
+  if (!rel) return null;
+  const list = state.trashedFolders || [];
+  if (!list.length) return null;
+  const byId = new Map(list.map((f) => [f.id, f]));
+  // 找 trashFrom 命中的最深层被删目录（完整相对路径相等），再回溯到链根
+  let hit = null;
+  for (const tf of list) {
+    if (trashedFolderRel(tf) === rel) { hit = tf; break; }
+  }
+  if (!hit) return null;
+  let root = hit;
+  while (root.parentId && byId.has(root.parentId)) root = byId.get(root.parentId);
+  return root.id;
+}
+
+// 垃圾桶内渲染被删目录节点（递归子目录），叶子挂该目录自己的笔记
+function renderTrashedFolderNodes(tree, depth) {
+  const list = state.trashedFolders || [];
+  if (!list.length) return;
+  const byId = new Map(list.map((f) => [f.id, f]));
+  const kids = (id) => list.filter((f) => f.parentId === id);
+  const roots = list.filter((f) => !f.parentId || !byId.has(f.parentId));
+  const renderTf = (tf, d) => {
+    const myNotes = state.notes
+      .filter((n) => !!n.trashed && String(n.trashFrom || '') === trashedFolderRel(tf))
+      .sort((a, b) => (a.title || '').localeCompare(b.title || '', 'zh'));
+    const sub = kids(tf.id);
+    const count = myNotes.length + sub.length;
+    const key = 'tf:' + tf.id;
+    const collapsed = !!state.folderCollapsed[key];
+    const div = document.createElement('div');
+    div.className = 'folder-item tf-node';
+    div.style.paddingLeft = 10 + (d + 1) * 16 + 'px';
+    div.innerHTML = `
+      <span class="folder-toggle${count ? '' : ' empty'}" data-act="tf-toggle" title="${collapsed ? '展开目录' : '收起目录'}">${count && !collapsed ? '▾' : '▸'}</span>
+      <span class="folder-name" title="已删除的目录，可右键还原">${escapeHtml(tf.name)}</span>
+      <span class="nav-count">${count}</span>`;
+    div.addEventListener('click', (e) => {
+      const actEl = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+      const act = actEl ? actEl.dataset.act : (e.target.dataset && e.target.dataset.act);
+      if (act === 'tf-toggle') {
+        e.stopPropagation();
+        state.folderCollapsed[key] = !collapsed;
+        try { localStorage.setItem('kb.folderCollapsed', JSON.stringify(state.folderCollapsed)); } catch (_) {}
+        try { localStorage.setItem('kb.folderCollapsedCustom', '1'); } catch (_) {}
+        renderSidebar();
+      }
+    });
+    div.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openCtxMenu(e.clientX, e.clientY, [
+        { label: `还原目录「${tf.name}」（含子目录与笔记）`, action: () => restoreTrashedFolder(tf.id) },
+        { label: `永久删除目录「${tf.name}」（含笔记，不可恢复）`, action: () => purgeTrashedFolder(tf.id) },
+      ]);
+    });
+    tree.appendChild(div);
+    if (!collapsed) {
+      sub.forEach((c) => renderTf(c, d + 1));
+      myNotes.forEach((n) => {
+        const nd = document.createElement('div');
+        nd.className = 'folder-item note-leaf' + (n.id === state.selectedNoteId ? ' active' : '');
+        nd.style.paddingLeft = 10 + (d + 2) * 16 + 'px';
+        nd.innerHTML = `<span class="folder-toggle">${icoSvg('notes', 12)}</span><span class="folder-name" title="${escapeHtml(n.title || '无标题笔记')}">${escapeHtml(n.title || '无标题笔记')}</span>`;
+        nd.addEventListener('click', () => selectNote(n.id));
+        nd.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openCtxMenu(e.clientX, e.clientY, [{ label: '还原到原来的位置', action: () => restoreNoteFromTrash(n) }]);
+        });
+        tree.appendChild(nd);
+      });
+    }
+  };
+  roots.forEach((r) => renderTf(r, depth));
+}
+
+// 还原被删目录：按快照逐级重建目录链（同名复用），把其下 trashed 笔记还原回对应目录，清掉该目录快照
+function restoreTrashedFolder(rootId) {
+  const list = state.trashedFolders || [];
+  const byId = new Map(list.map((f) => [f.id, f]));
+  if (!byId.has(rootId)) return;
+  // 收集该目录链的全部快照 id（含子目录）
+  const ids = new Set([rootId]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const f of list) {
+      if (f.parentId && ids.has(f.parentId) && !ids.has(f.id)) { ids.add(f.id); grew = true; }
+    }
+  }
+  // 自根向下逐级还原：父目录先就位（复用同名或新建），子目录再挂上去
+  const snapToLive = new Map(); // 快照 id → 还原后的真实目录 id
+  function kidsOfSnap(id) { return list.filter((f) => f.parentId === id); }
+  function restoreOne(tf) {
+    const parentLiveId = tf.parentId && snapToLive.has(tf.parentId) ? snapToLive.get(tf.parentId) : null;
+    // 同级同名目录存在则复用，否则新建
+    let live = state.folders.find((f) => (f.parentId || null) === (parentLiveId || null) && f.id !== '__trash__' && f.name === tf.name);
+    if (!live) {
+      live = { id: uid(), name: tf.name, parentId: parentLiveId || null };
+      state.folders.push(live);
+    }
+    snapToLive.set(tf.id, live.id);
+    kidsOfSnap(tf.id).forEach(restoreOne);
+  }
+  restoreOne(byId.get(rootId));
+  // 还原笔记：trashFrom 命中该目录链任意层级的，folderId 指向还原后的对应目录
+  const relToLive = new Map();
+  for (const tf of list) {
+    if (ids.has(tf.id)) relToLive.set(trashedFolderRel(tf), snapToLive.get(tf.id));
+  }
+  state.notes.forEach((n) => {
+    if (!n.trashed) return;
+    const liveId = relToLive.get(String(n.trashFrom || ''));
+    if (liveId) {
+      delete n.trashFrom;
+      delete n.trashed;
+      n.folderId = liveId;
+      n.updatedAt = Date.now();
+    }
+  });
+  state.trashedFolders = list.filter((f) => !ids.has(f.id));
+  persist();
+  renderAll();
+  toast(`已还原目录「${byId.get(rootId).name}」`, 2500);
+}
+
+// 永久删除被删目录：该目录链快照 + 其下全部 trashed 笔记一并删除（不可恢复）
+function purgeTrashedFolder(rootId) {
+  const list = state.trashedFolders || [];
+  const byId = new Map(list.map((f) => [f.id, f]));
+  if (!byId.has(rootId)) return;
+  const ids = new Set([rootId]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const f of list) {
+      if (f.parentId && ids.has(f.parentId) && !ids.has(f.id)) { ids.add(f.id); grew = true; }
+    }
+  }
+  const rels = new Set(list.filter((f) => ids.has(f.id)).map((f) => trashedFolderRel(f)));
+  const noteCount = state.notes.filter((n) => !!n.trashed && rels.has(String(n.trashFrom || ''))).length;
+  if (!confirm(`永久删除目录「${byId.get(rootId).name}」及其下 ${noteCount} 篇笔记？不可恢复。`)) return;
+  state.notes = state.notes.filter((n) => !(n.trashed && rels.has(String(n.trashFrom || ''))));
+  if (state.selectedNoteId && !state.notes.some((n) => n.id === state.selectedNoteId)) state.selectedNoteId = null;
+  state.trashedFolders = list.filter((f) => !ids.has(f.id));
+  persist();
+  renderAll();
+  toast('已永久删除目录', 2500);
+}
+
 // ================= 渲染：侧边栏 =================
 function renderSidebar() {
   $('count-all').textContent = state.notes.length;
@@ -381,7 +551,9 @@ function renderSidebar() {
       ]);
     });
     div.addEventListener('click', (e) => {
-      const act = e.target.dataset && e.target.dataset.act;
+      // e.target 可能命中按钮内部的 <svg> 子节点（无 dataset），向上找最近带 data-act 的祖先
+      const actEl = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+      const act = actEl ? actEl.dataset.act : (e.target.dataset && e.target.dataset.act);
       if (act === 'toggle') {
         e.stopPropagation();
         state.folderCollapsed[folder.id] = !collapsed;
@@ -419,7 +591,18 @@ function renderSidebar() {
         }
         const noteCount = state.notes.filter((n) => descIds.has(n.folderId)).length;
         const subCount = descIds.size - 1;
-        if (!confirm(`删除目录"${folder.name}"？${subCount ? `含 ${subCount} 个子目录，` : ''}目录下共 ${noteCount} 篇笔记将移至"垃圾桶"（磁盘 trash/ 目录），可在垃圾桶内右键还原。`)) return;
+        if (!confirm(`删除目录"${folder.name}"？${subCount ? `含 ${subCount} 个子目录，` : ''}目录与目录下共 ${noteCount} 篇笔记将移至"垃圾桶"，可在垃圾桶内右键还原目录。`)) return;
+        // 目录本身也进垃圾桶：快照整条目录链（含父子关系），供垃圾桶内分组展示与整目录还原
+        const byId = new Map(state.folders.map((f) => [f.id, f]));
+        const snap = [];
+        const pushSnap = (fid) => {
+          const f = byId.get(fid);
+          if (!f) return;
+          snap.push({ id: f.id, name: f.name, parentId: f.parentId && descIds.has(f.parentId) ? f.parentId : null });
+          childrenOf(fid).forEach((c) => pushSnap(c.id));
+        };
+        pushSnap(folder.id);
+        state.trashedFolders = (state.trashedFolders || []).concat(snap);
         // 记录各笔记移入垃圾桶前的目录相对路径，供「还原到原来的位置」使用
         // （目录记录随后被移除，须先按当前目录树计算）
         state.notes.forEach((n) => {
@@ -445,8 +628,14 @@ function renderSidebar() {
     tree.appendChild(div);
     if (!collapsed) {
       children.forEach((c) => renderFolder(c, depth + 1));
+      // 垃圾桶内：先渲染被删目录节点（含其子目录与笔记，可整目录还原），再渲染散落的被删笔记
+      if (isTrash) {
+        renderTrashedFolderNodes(tree, depth);
+      }
       // 直属笔记叶子节点：目录树此前只展示子目录，导入目录下的笔记文件不可见（如「技术风险」）
-      ownNotes.forEach((n) => {
+      // 垃圾桶下：已被某个被删目录收纳的笔记不再重复平铺
+      const visibleOwn = isTrash ? ownNotes.filter((n) => !trashGroupRootOf(n)) : ownNotes;
+      visibleOwn.forEach((n) => {
         const nd = document.createElement('div');
         nd.className = 'folder-item note-leaf' + (n.id === state.selectedNoteId ? ' active' : '');
         nd.style.paddingLeft = 10 + (depth + 1) * 16 + 'px';
@@ -477,7 +666,11 @@ function renderSidebar() {
     state.folders.forEach((f) => { def[f.id] = depthOf(f) <= 1; });
     state.folderCollapsed = def;
   }
-  roots.forEach((f) => renderFolder(f, 0));
+  // 垃圾桶固定渲染在目录树最下方：从 roots 中抽出，最后单独渲染
+  const trashRoot = roots.find((f) => f.id === '__trash__');
+  const normalRoots = roots.filter((f) => f.id !== '__trash__');
+  normalRoots.forEach((f) => renderFolder(f, 0));
+  if (trashRoot) renderFolder(trashRoot, 0);
 
   if (state.folders.length === 0) {
     tree.innerHTML = '<div style="padding:4px 10px;font-size:12px;color:#b0b6bf">暂无目录，点上方 + 创建</div>';
@@ -1189,15 +1382,24 @@ async function addSkillByDir() {
 // ---------- 技能在线安装：兼容 npx skills add / skills.sh / GitHub 仓库 ----------
 // DEFAULT_SKILL_INSTALL_CMD 定义于 renderer/constants.js
 let skillInstalling = false;
+// 安装完成后锁定弹窗（安装按钮禁用、来源不可改），重新打开弹窗才允许再次安装
+let skillInstallDone = false;
+const skillInstallBtnInitHTML = (() => { const b = $('btn-skill-install-go'); return b ? b.innerHTML : ''; })();
 function openSkillInstall() {
   const logBox = $('skill-install-log');
   logBox.hidden = true; logBox.textContent = '';
   $('skill-install-status').textContent = '';
+  // 重置完成态：重新打开弹窗后可编辑来源并再次安装
+  skillInstallDone = false;
+  const goBtn = $('btn-skill-install-go');
+  goBtn.disabled = false;
+  if (skillInstallBtnInitHTML) goBtn.innerHTML = skillInstallBtnInitHTML;
+  $('skill-install-input').disabled = false;
   // 默认安装命令：预填上次保存的修改值（允许直接修改，安装后自动记住）
   const input = $('skill-install-input');
   input.value = (state.settings && state.settings.skillInstallCmd) || input.value || DEFAULT_SKILL_INSTALL_CMD;
   $('skill-install-modal').hidden = false;
-  setTimeout(() => { const i = $('skill-install-input'); if (i) { i.focus(); i.select(); } }, 50);
+  setTimeout(() => { const i = $('skill-install-input'); if (i && !i.disabled) { i.focus(); i.select(); } }, 50);
 }
 function appendSkillInstallLog(line) {
   const box = $('skill-install-log');
@@ -1255,6 +1457,11 @@ async function runSkillInstall() {
       }
       persist(); renderExtEditors(); refreshAllExtMenus();
       status.textContent = `✅ 完成：新装 ${added} 个技能`;
+      // 安装完毕：禁用安装按钮与来源输入，防止重复点击；重新打开弹窗才恢复
+      skillInstallDone = true;
+      btn.disabled = true;
+      btn.innerHTML = '✅ 已安装';
+      $('skill-install-input').disabled = true;
       toast(added ? `已安装 ${added} 个技能` : '技能均已存在，未重复登记', 3000);
     } else {
       status.textContent = '❌ ' + ((res && res.error) || '安装失败');
@@ -1266,7 +1473,11 @@ async function runSkillInstall() {
   } finally {
     clearInterval(tick);
     if (off) off();
-    btn.disabled = false; btn.textContent = oldText;
+    // 成功安装后保持禁用；失败/异常才恢复按钮允许重试
+    if (!skillInstallDone) {
+      btn.disabled = false;
+      if (skillInstallBtnInitHTML) btn.innerHTML = skillInstallBtnInitHTML; else btn.textContent = oldText;
+    }
     skillInstalling = false;
   }
 }
@@ -1660,6 +1871,13 @@ function applyMineruModeUI() {
   if (cmd) cmd.closest('.setting-row').classList.toggle('mineru-active', isMineru);
   if (btn) btn.disabled = false;
   if (card) card.style.display = isMineru ? '' : 'none';
+  // MinerU 专属输出（安装提示/测试结论/解析日志）只在 MinerU 模式下展示，
+  // 避免切回内置解析后页面仍残留大段 pip 安装日志
+  for (const id of ['mineru-install-tip', 'mineru-result', 'mineru-test-log', 'mineru-test-fileinfo']) {
+    const el = $(id);
+    if (el) el.hidden = !isMineru;
+  }
+  if (!isMineru) updateOpenTestDirBtn(); // 内置模式下隐藏「打开目录/产物路径」行
 }
 
 // MinerU 视觉模型选择器：列出「模型配置」中的全部模型（主模型 + 更多模型）。
@@ -1810,12 +2028,14 @@ async function openMineruTestDir() {
   }
 }
 
-// 清空垃圾桶：永久删除全部被删除（trashed）的笔记（磁盘文件由 persist→saveStore 同步清理）
+// 清空垃圾桶：永久删除全部被删除（trashed）的笔记与被删目录快照（磁盘文件由 persist→saveStore 同步清理）
 function emptyTrash() {
   const count = state.notes.filter((n) => !!n.trashed).length;
-  if (!count) { toast('垃圾桶已经是空的', 2500); return; }
-  if (!confirm(`清空垃圾桶？${count} 篇笔记将被永久删除，不可恢复。`)) return;
+  const folderCount = (state.trashedFolders || []).length;
+  if (!count && !folderCount) { toast('垃圾桶已经是空的', 2500); return; }
+  if (!confirm(`清空垃圾桶？${count} 篇笔记${folderCount ? `与 ${folderCount} 个已删目录` : ''}将被永久删除，不可恢复。`)) return;
   state.notes = state.notes.filter((n) => !n.trashed);
+  state.trashedFolders = [];
   if (state.selectedNoteId && !state.notes.some((n) => n.id === state.selectedNoteId)) state.selectedNoteId = null;
   persist();
   renderAll();
@@ -1993,11 +2213,16 @@ function saveSettingsFields() {
   if (typeof refreshSetupChecklist === 'function') refreshSetupChecklist();
 }
 
-// 自动保存反馈：不用 toast，避免频繁改动时弹窗打扰
+// 自动保存反馈：不用 toast，避免频繁改动时弹窗打扰；
+// 指示器位于「文档解析方式」卡片右上角，只在改动字段所属 Tab 正展示时闪现，
+// 避免在别的分类页看到与当前页无关的保存提示
 let autosaveTimer = null;
 function markSettingsSaved() {
   const el = $('settings-autosave');
   if (!el) return;
+  const ae = document.activeElement;
+  const pane = ae && ae.closest ? ae.closest('.settings-pane') : null;
+  if (pane && pane.hidden) return;
   el.textContent = '✓ 已自动保存';
   clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => { el.textContent = ''; }, 2000);

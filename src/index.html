@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: kb-asset: kb-doc: https:;" />
   <title>Synapse</title>
-  <link rel="stylesheet" href="styles.css?v=20260829b" />
+  <link rel="stylesheet" href="styles.css?v=20260829d" />
   <link rel="stylesheet" href="lib/hljs-atom-one-dark.min.css" />
 </head>
 <body>
@@ -563,17 +563,18 @@
               <div class="config-card">
                 <div class="config-card-title">笔记导入文件类型</div>
                 <input type="text" id="set-noteexts" placeholder="默认 pdf, docx, xlsx, xls, pptx, md, markdown, txt, csv, html, htm, png, jpg, jpeg, jp2, webp, gif, bmp, tiff" />
-                <p class="config-tip">名单内类型会被提取为笔记，其余跳过。留空用默认</p>
+                <p class="config-tip">名单内类型为内置解析直接支持的范围：会被提取为笔记，其余跳过。留空用默认</p>
               </div>
 
               <!-- 解析方式卡片 -->
               <div class="config-card">
                 <div class="config-card-title">文档解析方式</div>
+                <span class="settings-autosave" id="settings-autosave" aria-live="polite"></span>
                 <div class="setting-row mineru-mode-row">
                   <label class="radio-row"><input type="radio" name="set-minerumode" id="set-minerumode-builtin" value="builtin" checked /> 内置解析</label>
-                  <label class="radio-row"><input type="radio" name="set-minerumode" id="set-minerumode-mineru" value="mineru" /> MinerU 解析</label>
+                  <label class="radio-row"><input type="radio" name="set-minerumode" id="set-minerumode-mineru" value="mineru" /> MinerU 解析<i class="radio-hint">仅支持 PDF</i></label>
                 </div>
-                <p class="config-tip">内置解析：快速，覆盖文本型与常规 PDF/Office；MinerU：质量更高，仅处理 PDF 类二进制文档，失败自动回退</p>
+                <p class="config-tip">内置解析：快速，直接支持上方名单中的文本型与常规 PDF/Office；MinerU：质量更高，仅支持 PDF 类二进制文档，失败自动回退</p>
               </div>
 
               <!-- MinerU 配置卡片（仅 MinerU 模式显示） -->
@@ -636,7 +637,6 @@
             </div>
             <div class="settings-view-actions">
               <span class="modal-data-path" id="data-path"></span>
-              <span class="settings-autosave" id="settings-autosave"></span>
             </div>
           </div>
         </div>
@@ -943,7 +943,7 @@
   <script src="lib/highlight.min.js"></script>
   <!-- 渲染进程按模块分文件加载：常量 → 公共 → 笔记/原始文件/模版 → 问答 → 作业 → 图谱 → 入口 -->
   <script src="renderer/constants.js?v=20260829c"></script>
-  <script src="renderer/common.js?v=20260829c"></script>
+  <script src="renderer/common.js?v=20260829e"></script>
   <script src="renderer/notes.js?v=20260829c"></script>
   <script src="renderer/raws.js?v=20260829c"></script>
   <script src="renderer/chat.js?v=20260829c"></script>
