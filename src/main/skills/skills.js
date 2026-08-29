@@ -12,11 +12,12 @@ function readSkill(dir) {
   const m = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (m) {
     instructions = m[2];
+    const unquote = (v) => v.trim().replace(/^["']([\s\S]*)["']$/, '$1').trim();
     for (const line of m[1].split('\n')) {
       const kv = line.match(/^([A-Za-z_-]+):\s*(.*)$/);
       if (!kv) continue;
-      if (kv[1] === 'name') name = kv[2].trim();
-      if (kv[1] === 'description') description = kv[2].trim();
+      if (kv[1] === 'name') name = unquote(kv[2]);
+      if (kv[1] === 'description') description = unquote(kv[2]);
     }
   }
   if (!name) name = path.basename(dir);

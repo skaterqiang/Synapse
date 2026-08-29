@@ -11,8 +11,17 @@ const SRC = path.join(ROOT, 'src');
 const PORT = Number(process.env.PORT) || 8787;
 
 // ---------- electron shim：拦截 require('electron')，让业务模块无需改动 ----------
-// userData 与 Electron 默认一致（app.getPath('appData') = ~/Library/Application Support）
-const userDataDir = path.join(os.homedir(), 'Library', 'Application Support', '个人知识库助手');
+// userData 与桌面端 app.getPath('appData') 在各平台的默认值保持一致，
+// 保证 web 模式与桌面模式共用同一份 knowledge.db：
+//   win32 → %APPDATA%；darwin → ~/Library/Application Support；linux → ~/.config
+function appDataDir() {
+  if (process.platform === 'win32') {
+    return process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  }
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support');
+  return process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+}
+const userDataDir = path.join(appDataDir(), '个人知识库助手');
 const uploadsDir = path.join(userDataDir, 'uploads');
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.mkdirSync(uploadsDir, { recursive: true });
@@ -32,7 +41,7 @@ const shimWindow = {
   webContents: { send: (ch, d) => broadcast(ch, d) },
 };
 
-// 业务模块推流用的事件对象（llm.js / wiki.js 使用 event.sender.send）
+// 业务模块推流用的事件对象（llm.js / raws 等模块使用 event.sender.send）
 const fakeEvent = { sender: { send: (ch, d) => broadcast(ch, d) } };
 
 const handlers = new Map();
@@ -55,6 +64,20 @@ const electronShim = {
     showSaveDialog: async () => ({ canceled: true }),
     showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
   },
+  // 用系统文件管理器打开/定位本地路径（如解析测试后打开产物目录）
+  shell: {
+    openPath: async (p) => {
+      try {
+        const { spawn } = require('child_process');
+        const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+        const child = spawn(cmd, [String(p)], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return '';
+      } catch (e) { return e.message || String(e); }
+    },
+    showItemInFolder: async () => undefined,
+    openExternal: async () => undefined,
+  },
 };
 
 const origLoad = Module._load;
@@ -67,8 +90,7 @@ Module._load = function (request, ...rest) {
 const db = require(path.join(SRC, 'main', 'common', 'db'));
 const jobs = require(path.join(SRC, 'main', 'jobs', 'jobs'));
 const paths = require(path.join(SRC, 'main', 'common', 'paths'));
-const wiki = require(path.join(SRC, 'main', 'wiki', 'wiki'));
-const raws = require(path.join(SRC, 'main', 'wiki', 'raws'));
+const raws = require(path.join(SRC, 'main', 'raws', 'raws'));
 const settingsMod = require(path.join(SRC, 'main', 'common', 'settings'));
 const mcpMod = require(path.join(SRC, 'main', 'mcp', 'mcp'));
 const skillsMod = require(path.join(SRC, 'main', 'skills', 'skills'));
@@ -77,9 +99,6 @@ const { registerIpc } = require(path.join(SRC, 'main', 'ipc'));
 async function start() {
   paths.ensureUnifiedRoot(); // 与 Electron 入口一致：统一根目录 + 旧数据迁移
   await db.init();
-  wiki.unifyWikiRootToData();
-  wiki.ensureDefaultWiki();
-  wiki.migrateWikiToDomainDirs();
   raws.migrateAutoRaws(settingsMod.getSettings());
   raws.migrateFileRefsToDirs();
   mcpMod.seedWebSearchMcp();
@@ -166,6 +185,19 @@ async function handleRequest(req, res) {
       return res.end(fs.readFileSync(p));
     }
 
+    // 使用手册资源：docs/ 目录静态文件（Markdown 经 docs:read 通道读取，图片/附件走这里）
+    if (req.method === 'GET' && url.pathname.startsWith('/docs/')) {
+      const docsRoot = path.join(ROOT, 'docs');
+      const rel = decodeURIComponent(url.pathname.slice('/docs/'.length));
+      const filePath = path.resolve(docsRoot, rel);
+      if (!filePath.startsWith(docsRoot + path.sep) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+        return sendJson(res, 404, { error: 'Not Found' });
+      }
+      const mime = { '.md': 'text/markdown; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml' }[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': mime });
+      return res.end(fs.readFileSync(filePath));
+    }
+
     // 文件上传：替代 dialog.showOpenDialog，落盘后把服务端路径交给作业流程
     if (req.method === 'POST' && url.pathname === '/api/upload') {
       const name = path.basename(url.searchParams.get('name') || 'file');
@@ -193,11 +225,13 @@ async function handleRequest(req, res) {
     let mime = MIME[path.extname(filePath)] || 'application/octet-stream';
     // index.html：在首个渲染模块脚本之前注入 Web 桥接脚本
     if (rel === 'index.html') {
+      // 正则匹配 common.js 脚本标签（兼容带/不带版本号），在其前注入 Web 桥接脚本
       content = Buffer.from(
-        content.toString('utf-8').replace('<script src="renderer/common.js"></script>', '<script src="kb-shim.js"></script>\n  <script src="renderer/common.js"></script>')
+        content.toString('utf-8').replace(/<script src="renderer\/common\.js[^"]*"><\/script>/, (m) => `<script src="kb-shim.js"></script>\n  ${m}`)
       );
     }
-    res.writeHead(200, { 'Content-Type': mime });
+    // 静态资源禁用缓存，确保前端代码更新后刷新即生效
+    res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-store' });
     res.end(content);
   } catch (err) {
     console.error('[web] 请求处理失败:', err);

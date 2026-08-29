@@ -1,17 +1,16 @@
 // 应用入口：仅负责生命周期、窗口创建与模块装配
 // 业务逻辑按模块分文件夹组织在 src/main/ 下：
 //   common/  db 存储 · store 存取 · llm 请求 · jobs 作业 · config 参数
-//   wiki/    wiki 领域 · files 解析 · ingest 编排 · raws 原始文件 · templates 领域模版
-//   graph/   知识图谱        notes/  笔记附件/扫描/导出
-const { app, BrowserWindow, protocol, net, Menu, shell } = require('electron');
+//   raws/    原始文件管理（root 根目录 · files 解析 · raws 列表 · weblogin 登录态）
+//   graph/   知识图谱 · templates 领域模版        notes/  笔记附件/扫描/导出
+const { app, BrowserWindow, protocol, net, Menu, shell, session } = require('electron');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const db = require('./src/main/common/db');
 const paths = require('./src/main/common/paths');
 const { registerIpc } = require('./src/main/ipc');
 const jobs = require('./src/main/jobs/jobs');
-const wiki = require('./src/main/wiki/wiki');
-const raws = require('./src/main/wiki/raws');
+const raws = require('./src/main/raws/raws');
 const settingsMod = require('./src/main/common/settings');
 const mcpMod = require('./src/main/mcp/mcp');
 const skillsMod = require('./src/main/skills/skills');
@@ -45,7 +44,10 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-function createWindow() {
+async function createWindow() {
+  // 启动即清空渲染层资源缓存：渲染代码经 file:// 加载同样会进 Chromium 磁盘缓存，
+  // 不清缓存会导致前端更新后重启 App 仍跑旧代码（如手册链接点击空白等已修复问题复现）
+  try { await session.defaultSession.clearCache(); } catch (_) { /* 忽略缓存清理失败 */ }
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -62,11 +64,28 @@ function createWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
-  mainWindow.webContents.on('console-message', (_e, _level, message) => {
-    console.log('[renderer]', message);
+  // Electron 44：console-message 旧多参签名已弃用，改用 Event 对象（event.message）
+  mainWindow.webContents.on('console-message', (event) => {
+    console.log('[renderer]', event.message);
+  });
+  // 兜底安全网：渲染层任何直接导航（旧前端未拦截的链接、相对资源路径等）一律阻止，
+  // 避免 file:// 找不到文件出现整页空白；docs 资源用系统默认软件打开，外链走系统浏览器
+  mainWindow.webContents.on('will-navigate', (e, url) => {
+    e.preventDefault();
+    try {
+      const u = new URL(url);
+      if (u.protocol === 'file:') {
+        const p = decodeURIComponent(u.pathname);
+        const docsRoot = path.join(__dirname, 'docs');
+        if (p.startsWith(docsRoot + path.sep)) require('electron').shell.openPath(p);
+        return; // 其余本地路径：留在当前页，不导航
+      }
+      if (/^https?:$/.test(u.protocol)) require('electron').shell.openExternal(url);
+    } catch (_) { /* 非法 URL：仅阻止导航 */ }
   });
   if (process.argv.includes('--kb-debug')) mainWindow.webContents.openDevTools({ mode: 'detach' });
-  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
+  // 版本 query 使 index.html 自身绕开 file:// 缓存（内部脚本引用另带各自版本号）
+  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'), { query: { v: '20260828g' } });
 }
 
 app.whenReady().then(async () => {
@@ -85,10 +104,16 @@ app.whenReady().then(async () => {
     }
     return net.fetch(pathToFileURL(p).toString());
   });
+  // 使用手册内嵌图片协议：仅限项目 docs/ 目录，防路径穿越
+  const docsRoot = path.join(__dirname, 'docs');
+  protocol.handle('kb-doc', (request) => {
+    const p = path.resolve(decodeURIComponent(new URL(request.url).pathname));
+    if (!p.startsWith(docsRoot + path.sep)) return new Response('forbidden', { status: 403 });
+    return net.fetch(pathToFileURL(p).toString());
+  });
   await db.init();
-  wiki.unifyWikiRootToData(); // llmwiki 归一到 data/ 下（未自定义 wikiRoot 时）
-  wiki.ensureDefaultWiki();
-  wiki.migrateWikiToDomainDirs(); // 存量 Wiki 页迁移到 wiki/<领域>/<类型>/ 结构
+  // 把持久化的链接登录态（Cookie）回填 defaultSession：隐藏窗渲染/抓取即可直接带登录态
+  require('./src/main/raws/urlcookies').restoreToSession(session.defaultSession).catch(() => {});
   raws.migrateAutoRaws(settingsMod.getSettings()); // 存量自动生成 raw 移入 raw/_auto/，原始文件只管本机添加
   raws.migrateFileRefsToDirs(); // 存量按目录添加的单文件引用升级为目录引用（实时遍历）
   mcpMod.seedWebSearchMcp(); // 一次性植入阿里云百炼 WebSearch MCP（API Key 复用模型配置）

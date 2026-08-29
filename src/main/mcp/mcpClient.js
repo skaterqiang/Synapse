@@ -12,7 +12,17 @@ const probeCache = new Map();
 function authHeaders(cfg, settings) {
   const h = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
   if (cfg.useModelKey && settings && settings.apiKey) h.Authorization = 'Bearer ' + settings.apiKey;
-  if (cfg.env && cfg.env.Authorization) h.Authorization = cfg.env.Authorization;
+  if (cfg.env && cfg.env.Authorization) {
+    // Cline 风格 ${VAR} 占位符：先取进程环境变量，再回退模型 Key；
+    // 解析不出就不发占位符原文（否则服务端 401 且难以定位）
+    let auth = String(cfg.env.Authorization);
+    const ph = auth.match(/^(Bearer\s+)?\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/i);
+    if (ph) {
+      const secret = process.env[ph[2]] || (settings && settings.apiKey) || '';
+      auth = secret ? (/^Bearer /i.test(secret) ? secret : 'Bearer ' + secret) : '';
+    }
+    if (auth) h.Authorization = auth;
+  }
   return h;
 }
 

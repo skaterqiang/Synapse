@@ -1,14 +1,15 @@
 // 作业模块：串行队列 + 阶段状态机 + 历史持久化 + 中断恢复/重试
-// 说明：作业串行执行，避免多个作业并发写 wiki 文件产生冲突；历史持久化在 SQLite（common/db.js 统一引擎层）
-const { saveFileSource } = require('../wiki/files');
-const { saveRawSource, bundleContext, lintFromContext, describeWiki, readPage } = require('../wiki/wiki');
-const { loadIngestRaws, compileIngestPlan, applyIngestPlan } = require('../wiki/ingest');
+// 说明：作业串行执行，避免多个作业并发写文件产生冲突；历史持久化在 SQLite（common/db.js 统一引擎层）
+const path = require('path');
+const { extractFileContent, canImportAsNote, noteImportExts } = require('../raws/files');
+const { rawsRoot } = require('../raws/root');
+const templates = require('../graph/templates');
 const graph = require('../graph/graph');
 const db = require('../common/db');
 const settings = require('../common/settings');
 const notesStore = require('../notes/store');
-const filesMod = require('../wiki/files');
-const raws = require('../wiki/raws');
+const filesMod = require('../raws/files');
+const raws = require('../raws/raws');
 const { makeTaskTracker } = require('./tasks');
 const { num } = require('../common/config');
 const settingsMod = require('../common/settings');
@@ -149,6 +150,27 @@ function emitJobs() {
   }
 }
 
+// ---------- 作业实时解析日志（MinerU 子进程输出等） ----------
+// 不落库、不并入 jobs:update 全量载荷：经 jobs:log 事件逐行推送，前端按作业追加渲染；
+// 内存仅保留每个作业最近 300 行，作业终态后主进程侧清空（前端会话内缓存仍可查看）。
+const jobLogs = new Map();
+let lastLogFlush = 0;
+function jobLog(job, line, replace) {
+  if (!job || !line) return;
+  let arr = jobLogs.get(job.id);
+  if (!arr) { arr = []; jobLogs.set(job.id, arr); }
+  if (replace) arr[arr.length - 1] = line; else arr.push(line);
+  if (arr.length > 300) arr.splice(0, arr.length - 300);
+  const win = getWindow();
+  if (win && !win.isDestroyed()) win.webContents.send('jobs:log', { id: job.id, line, replace: !!replace });
+  // 低频落库：日志本身不入库，但顺带把阶段/任务状态刷盘，避免异常退出丢失进度
+  const now = Date.now();
+  if (now - lastLogFlush > 2000) { lastLogFlush = now; persistJobs(); }
+}
+function clearJobLogs(job) {
+  if (job) jobLogs.delete(job.id);
+}
+
 function setStage(job, key, status, detail) {
   const idx = job.stages.findIndex((s) => s.key === key);
   if (idx === -1) return;
@@ -184,10 +206,6 @@ async function runJob(job) {
   try {
     job.result = await JOB_RUNNERS[job.type](job);
     job.status = 'success';
-    // 吸收成功后记录来源，供后续重复吸收校验（local: 同时记录 mtime）
-    if (job.type === 'ingest' && Array.isArray(job.rawPaths) && job.rawPaths.length) {
-      try { raws.markIngested(job.rawPaths, job.id); } catch (e) { console.error('吸收状态记录失败:', e); }
-    }
   } catch (err) {
     job.status = 'failed';
     job.error = err.message;
@@ -195,6 +213,7 @@ async function runJob(job) {
     if (st) { st.status = 'failed'; st.detail = err.message; }
   }
   job.finishedAt = Date.now();
+  clearJobLogs(job);
   runningIds.delete(job.id);
   persistJobs();
   emitJobs();
@@ -243,154 +262,157 @@ function submitJob(type, title, stageDefs, payload) {
 
 // ---------- 阶段定义与执行器 ----------
 // 作业阶段定义（提交与重试共用）
-const INGEST_STAGES = [
-  { key: 'save', name: '解析保存来源' },
-  { key: 'compile', name: 'AI 编译' },
-  { key: 'write', name: '落盘' },
-];
-const LINT_STAGES = [
-  { key: 'collect', name: '收集全库' },
-  { key: 'analyze', name: 'AI 体检' },
-  { key: 'done', name: '报告完成' },
-];
 const GRAPH_STAGES = [
   { key: 'collect', name: '收集语料' },
   { key: 'extract', name: 'AI 本体抽取' },
   { key: 'save', name: '合并存图' },
 ];
+const EXTRACT_NOTE_STAGES = [
+  { key: 'extract', name: '解析来源' },
+  { key: 'save', name: '写入笔记' },
+];
 
 const JOB_RUNNERS = {
-  // 吸收作业：保存来源 → AI 编译 → 落盘（重试模式带 rawPaths 时跳过保存阶段）
-  async ingest(job) {
-    const { settings, files, url, text, title, rawPaths: reusePaths, noteSources } = job.payload;
-    let rawPaths = [];
-    if (Array.isArray(reusePaths) && reusePaths.length) {
-      rawPaths = reusePaths.slice();
-      const note = job.payload && job.payload.fromRaws
-        ? `复用已保存的 ${rawPaths.length} 个 raw/ 来源（跳过解析保存）`
-        : `重试模式：复用已保存的 ${rawPaths.length} 个来源`;
-      setStage(job, 'save', 'success', note);
-      // 重试/复用模式也构建任务列表（每个复用来源一个 task），便于展示子任务
-      makeTaskTracker(job, () => { persistJobs(); emitJobs(); }).init(rawPaths.map((p) => String(p).replace(/^raw\//, '')));
-    } else {
-      setStage(job, 'save', 'running', '开始…');
-      // 空内容笔记会被跳过（见下方 continue），进度分母须按剔除后的来源数计，避免出现「3/5」这类永不达标的计数
-      const activeNotes = (noteSources || []).filter((ns) => (ns.content || '').trim());
-      const total = (files ? files.length : 0) + (url || text ? 1 : 0) + activeNotes.length;
-      // 任务列表：每个来源一个独立 task，随保存进度更新（与处理顺序一致，空笔记已剔除）
-      const tracker = makeTaskTracker(job, () => { persistJobs(); emitJobs(); });
-      tracker.init([
-        ...(files || []).map((f) => '文件·' + f.name),
-        ...(url ? [String(url)] : []),
-        ...(text ? ['粘贴文本'] : []),
-        ...activeNotes.map((ns) => '笔记·' + (ns.title || '')),
-      ]);
-      let ti = 0;
-      const doneNext = () => { tracker.setDone(ti); ti++; };
-      let i = 0;
-      for (const f of files || []) {
-        i++;
-        setStage(job, 'save', 'running', `解析 ${f.name}（${i}/${total}）`);
-        const res = await saveFileSource(settings, f.path);
-        rawPaths.push(res.relPath);
-        doneNext();
-      }
-      if (url || text) {
-        i++;
-        setStage(job, 'save', 'running', url ? `拉取网页（${i}/${total}）` : `保存文本（${i}/${total}）`);
-        const res = await saveRawSource(settings, { title, content: text || '', sourceUrl: url || '', auto: true });
-        rawPaths.push(res.relPath);
-        doneNext();
-      }
-      // 集合级（全部笔记/目录）：逐篇笔记保存为 raw 来源（跳过空内容笔记）
-      for (const ns of noteSources || []) {
-        if (!(ns.content || '').trim()) continue;
-        i++;
-        setStage(job, 'save', 'running', `保存笔记「${ns.title || ''}」（${i}/${total}）`);
-        const res = await saveRawSource(settings, { title: ns.title || '', content: ns.content || '', sourceUrl: '', auto: true });
-        rawPaths.push(res.relPath);
-        doneNext();
-      }
-      setStage(job, 'save', 'success', `已保存 ${rawPaths.length} 个来源到 raw/`);
+  async 'extract-note'(job) {
+    const { settings, rawPaths = [], forceMineru } = job.payload;
+    const tracker = makeTaskTracker(job, () => { persistJobs(); emitJobs(); });
+    tracker.init(rawPaths.map((p) => String(p).replace(/^raw\//, '')));
+    const records = raws.listRaws(settings);
+    const byPath = new Map(records.map((r) => [r.path, r]));
+    for (const relPath of rawPaths) {
+      if (!byPath.has(String(relPath))) throw new Error('原始来源不存在：' + relPath);
     }
-    job.rawPaths = rawPaths;
-
-    setStage(job, 'compile', 'running', '模型正在阅读来源并生成页面计划（约 1–3 分钟）…');
-    const aligned = Array.isArray(job.tasks) && job.tasks.length === rawPaths.length && rawPaths.length > 0;
-    let touched = [];
-    let pageCount = 0;
-    let tplNote = '';
-    if (aligned) {
-      // 逐任务独立编译：每个来源一个任务，模型输出独立存到 task.output（轻量上下文提速）
-      const ctx = bundleContext(settings, { includeFullPages: false });
-      const ctrack = makeTaskTracker(job, () => { persistJobs(); emitJobs(); });
-      ctrack.reset();
-      for (let t = 0; t < job.tasks.length; t++) {
-        const task = job.tasks[t];
-        const rel = rawPaths[t];
-        const raws = await loadIngestRaws(settings, ctx, [rel]);
-        ctrack.setRunning(t);
-        setStage(job, 'compile', 'running', `任务 ${task.no}/${job.tasks.length}「${task.label}」编译中…`);
-        const plan = await compileIngestPlan(settings, ctx, raws, (detail, preview) => {
-          if (preview !== undefined) ctrack.setOutput(t, preview);
-          setStage(job, 'compile', 'running', `任务 ${task.no}「${task.label}」：${detail}`);
-        }, job.payload.domainId);
-        const r = applyIngestPlan(ctx, plan, raws);
-        touched = touched.concat(r.touched || []);
-        pageCount += Array.isArray(plan.pages) ? plan.pages.length : 0;
-        if (plan.matchedTemplate) tplNote = `（领域模版：${plan.matchedTemplate}）`;
-        ctrack.setDone(t);
+    const notes = [];
+    const failed = [];
+    const writtenPaths = []; // 每篇笔记的落盘路径（相对笔记根），用于展示写入位置
+    const relNotePath = (p) => path.relative(notesStore.notesRoot(), p).split(path.sep).join('/');
+    const skipped = [];   // 因类型未启用而跳过（不算失败，否则一次全目录提取会刷出几百条“失败”干扰判断）
+    const allowed = noteImportExts(settings);
+    // 子任务并发数按配置文件（设置→作业）里的「单作业内并发抽取数」执行（graphConcurrency，1–8，默认 3）
+    const CONC = num(settings, 'graphConcurrency', 3, 1, 8);
+    // 解析方式说明（设置→文档解析）：mineruMode 非 builtin 且配置了转换命令时启用 MinerU，失败自动回退内置
+    const mineruOn = String((settings && settings.mineruMode) || 'auto') !== 'builtin'
+      && !!String((settings && settings.mineruConvertCmd) || '').trim();
+    const BUILTIN_EXTS = ['.md', '.markdown', '.txt', '.csv', '.json', '.log', '.html', '.htm'];
+    // 该来源是否会实际尝试 MinerU：文本型扩展（含 html）按设计固定走内置解析，不会调用 MinerU，
+    // 也不存在「回退」一说；文案须如实区分，避免用户误以为 MinerU 失败
+    const usesMineru = (name) => mineruOn && !BUILTIN_EXTS.includes(path.extname(String(name)).toLowerCase());
+    const parseLabel = (name, used) => used === 'mineru'
+      ? 'MinerU 解析'
+      : (usesMineru(name) ? '内置解析（MinerU 失败回退）' : '内置解析');
+    // 回退记录：MinerU 失败静默回退内置是「笔记质量与 MinerU 测试不一致」的根因，
+    // 这里逐文件收集回退原因，写入子任务输出与作业结果，前端据此展示警示与「用 MinerU 重跑」
+    const fallbacks = [];
+    // 解析方式计数：阶段摘要如实说明哪些来源走了 MinerU、哪些按设计走内置（文本型含 html），
+    // 避免「解析方式：MinerU 解析」这类笼统表述让用户误以为文本型来源也该经 MinerU
+    let mineruFiles = 0;
+    let builtinOnlyFiles = 0;
+    let cursor = 0;
+    let started = 0;
+    const processOne = async (i) => {
+      const relPath = String(rawPaths[i]);
+      const record = byPath.get(relPath);
+      const abs = relPath.startsWith('local:') ? relPath.slice('local:'.length) : path.join(rawsRoot(settings), relPath.replace(/^\//, ''));
+      // 类型不在白名单（设置→笔记导入文件类型）：直接跳过，不去读文件也不计失败
+      if (!canImportAsNote(settings, record.name)) {
+        skipped.push({ path: relPath, name: record.name });
+        tracker.setRunning(i);
+        tracker.setOutput(i, `已跳过：${path.extname(record.name) || '无扩展名'} 不在笔记导入类型内`);
+        tracker.setDone(i);
+        return;
       }
-    } else {
-      const ctx = bundleContext(settings, { includeFullPages: true });
-      const raws = await loadIngestRaws(settings, ctx, rawPaths);
-      const plan = await compileIngestPlan(settings, ctx, raws, (detail, preview) => {
-        if (preview !== undefined) job.livePreview = preview;
-        setStage(job, 'compile', 'running', detail);
-      }, job.payload.domainId);
-      delete job.livePreview;
-      const r = applyIngestPlan(ctx, plan, raws);
-      touched = r.touched || [];
-      pageCount = Array.isArray(plan.pages) ? plan.pages.length : 0;
-      if (plan.matchedTemplate) tplNote = `（领域模版：${plan.matchedTemplate}）`;
+      tracker.setRunning(i);
+      const no = ++started;
+      // 执行中需说明采用的解析方式（内置 / MinerU），便于用户判断进度与质量预期；
+      // 文本型扩展（含 html）按设计固定内置解析，文案如实标注，避免误以为 MinerU 失败
+      const fileMethod = forceMineru ? '强制 MinerU 解析（不回退）' : (usesMineru(record.name) ? 'MinerU 解析' : '内置解析（该类型不走 MinerU）');
+      setStage(job, 'extract', 'running', `解析 ${record.name}（${no}/${rawPaths.length}，并发 ${CONC}，${fileMethod}）`);
+      try {
+        const info = {}; // extractFileContent 经此交还本次 MinerU 转换暂存的图片目录与解析方式（并发安全，不用全局静态字段）
+        // MinerU 子进程输出（含进度条 \r 刷新）经 onLog 流式接入作业「解析过程」，前端实时展示
+        const text = await extractFileContent(abs, settings, {
+          forceMineru: !!forceMineru,
+          info,
+          onLog: (line, replace) => jobLog(job, `[${record.name}] ${line}`, replace),
+        });
+        const used = info.parseMethod || 'builtin';
+        // 按来源类型计数（阶段摘要用）：二进制/图片型会经 MinerU，文本型（含 html）按设计固定内置
+        if (!forceMineru) { if (usesMineru(record.name)) mineruFiles++; else builtinOnlyFiles++; }
+        if (!String(text || '').trim()) throw new Error('来源内容为空');
+        setStage(job, 'save', 'running', `写入笔记 ${record.name}（${no}/${rawPaths.length}）`);
+        // 单文件引用（无 root/rel）用文件所在父目录名作笔记目录，避免新提取笔记因缺目录信息落入垃圾桶
+        const rootName = record.root
+          ? path.basename(String(record.root).replace(/[\\/]+$/, ''))
+          : (relPath.startsWith('local:') ? path.basename(path.dirname(relPath.slice('local:'.length))) : '');
+        const childDir = record.root && record.rel ? path.dirname(record.rel) : '';
+        const folderRel = [rootName, childDir].filter((v) => v && v !== '.').join(path.sep);
+        // 标题取文件名并解码 URL 编码（%E7%9F%A5… → 知识图谱…），与 MinerU 测试展示的文件名一致；
+        // 传 relPath 作为 source：同一来源重复提取时原地更新而不新增重名笔记
+        const res = notesStore.importNote(filesMod.titleFromFileName(record.name), text, folderRel, relPath);
+        // MinerU 抽取的图片并入笔记附件目录，正文 images/xxx 改写为 kb-asset 绝对引用；
+        // 不做这步正文图片全是坏图，与 MinerU 测试产物（自带 images/）观感差异明显
+        const imgCount = filesMod.attachMineruImages(res.path, info.imagesDir);
+        notes.push(res);
+        writtenPaths.push(relNotePath(res.path));
+        // MinerU 失败回退内置：记录原因并在子任务输出中明确警示（产物质量低于 MinerU 解析）
+        const fbReason = used !== 'mineru' && mineruOn && !BUILTIN_EXTS.includes(path.extname(record.name).toLowerCase())
+          ? (info.externalError || 'MinerU 转换失败')
+          : '';
+        if (fbReason) fallbacks.push({ path: relPath, name: record.name, reason: fbReason, note: relNotePath(res.path) });
+        // 子任务输出带上笔记落盘的具体位置，便于用户直接定位文件；回退时附原因警示
+        tracker.setOutput(i, `${res.updated ? '已更新已有笔记' : '已新建笔记'} · ${parseLabel(record.name, used)} → ${relNotePath(res.path)}${imgCount ? `（含 ${imgCount} 张图）` : ''}${fbReason ? `\n⚠ MinerU 失败已回退内置解析（${fbReason}），笔记质量可能低于 MinerU 解析，可在作业上「用 MinerU 重跑」` : ''}`);
+        tracker.setDone(i);
+      } catch (err) {
+        failed.push({ path: relPath, name: record.name, error: err.message });
+        tracker.setOutput(i, '失败：' + err.message);
+        tracker.setDone(i);
+      }
+    };
+    // 并发 worker 池：单线程内 await 切换，cursor 自增同步无竞态
+    const workers = Array.from({ length: Math.max(1, Math.min(CONC, rawPaths.length)) }, async () => {
+      while (cursor < rawPaths.length) {
+        const i = cursor++;
+        await processOne(i);
+      }
+    });
+    await Promise.all(workers);
+    // 没有任何来源成功写入笔记、且存在失败来源时，作业整体应记为失败（status=failed），
+    // 否则 runJob 见 runner 正常返回就标 success，出现「作业成功、子任务失败」的矛盾展示
+    // （强制 MinerU 重跑失败不回退内置时尤其明显）
+    if (!notes.length && failed.length) {
+      throw new Error(`全部 ${failed.length} 个来源解析失败：${failed[0].error}${forceMineru ? '（强制 MinerU 模式，不回退内置）' : ''}`);
     }
-    setStage(job, 'compile', 'success', `计划生成：共 ${pageCount} 个新增/更新页面${tplNote}`);
-
-    setStage(job, 'write', 'success', `触及页面：${[...new Set(touched)].join('、') || '无'}`);
-    return { touched: [...new Set(touched)], rawPaths };
-  },
-  // 体检作业：收集 → AI 体检 → 报告完成
-  async lint(job) {
-    const { settings } = job.payload;
-    setStage(job, 'collect', 'running', '读取全库页面…');
-    const ctx = bundleContext(settings, { includeFullPages: true });
-    setStage(job, 'collect', 'success', `共收集 ${ctx.listing.split('\n').length} 个页面`);
-    setStage(job, 'analyze', 'running', 'AI 正在通读全部页面（约 1–3 分钟）…');
-    const report = await lintFromContext(settings, ctx);
-    setStage(job, 'analyze', 'success', '报告已生成');
-    setStage(job, 'done', 'success', `报告 ${report.length} 字符`);
-    return { report };
+    const skipNote = skipped.length ? `，按类型跳过 ${skipped.length} 个` : '';
+    // 解析方式如实汇总：文本型来源（md/txt/csv/html 等）按设计固定内置解析，不属于「MinerU 失败回退」；
+    // 只有二进制型（pdf/docx/pptx/xlsx/图片）才经 MinerU，失败才回退。笼统写「MinerU 解析」会误导
+    const methodNote = forceMineru
+      ? '解析方式：强制 MinerU 解析（不回退内置）'
+      : (mineruOn
+        ? `解析方式：MinerU 解析 ${mineruFiles} 个（二进制/图片型），内置解析 ${builtinOnlyFiles} 个（文本型按设计不走 MinerU），MinerU 失败自动回退内置`
+        : '解析方式：内置解析');
+    // 回退警示：有来源因 MinerU 失败回退内置时，阶段摘要明确提示，避免用户误以为产物与 MinerU 测试一致
+    const fbNote = fallbacks.length ? `，⚠ ${fallbacks.length} 个来源 MinerU 失败回退内置` : '';
+    setStage(job, 'extract', 'success', `已解析 ${notes.length} 个来源${skipNote}（${methodNote}${fbNote}，启用类型：${[...allowed].join('/')}，并发 ${CONC}）`);
+    const upd = notes.filter((n) => n.updated).length;
+    // 写入位置说明：单篇直接给完整路径，多篇给笔记根 + 相对路径列表（截断防刷屏）
+    let locNote = '';
+    if (writtenPaths.length === 1) locNote = ` → ${path.join(notesStore.notesRoot(), writtenPaths[0])}`;
+    else if (writtenPaths.length > 1) locNote = ` → ${notesStore.notesRoot()} 下：${writtenPaths.slice(0, 5).join('、')}${writtenPaths.length > 5 ? ` 等 ${writtenPaths.length} 篇` : ''}`;
+    setStage(job, 'save', 'success', `已写入 ${notes.length} 篇笔记${upd ? `（其中更新已有 ${upd} 篇）` : ''}${locNote}`);
+    return { notes, failed, skipped, fallbacks };
   },
   // 知识图谱作业：收集语料 → AI 本体抽取 → 合并存图
   async graph(job) {
-    const { settings, scope, rawPaths, domain, inlineSources, typeHints, templateName } = job.payload;
-    setStage(job, 'collect', 'running', inlineSources && inlineSources.length ? `读取 ${inlineSources.length} 个笔记来源…` : (rawPaths && rawPaths.length ? `读取 ${rawPaths.length} 个原始来源…` : (domain ? `读取领域「${templateName || domain}」的 Wiki 页面…` : '读取 Wiki 页面与笔记…')));
-    // wikiBundle 由 wiki 领域层提供，避免 graph 反向依赖 wiki
-    const desc = describeWiki(settings);
-    const wikiBundle = {
-      listPages: () => (desc.pages || []).map((p) => ({ rel: p.path, title: p.title, domain: p.domain || '' })),
-      readPageContent: (rel) => {
-        try { return readPage(settings, rel); } catch (_) { return ''; }
-      },
-    };
+    const { settings, rawPaths, inlineSources, typeHints, domainId, domainLabel } = job.payload;
+    setStage(job, 'collect', 'running', inlineSources && inlineSources.length ? `读取 ${inlineSources.length} 个笔记来源…` : (rawPaths && rawPaths.length ? `读取 ${rawPaths.length} 个原始来源…` : '读取全部笔记…'));
     const res = await graph.extractGraph(settings, {
-      scope,
-      wikiBundle,
       rawPaths,
-      domain,
       inlineSources,
       typeHints,
-      domainLabel: templateName || domain,
+      domainId,
+      domainLabel,
+      // 领域：只有选了“自动”时才在作业内找/建领域；用户显式指定领域（含通用）时 autoDomain=false，按其选择执行
+      resolveDomain: job.payload.autoDomain === false ? undefined : (raws) => resolveAutoDomain(job, raws, 'collect'),
       readRaw: (rel) => filesMod.readRawText(settings, rel).catch(() => ''),
     }, (key, detail) => {
       setStage(job, key, 'running', detail);
@@ -416,6 +438,50 @@ function list() {
   return jobs;
 }
 
+// 作业内的领域归属（知识图谱抽取用）：已命中特定领域则直接用；
+// 否则按来源内容归纳一个更贴合的领域（同名已有则复用，否则 AI 自动生成整套模版并保存），
+// 让产物挂在有实体/概念类型约束的领域下而不是通用。失败一律回退通用，绝不拖垮作业。
+// stageKey：进度文案写到哪个阶段（图谱 collect）
+async function resolveAutoDomain(job, raws, stageKey) {
+  const p = job.payload || {};
+  const hints = p.typeHints || {};
+  if ((hints.entity || []).length || (hints.concept || []).length) {
+    return { domainId: p.domainId || p.domain, domainLabel: p.domainLabel || p.templateName, typeHints: p.typeHints };
+  }
+  // 领域信息回写作业卡片（source.domain），使徽标展示最终生效的领域而不是提交时的“通用”
+  const writeBack = (domainId, domainLabel, typeHints) => {
+    job.source = { ...(job.source || {}), domain: domainId, domainLabel, typeHints };
+    persistJobs();
+    emitJobs();
+  };
+  try {
+    setStage(job, stageKey, 'running', '未命中特定领域模版，正按来源内容归纳更贴合的领域…');
+    const sug = await templates.suggestTemplateName(p.settings, raws);
+    const exist = templates.listTemplates().find((t) => t.id !== 'general' && t.name === sug.name);
+    let tpl = exist;
+    if (tpl) {
+      setStage(job, stageKey, 'running', `归纳为领域「${sug.name}」，命中已有领域模版，直接复用…`);
+    } else {
+      setStage(job, stageKey, 'running', `归纳为领域「${sug.name}」，正在生成该领域的实体/概念类型…`);
+      const gen = await templates.generateTemplate(p.settings, { name: sug.name, desc: sug.desc });
+      // 模型可能给出与已有模版重名的 id：同名不同领域时加后缀，避免覆盖别人的模版
+      let id = gen.id;
+      if (templates.listTemplates().some((t) => t.id === id && t.name !== sug.name)) id = `${id}_${Date.now().toString(36)}`;
+      tpl = templates.saveTemplate({ ...gen, id, name: sug.name, desc: sug.desc });
+    }
+    const typeHints = {
+      entity: (tpl.entityTypes || []).map((x) => x.name).filter(Boolean),
+      concept: (tpl.conceptTypes || []).map((x) => x.name).filter(Boolean),
+    };
+    writeBack(tpl.id, tpl.name, typeHints);
+    setStage(job, stageKey, 'running', `${exist ? '复用' : '已新建'}领域「${tpl.name}」（${tpl.id}），本次产物将挂到该领域下`);
+    return { domainId: tpl.id, domainLabel: tpl.name, typeHints };
+  } catch (err) {
+    setStage(job, stageKey, 'running', `自动建域未完成（${err.message}），本次按通用模版处理`);
+    return null;
+  }
+}
+
 // 图谱作业标题：从 raw 来源抽取时展示文件名
 function rawPathsLabel(payload) {
   const list = (payload && payload.rawPaths) || [];
@@ -425,38 +491,13 @@ function rawPathsLabel(payload) {
 
 // 提交作业（含标题生成与参数校验）
 function submit({ type, payload }) {
-  if (type === 'ingest') {
-    // 重复吸收校验：已吸收且来源未变化的直接跳过（payload.force=true 可强制重新吸收）
-    let skipped = [];
-    if (Array.isArray(payload.rawPaths) && payload.rawPaths.length && !payload.force) {
-      skipped = payload.rawPaths.filter((p) => raws.isIngestedFresh(p));
-      payload = { ...payload, rawPaths: payload.rawPaths.filter((p) => !raws.isIngestedFresh(p)) };
-      if (!payload.rawPaths.length) {
-        return { ok: false, error: `所选 ${skipped.length} 个来源均已吸收过且未检测到修改；如需重新吸收请在确认弹窗中选择继续`, skipped };
-      }
-    }
-    const names = [
-      ...(payload.files || []).map((f) => f.name),
-      ...(payload.url ? [payload.url] : []),
-      ...(payload.text ? ['粘贴文本'] : []),
-      // 原始文件页/重试模式直接复用已保存的 raw/ 来源
-      ...(payload.rawPaths || []).map((p) => String(p).replace(/^raw\//, '')),
-      ...(payload.noteSources || []).map((ns) => '笔记·' + (ns.title || '')),
-    ];
-    if (!names.length) return { ok: false, error: '没有可吸收的来源' };
-    const isNoteColl = Array.isArray(payload.noteSources) && payload.noteSources.length;
-    const title = isNoteColl
-      ? `吸收·${payload.collectionLabel || '笔记 ' + payload.noteSources.length + ' 篇'}`
-      : `吸收 ${names.length > 1 ? names.length + ' 个来源' : names[0]}`;
-    const job = submitJob('ingest', title.slice(0, 60), INGEST_STAGES, payload);
-    job.source = isNoteColl
-      ? { kind: payload.collectionKind || '笔记集合', label: payload.collectionLabel || '', items: payload.noteSources.map((ns) => '笔记·' + (ns.title || '')) }
-      : null;
-    if (job.source) persistJobs();
-    return { ok: true, id: job.id, skipped };
-  }
-  if (type === 'lint') {
-    const job = submitJob('lint', 'Wiki 体检', LINT_STAGES, payload);
+  if (type === 'extract-note') {
+    const rawPaths = Array.isArray(payload && payload.rawPaths) ? payload.rawPaths.filter(Boolean) : [];
+    if (!rawPaths.length) return { ok: false, error: '没有可提取的原始来源' };
+    // 强制 MinerU 重跑（回退警示后的「↻ 用 MinerU 重跑」）：标题标注，便于与普通提取区分
+    const prefix = payload && payload.forceMineru ? '用 MinerU 重跑·' : '提取笔记·';
+    const title = rawPaths.length === 1 ? `${prefix}${rawPaths[0]}` : `${prefix}${rawPaths.length} 个来源`;
+    const job = submitJob('extract-note', title.slice(0, 60), EXTRACT_NOTE_STAGES, { ...payload, rawPaths });
     return { ok: true, id: job.id };
   }
   if (type === 'graph') {
@@ -468,24 +509,23 @@ function submit({ type, payload }) {
     } else if (payload.rawPaths && payload.rawPaths.length) {
       scopeLabel = rawPathsLabel(payload);
       source = { kind: '原始文件', label: payload.rawPaths.join('、'), items: payload.rawPaths };
-    } else if (payload.domain) {
-      const tn = payload.templateName || payload.domain;
-      scopeLabel = `领域·${tn}`;
-      source = { kind: '领域模版', label: tn, items: [tn] };
     } else {
-      // 集合类：大作业，列出成员来源（笔记标题 / Wiki 页面）作为子任务
-      scopeLabel = { wiki: 'LLM Wiki', notes: '全部笔记', all: 'Wiki+笔记' }[payload.scope] || 'Wiki+笔记';
+      // 集合类：全部笔记作为来源（每个笔记一个子任务）
+      scopeLabel = '全部笔记';
       const items = [];
-      if (payload.scope !== 'wiki') for (const n of notesStore.getNotes()) items.push('笔记·' + (n.title || n.id));
-      if (payload.scope !== 'notes') {
-        const desc = describeWiki(settings);
-        for (const p of desc.pages || []) {
-          if (!p.path.endsWith('index.md') && !p.path.endsWith('log.md')) items.push('Wiki·' + (p.title || p.path));
-        }
-      }
+      for (const n of notesStore.getNotes()) items.push('笔记·' + (n.title || n.id));
       source = { kind: scopeLabel, label: `${scopeLabel}（${items.length} 个来源）`, items };
     }
     const job = submitJob('graph', `知识图谱抽取·${scopeLabel}`, GRAPH_STAGES, payload);
+    // 领域信息随作业留档（携在 source 里一并持久化，无需改表结构）：
+    // 卡片上直接看得到“本次按哪个领域模版抽取、有无实体/概念类型约束”
+    const hints = payload.typeHints || {};
+    source.domain = {
+      id: payload.domainId || '',
+      label: payload.domainLabel || '通用',
+      entity: hints.entity || [],
+      concept: hints.concept || [],
+    };
     job.source = source;
     persistJobs();
     return { ok: true, id: job.id };
@@ -514,25 +554,25 @@ function clear() {
   return { ok: true };
 }
 
-// 重试失败作业：在原作业上重置重跑（不新建）；ingest 复用已保存的 raw/ 来源跳过解析阶段
+// 重试失败作业：在原作业上重置重跑（不新建）
 function retry({ id, settings }) {
   const src = jobs.find((j) => j.id === id);
   if (!src) return { ok: false, error: '作业不存在' };
   if (src.status !== 'failed') return { ok: false, error: '只能重试失败的作业' };
   const base = src.payload || {};
-  if (src.type === 'lint') {
-    return { ok: true, id: requeueJob(src, LINT_STAGES, { settings }).id };
+  if (src.type === 'extract-note') {
+    const rawPaths = Array.isArray(base.rawPaths) ? base.rawPaths : [];
+    if (!rawPaths.length) return { ok: false, error: '来源信息丢失，无法重试，请从原始文件页重新提取' };
+    return { ok: true, id: requeueJob(src, EXTRACT_NOTE_STAGES, { ...base, settings, rawPaths }).id };
   }
   if (src.type === 'graph') {
     return { ok: true, id: requeueJob(src, GRAPH_STAGES, { ...base, settings }).id };
   }
-  if (src.type === 'ingest') {
-    if (!Array.isArray(src.rawPaths) || !src.rawPaths.length) {
-      return { ok: false, error: '来源尚未保存成功，无法重试，请重新发起吸收' };
-    }
-    return { ok: true, id: requeueJob(src, INGEST_STAGES, { settings, rawPaths: src.rawPaths.slice(), files: [], url: '', text: '', title: base.title || src.title }).id };
-  }
   return { ok: false, error: '未知作业类型：' + src.type };
 }
 
-module.exports = { init, loadJobs, list, submit, remove, clear, retry, importLegacyJobs };
+function getJobLogs(id) {
+  return jobLogs.get(id) || [];
+}
+
+module.exports = { init, loadJobs, list, submit, remove, clear, retry, importLegacyJobs, getJobLogs };

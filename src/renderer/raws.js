@@ -1,248 +1,21 @@
-// 渲染进程·Wiki 模块：Wiki 列表/阅读器、吸收、体检、领域模版、原始文件管理
-const wikiListExpanded = { nav: true }; // 导航默认展开；领域/类型分组默认收起
+// 渲染进程·原始文件模块：原始文件管理、领域模版、提取作业入口
 const rawTreeCollapsed = {}; // 原始文件目录树折叠状态（会话内）
 
-// 中间列表区展示 LLM Wiki 全部页面：第一级按领域（领域模版）分组，领域内再按 OKF 类型分组，点击打开内容
-function renderWikiList() {
-  const pages = state.wiki.pages || [];
-  $('note-list-title').textContent = 'LLM Wiki';
-  $('note-list-count').textContent = pages.length ? `${pages.length} 页` : '';
-  const container = $('note-list');
-  container.innerHTML = '';
-  if (!state.wiki.exists) {
-    container.innerHTML = '<div class="list-empty">未找到 Wiki（AGENTS.md）<br>可在设置中指定 Wiki 根目录</div>';
-    return;
-  }
-  const labels = { '': '导航', concepts: '概念 Concepts', sources: '来源 Sources', topics: '主题 Topics', entities: '实体 Entities' };
-  // 新路径语义：wiki/<领域>/<类型>/xxx.md；index.md/log.md 为导航
-  const segsOf = (p) => p.path.split('/');
-  const isNav = (p) => !p.path.includes('/');
-  // 领域名称映射：模版 ID → 中文名；无 domain 的存量页归入通用
-  const tplName = (id) => {
-    const t = (state.templates || []).find((x) => x.id === id);
-    return t ? t.name : id;
-  };
-  const domainOf = (p) => p.domain || segsOf(p)[0] || 'general';
-  const typeOf = (p) => {
-    const s = segsOf(p);
-    if (s.length >= 3) return s[1];
-    return s.length === 2 && labels[s[0]] ? s[0] : ''; // 兼容未迁移的 <类型>/xxx.md
-  };
-
-  // 导航置顶展示，不受领域分组影响
-  const renderCards = (list, indent) => {
-    for (const p of list) {
-      const item = document.createElement('div');
-      item.className = 'wiki-tree-item' + (state.wikiPage === p.path ? ' active' : '');
-      item.style.paddingLeft = indent + 'px';
-      item.title = p.path; // 悬浮显示路径，行内只留标题
-      const icon = isNav(p) ? (p.path === 'index.md' ? '🗺️' : '🕒') : typeIcon(p.type);
-      item.innerHTML = `<span class="wiki-ico">${icon}</span><span class="wiki-title">${escapeHtml(p.title || p.path)}</span>`;
-      item.addEventListener('click', () => openWikiPage(p.path));
-      container.appendChild(item);
-    }
-  };
-  const addToggle = (key, html, cls) => {
-    const collapsed = !wikiListExpanded[key];
-    const g = document.createElement('div');
-    g.className = cls + ' wiki-group-toggle';
-    g.innerHTML = `<span class="chevron${collapsed ? ' collapsed' : ''}">▾</span> ${html}`;
-    g.addEventListener('click', () => { wikiListExpanded[key] = !wikiListExpanded[key]; renderNoteList(); });
-    container.appendChild(g);
-    return collapsed;
-  };
-
-  const nav = pages.filter(isNav);
-  if (nav.length && !addToggle('nav', '导航', 'wiki-group-title')) renderCards(nav, 10);
-
-  // 领域分组：按模版列表顺序优先，未知领域排后
-  const domainPages = pages.filter((p) => !isNav(p));
-  const domains = [...new Set([...(state.templates || []).map((t) => t.id), ...domainPages.map(domainOf)])]
-    .filter((d) => domainPages.some((p) => domainOf(p) === d));
-  for (const d of domains) {
-    const list = domainPages.filter((p) => domainOf(p) === d);
-    const dKey = 'domain:' + d;
-    const collapsed = addToggle(dKey, `📐 ${escapeHtml(tplName(d))} <span class="wiki-group-count">${list.length}</span>`, 'wiki-domain-title');
-    if (collapsed) continue;
-    // 领域内按 OKF 类型二级分组
-    for (const key of Object.keys(labels)) {
-      if (key === '') continue;
-      const sub = list.filter((p) => typeOf(p) === key);
-      if (!sub.length) continue;
-      if (!addToggle(dKey + ':' + key, labels[key], 'wiki-group-title wiki-group-sub')) renderCards(sub, 34);
-    }
-  }
-}
-
-// ================= LLM Wiki =================
-async function loadWiki() {
-  try {
-    state.wiki = await window.kb.wikiDescribe(state.settings);
-  } catch (_) {
-    state.wiki = { exists: false, pages: [] };
-  }
-  if (state.view.type === 'wiki') renderNoteList();
-}
-
-function typeIcon(type) {
-  return { Concept: '💡', Source: '📄', Topic: '📚', Entity: '🧩', Answer: '💬' }[type] || '📄';
-}
-
-function parseWikiFrontmatter(content) {
-  const text = String(content).replace(/\r\n/g, '\n');
-  if (!text.startsWith('---\n')) return { fm: {}, body: text };
-  const end = text.indexOf('\n---\n', 4);
-  if (end === -1) return { fm: {}, body: text };
-  const fm = {};
-  for (const line of text.slice(4, end).split('\n')) {
-    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/);
-    if (m) fm[m[1]] = m[2].trim();
-  }
-  return { fm, body: text.slice(end + 5) };
-}
-
-function renderWikiFm(fm) {
-  const box = $('wiki-fm');
-  box.innerHTML = '';
-  const keys = Object.keys(fm);
-  if (!keys.length) { box.hidden = true; return; }
-  box.hidden = false;
-  const chip = (text, cls) => {
-    const s = document.createElement('span');
-    s.className = 'wiki-chip ' + (cls || '');
-    s.textContent = text;
-    box.appendChild(s);
-  };
-  if (fm.type) chip(fm.type, 'type');
-  if (fm.status) chip('状态: ' + fm.status, 'status');
-  if (fm.generated) chip('🤖 AI 生成');
-  (fm.tags || '').replace(/^\[|\]$/g, '').split(',')
-    .map((t) => t.trim()).filter(Boolean)
-    .forEach((t) => chip('# ' + t, 'tag'));
-}
-
-async function openWikiPage(relPath) {
-  const res = await window.kb.wikiRead({ settings: state.settings, relPath });
-  if (!res.ok) { toast('无法打开：' + res.error); return; }
-  // 从 AI 问答等主视图跳转时先统一让位，避免阅读器被旧视图遮住导致“点不动”
-  hideMainViews({ keepWikiViewer: true });
-  state.wikiPage = relPath;
-  const { fm, body } = parseWikiFrontmatter(res.content);
-  const pageTitle = fm.title || '';
-  $('wiki-page-path').textContent = pageTitle ? `${relPath} · ${pageTitle}` : relPath;
-  $('wiki-title').textContent = pageTitle || relPath;
-  $('wiki-viewer').title = pageTitle;
-  renderWikiFm(fm);
-  $('wiki-body').innerHTML = renderMarkdown(body);
-  $('wiki-raw-text').value = res.content;
-  $('wiki-body').hidden = false;
-  $('wiki-raw-text').hidden = true;
-  $('wiki-viewer').hidden = false;
-  renderEditor();
-  renderNoteList();
-}
-
-// 相对链接解析：以当前页面为基准
-function resolveWikiPath(basePath, href) {
-  if (href.startsWith('/')) return href.slice(1);
-  const parts = basePath.split('/');
-  parts.pop();
-  for (const seg of href.split('/')) {
-    if (!seg || seg === '.') continue;
-    if (seg === '..') parts.pop();
-    else parts.push(seg);
-  }
-  return parts.join('/');
-}
-
-function closeWikiViewer() {
-  $('wiki-viewer').hidden = true;
-  $('wiki-viewer').title = '';
-  state.wikiPage = null;
-  renderEditor();
-  renderNoteList();
-}
-
-// ---------- 吸收（Ingest） ----------
-const INGEST_EXTENSIONS = ['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'md', 'markdown', 'txt', 'csv'];
-
-function openIngestModal() {
-  if (!state.wiki.exists) { toast('未找到 Wiki 目录，请先在设置中指定 Wiki 根目录'); return; }
-  $('ingest-title').value = '';
-  $('ingest-url').value = '';
-  $('ingest-text').value = '';
-  state.ingestFiles = [];
-  renderFileList();
-  setIngestStatus('', '');
-  switchIngestTab(state.ingestTab);
-  $('btn-ingest-go').disabled = false;
-  $('ingest-modal').hidden = false;
-}
-
-function switchIngestTab(tab) {
-  state.ingestTab = tab;
-  $('ingest-tab-url').classList.toggle('active', tab === 'url');
-  $('ingest-tab-text').classList.toggle('active', tab === 'text');
-  $('ingest-tab-files').classList.toggle('active', tab === 'files');
-  $('ingest-url-panel').hidden = tab !== 'url';
-  $('ingest-text-panel').hidden = tab !== 'text';
-  $('ingest-files-panel').hidden = tab !== 'files';
-  // 文件模式标题由文件名决定，隐藏标题输入
-  document.querySelectorAll('#ingest-modal > .modal > label')[0].hidden = tab === 'files';
-  $('ingest-title').hidden = tab === 'files';
-}
-
-function fileExt(name) {
-  const m = String(name).match(/\.([^.]+)$/);
-  return m ? m[1].toLowerCase() : '';
-}
-
-function addIngestFiles(paths) {
-  let skipped = 0;
-  for (const p of paths) {
-    const name = p.replace(/[\\/]/g, '/').split('/').pop();
-    if (!INGEST_EXTENSIONS.includes(fileExt(name))) { skipped++; continue; }
-    if (state.ingestFiles.some((f) => f.path === p)) continue;
-    state.ingestFiles.push({ path: p, name });
-  }
-  renderFileList();
-  if (skipped > 0) toast(`已跳过 ${skipped} 个不支持格式的文件`, 3000);
-}
-
-function renderFileList() {
-  const box = $('file-list');
-  box.innerHTML = '';
-  state.ingestFiles.forEach((f, idx) => {
-    const item = document.createElement('div');
-    item.className = 'file-item';
-    item.innerHTML = `<span class="file-ext">${escapeHtml(fileExt(f.name) || '?')}</span><span class="file-name" title="${escapeHtml(f.path)}">${escapeHtml(f.name)}</span>`;
-    const del = document.createElement('button');
-    del.className = 'icon-btn';
-    del.textContent = '✕';
-    del.title = '移除';
-    del.onclick = () => { state.ingestFiles.splice(idx, 1); renderFileList(); };
-    item.appendChild(del);
-    box.appendChild(item);
-  });
-}
-
-function setIngestStatus(text, cls) {
-  const el = $('ingest-status');
-  el.textContent = text;
-  const running = !!text && !cls;
-  el.className = 'ingest-status' + (cls ? ' ' + cls : '') + (running ? ' running' : '');
-}
-
-// ---------- 吸收前领域模板预检查 ----------
-// 规则：所有 Wiki/图谱提取前先检查是否有合适的领域模板；未命中时询问是否自动生成，
+// ---------- 提取前领域模板预检查 ----------
+// 规则：图谱提取前先检查是否有合适的领域模板；未命中时询问是否自动生成，
 // 不生成则使用通用模板。
+// allowCreate=false：未命中时不弹确认、直接用通用模板（图谱提取不依赖严格领域模板，不能阻断作业提交）
+// timeoutMs：主进程侧 LLM 判定的限时，超时后自动降级为关键词兜底，不会永远卡在“正在匹配领域模板…”
 // 返回值：{ id, name, tpl }（具体模板或 general）；'skip' → 预检查不可用，回退作业内匹配；null → 用户取消
-let tplPendingIngest = null; // { resolve } — 手工新建模板后继续吸收的待办回调
+// 图谱的领域预匹配只用于附加类型约束，模型慢时宁可放弃约束也要尽快把作业排上去
+const GRAPH_MATCH_TIMEOUT = 10000;
+let tplPendingIngest = null; // { resolve } — 手工新建模板后继续提取的待办回调
 
-async function checkDomainBeforeIngest({ rawPaths = [], texts = [] }) {
-  const res = await window.kb.tplMatchFor({ settings: state.settings, rawPaths, texts });
+async function checkDomainBeforeIngest({ rawPaths = [], texts = [], allowCreate = true, timeoutMs }) {
+  const res = await window.kb.tplMatchFor({ settings: state.settings, rawPaths, texts, timeoutMs });
   if (!res.ok) { toast('领域模板预检查失败：' + res.error + '，将改用作业内匹配', 4000); return 'skip'; }
   if (res.noText) return 'skip'; // 无可提取文本（预匹配读不到内容），交由作业内处理
+  if (res.degraded) toast('模型未能完成领域判定（' + (res.degradeError || '超时') + '），已改用关键词匹配', 4000);
   const findTpl = async (id) => {
     if (!state.templates || !state.templates.length) state.templates = (await window.kb.tplList()) || [];
     return state.templates.find((t) => t.id === id) || null;
@@ -251,12 +24,17 @@ async function checkDomainBeforeIngest({ rawPaths = [], texts = [] }) {
     toast(`已匹配领域模板：${res.matched.name}`);
     return { id: res.matched.id, name: res.matched.name, tpl: await findTpl(res.matched.id) };
   }
+  if (!allowCreate) return { id: 'general', name: '通用', tpl: await findTpl('general') };
   const createNew = confirm(
     '未匹配到合适的领域模板。\n\n点「确定」打开新建领域模板并自动生成（审阅后点创建即可继续提取）；\n点「取消」直接使用通用模板。'
   );
   if (!createNew) return { id: 'general', name: '通用', tpl: await findTpl('general') };
-  // 打开新建模板弹窗：AI 归纳名称/描述自动填入 → 自动点击「✨ AI 自动生成模板」补全其余字段，
-  // 用户审阅后点「创建」即自动继续提取（取消则中止）
+  return createDomainInteractively({ rawPaths, texts });
+}
+
+// 手动新建领域：打开「新建领域模版」弹窗，AI 归纳名称/描述自动填入 → 自动点击「✨ AI 自动生成模版」补全其余字段，
+// 用户审阅后点「创建」即返回该模版；关闭弹窗返回 null（调用方据此中止提取）
+function createDomainInteractively({ rawPaths = [], texts = [] }) {
   return new Promise((resolve) => {
     tplPendingIngest = {
       resolve: async (id) => {
@@ -271,92 +49,102 @@ async function checkDomainBeforeIngest({ rawPaths = [], texts = [] }) {
       // 准备阶段：按钮与状态行同步给出运行中动画反馈
       const btn = $('btn-tpl-ai');
       btn.disabled = true;
-      btn.textContent = '⏳ AI 准备中…';
-      setTplGenStatus('🔍 准备阶段：AI 正在从来源内容归纳领域名称与描述…', 'running');
+      btn.textContent = 'AI 准备中…';
+      setTplGenStatus('准备阶段：AI 正在从来源内容归纳领域名称与描述…', 'running');
       const s = await window.kb.tplSuggestName({ settings: state.settings, rawPaths, texts });
-      if ($('tpl-modal').hidden) return; // 等待期间用户已取消，不再自动填充
+      if ($('tpl-editor-view').hidden) return; // 等待期间用户已取消，不再自动填充
       if (s.ok && s.name) {
         $('tpl-name').value = s.name;
         if (s.desc) $('tpl-desc').value = s.desc;
-        btn.disabled = false;
-        btn.textContent = '✨ AI 自动生成模版';
+      }
+      if (s.ok && s.name && s.desc) {
+        btn.innerHTML = icoSvg('sparkles', 13) + ' AI 自动生成模版';
+        syncTplAiBtn();
         setTplGenStatus(`✔ 准备阶段完成：领域归纳为「${s.name}」，即将进入生成阶段…`, 'ok');
-        await runTplGenerate(); // 等价于自动点击「✨ AI 自动生成模版」（含生成阶段动画状态展示）
+        await runTplGenerate(); // 等价于自动点击「AI 自动生成模版」（含生成阶段动画状态展示）
       } else {
-        btn.disabled = false;
-        btn.textContent = '✨ AI 自动生成模版';
-        setTplGenStatus('✖ 准备阶段失败：' + (s.error || '未知错误') + '，请手工填写名称后点 AI 生成', 'err');
-        toast('领域名称归纳失败：' + (s.error || '未知错误'), 4000);
+        btn.innerHTML = icoSvg('sparkles', 13) + ' AI 自动生成模版';
+        syncTplAiBtn();
+        setTplGenStatus('✖ 准备阶段失败：' + (s.ok ? '未归纳出领域描述' : (s.error || '未知错误')) + '，请手工填写名称和描述后点 AI 生成', 'err');
+        toast('领域归纳不完整：请手工填写名称和描述后点 AI 生成', 4000);
       }
     })();
   });
 }
 
-// 预检查后拼装吸收 payload：domain 为 null 表示用户取消；'skip' 表示不附加 domainId
-function finishIngestPayload(payload, domain) {
-  return domain !== 'skip' ? { ...payload, domainId: domain.id } : payload;
+// ---------- 提取前的领域选择（知识图谱抽取用） ----------
+// 四种方式：自动匹配 / 指定已有领域 / 自动创建新领域 / 手动新建领域
+let domainPicker = null; // { resolve } — 领域选择弹窗的待办回调
+
+function syncDomainPickState() {
+  const mode = (document.querySelector('input[name="domain-mode"]:checked') || {}).value;
+  $('domain-pick-sel').disabled = mode !== 'pick';
 }
 
-// 图谱作业的领域约束：命中特定领域时按模板实体/概念类型组织节点（通用模板不加约束）
+// 返回可直接展开进作业 payload 的领域字段；null 表示用户取消（已给 toast）
+async function pickDomainForExtract({ label, rawPaths = [], texts = [] }) {
+  state.templates = (await window.kb.tplList()) || [];
+  const n = rawPaths.length || texts.length;
+  $('domain-modal-title').textContent = '提取知识图谱：选择领域';
+  $('domain-modal-sub').textContent = `来源：${label || '当前选择'}${n ? `（${n} 个）` : ''}。领域决定本次抽取的实体/概念类型约束。`;
+  const sel = $('domain-pick-sel');
+  sel.innerHTML = (state.templates || [])
+    .map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}${t.id === 'general' ? '（无类型约束）' : ''}</option>`).join('');
+  // 每次打开都回到默认项，避免沿用上一次的选择造成误操作
+  document.querySelectorAll('input[name="domain-mode"]').forEach((r) => { r.checked = r.value === 'auto'; });
+  syncDomainPickState();
+  $('domain-modal').hidden = false;
+  const mode = await new Promise((resolve) => { domainPicker = { resolve }; });
+  $('domain-modal').hidden = true;
+  if (!mode) { toast('已取消提取', 2000); return null; }
+  // 领域 → payload 字段：图谱需要 typeHints/domainLabel
+  const extras = (domain, autoDomain) => ({ ...graphDomainExtras(domain), autoDomain });
+  if (mode === 'pick') {
+    const tpl = (state.templates || []).find((t) => t.id === sel.value);
+    if (!tpl) { toast('未找到所选领域模版', 3000); return null; }
+    toast(`使用领域「${tpl.name}」`);
+    return extras({ id: tpl.id, name: tpl.name, tpl }, false);
+  }
+  if (mode === 'manual') {
+    const created = await createDomainInteractively({ rawPaths, texts });
+    if (!created) return null; // 取消时 cancelTplModal 已给提示
+    return extras(created, false);
+  }
+  if (mode === 'create') return { autoDomain: true }; // 跳过匹配，交由作业内归纳并新建
+  // auto：带超时的领域预匹配，命中特定领域就用它，否则交由作业内自动建域
+  toast('正在匹配领域模版，随后自动提交作业…', 6000);
+  const domain = await checkDomainBeforeIngest({
+    rawPaths, texts, allowCreate: false, timeoutMs: GRAPH_MATCH_TIMEOUT,
+  });
+  if (domain === null) return null;
+  const specific = domain !== 'skip' && domain.id !== 'general';
+  return specific ? extras(domain, false) : { autoDomain: true };
+}
+
+// 图谱作业的领域信息：命中特定领域时按模板实体/概念类型组织节点（通用模板不加类型约束）
+// domainId/domainLabel 无论是否命中都回传，作业卡片据此展示“本次按哪个领域抽取”
 function graphDomainExtras(domain) {
-  if (!domain || domain === 'skip' || domain.id === 'general' || !domain.tpl) return {};
+  if (!domain || domain === 'skip') return { domainId: '', domainLabel: '通用（未做领域预检查）' };
+  const base = { domainId: domain.id, domainLabel: domain.name };
+  if (domain.id === 'general' || !domain.tpl) return base;
   return {
+    ...base,
     typeHints: {
       entity: (domain.tpl.entityTypes || []).map((t) => t.name),
       concept: (domain.tpl.conceptTypes || []).map((t) => t.name),
     },
-    domainLabel: domain.name,
   };
-}
-
-async function runIngest() {
-  const title = $('ingest-title').value.trim();
-  const url = $('ingest-url').value.trim();
-  const text = $('ingest-text').value;
-  if (state.ingestTab === 'url' && !url) { setIngestStatus('请填写 URL', 'err'); return; }
-  if (state.ingestTab === 'text' && !text.trim()) { setIngestStatus('请粘贴文本内容', 'err'); return; }
-  if (state.ingestTab === 'files' && state.ingestFiles.length === 0) { setIngestStatus('请先选择或拖入至少一个文件', 'err'); return; }
-
-  // 领域模板预检查：文件用 local: 路径读内容，URL/文本直接参与匹配
-  setIngestStatus('正在匹配领域模板…');
-  const domain = await checkDomainBeforeIngest({
-    rawPaths: state.ingestTab === 'files' ? state.ingestFiles.map((f) => 'local:' + f.path) : [],
-    texts: state.ingestTab === 'text' ? [text] : (state.ingestTab === 'url' ? [url] : []),
-  });
-  if (domain === null) { setIngestStatus('已取消：未选择领域模板', 'err'); return; }
-
-  const payload = finishIngestPayload({
-    settings: state.settings,
-    files: state.ingestTab === 'files' ? state.ingestFiles.slice() : [],
-    url: state.ingestTab === 'url' ? url : '',
-    text: state.ingestTab === 'text' ? text : '',
-    title,
-  }, domain);
-  const res = await window.kb.jobsSubmit({ type: 'ingest', payload });
-  if (!res.ok) { setIngestStatus('提交作业失败：' + res.error, 'err'); return; }
-  state.ingestFiles = [];
-  renderFileList();
-  $('ingest-modal').hidden = true;
-  toast('吸收作业已提交，可在「作业」页查看进度');
-  showJobsView();
-}
-
-// ---------- 体检（Lint） ----------
-async function runLint() {
-  if (!state.wiki.exists) { toast('未找到 Wiki 目录'); return; }
-  const res = await window.kb.jobsSubmit({ type: 'lint', payload: { settings: state.settings } });
-  if (!res.ok) { toast('提交作业失败：' + res.error, 4000); return; }
-  toast('体检作业已提交');
-  showJobsView();
 }
 
 // ---------- 领域模版 ----------
 let tplEditingId = null; // 当前编辑的模版 id（null = 新建）
+let tplTouched = false; // 新建弹窗打开时不立即标红空必填项，用户输入或尝试创建后才显示
 
 function showTplView() {
   hideMainViews();
   promptEditing = null;
   $('tpl-view').hidden = false;
+  $('tpl-editor-view').hidden = true;
   renderEditor();
   renderSidebar();
   loadTemplates();
@@ -364,6 +152,7 @@ function showTplView() {
 
 function hideTplView() {
   $('tpl-view').hidden = true;
+  $('tpl-editor-view').hidden = true;
   renderEditor();
   renderSidebar();
 }
@@ -401,13 +190,12 @@ function renderTplCards() {
       if (act === 'edit') openTplModal(t);
       if (act === 'del') deleteTpl(t);
     });
-    // 右键菜单：从该领域 Wiki 页面抽取知识图谱（按钮入口已统一为右键）
+    // 右键菜单：编辑模板
     card.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
       openCtxMenu(e.clientX, e.clientY, [
-        { label: '🕸 生成图谱（从该领域 Wiki 页面）', action: () => graphTpl(t) },
-        { label: '✏ 编辑模板', action: () => openTplModal(t) },
+        { label: '编辑模板', action: () => openTplModal(t) },
       ]);
     });
     box.appendChild(card);
@@ -421,7 +209,7 @@ function addTplRow(boxId, namePh, descPh, val = {}) {
   row.innerHTML = `
     <input type="text" class="tpl-row-name" placeholder="${namePh}" />
     <input type="text" class="tpl-row-desc" placeholder="${descPh}" />
-    <button class="icon-btn" title="移除">✕</button>`;
+    <button class="icon-btn" title="移除">${icoSvg('close', 11)}</button>`;
   row.querySelector('.tpl-row-name').value = val.name || val.title || '';
   row.querySelector('.tpl-row-desc').value = val.desc || '';
   row.querySelector('.icon-btn').addEventListener('click', () => { row.remove(); updateTplValidation(); });
@@ -444,6 +232,7 @@ function fillTplRows(tpl) {
 function openTplModal(tpl, forceNew) {
   const editing = tpl && !forceNew ? tpl.id : null;
   tplEditingId = editing;
+  tplTouched = !!editing;
   setTplGenStatus('', '');
   $('tpl-modal-title').textContent = editing ? '编辑领域模版' : '新建领域模版';
   $('btn-tpl-save').textContent = editing ? '保存' : '创建';
@@ -457,8 +246,18 @@ function openTplModal(tpl, forceNew) {
   $('tpl-quality').value = tpl ? (tpl.quality || '') : '';
   fillTplRows(tpl || {});
   updateTplValidation();
-  $('tpl-modal').hidden = false;
+  // 在主框架内全屏展示编辑页（不再使用右侧抽屉）
+  $('tpl-view').hidden = true;
+  $('tpl-editor-view').hidden = false;
+  renderEditor();
   $('tpl-modal-body').scrollTop = 0;
+}
+
+// 返回模版卡片列表（与抽屉时代一致：未保存修改不保留）
+function closeTplEditor() {
+  $('tpl-editor-view').hidden = true;
+  $('tpl-view').hidden = false;
+  renderEditor();
 }
 
 // 智能生成：分析全部笔记+原始文件，产出候选领域模版列表供采纳
@@ -495,10 +294,16 @@ async function openTplSuggest() {
 function updateTplValidation() {
   let ok = true;
   document.querySelectorAll('#tpl-modal-body [data-req]').forEach((el) => {
-    const bad = !el.value.trim() || (el.id === 'tpl-id' && !/^[A-Za-z][A-Za-z0-9_]*$/.test(el.value.trim()));
-    el.classList.toggle('invalid', bad);
+    const bad = !el.value.trim();
+    // 新建且未交互时不标红（AI 会自动填充），避免一打开就满屏红框
+    el.classList.toggle('invalid', tplTouched && bad);
     if (bad) ok = false;
   });
+  // 模版 ID 非必填（创建时留空自动生成）；但一旦填写须符合英文标识符格式
+  const idEl = $('tpl-id');
+  const idBad = !!idEl.value.trim() && !/^[A-Za-z][A-Za-z0-9_]*$/.test(idEl.value.trim());
+  idEl.classList.toggle('invalid', idBad);
+  if (idBad) ok = false;
   const lists = [
     ['tpl-entity-rows', 'tpl-entity-warn'],
     ['tpl-concept-rows', 'tpl-concept-warn'],
@@ -510,13 +315,29 @@ function updateTplValidation() {
     if (bad) ok = false;
   }
   $('btn-tpl-save').disabled = !ok;
+  syncTplAiBtn();
   return ok;
 }
 
+// 「✨ AI 自动生成模版」仅在名称与描述都填写后可用；未齐时禁用并在 title 提示原因
+function syncTplAiBtn() {
+  const btn = $('btn-tpl-ai');
+  if (!btn) return;
+  const ready = !!$('tpl-name').value.trim() && !!$('tpl-desc').value.trim();
+  btn.disabled = !ready;
+  btn.title = ready ? '' : '请先填写名称和描述，再使用 AI 自动生成';
+}
+
 async function saveTplForm() {
+  tplTouched = true; // 尝试创建时揭示所有未填必填项
   if (!updateTplValidation()) { toast('请补全带 * 的必填项'); return; }
-  const id = $('tpl-id').value.trim();
-  if (!tplEditingId && state.templates.some((t) => t.id === id)) { toast('模版 ID 已存在：' + id); return; }
+  let id = $('tpl-id').value.trim();
+  if (!tplEditingId) {
+    // ID 无需用户填写：填写了则校验格式与唯一性，留空则自动生成
+    if (id && !/^[A-Za-z][A-Za-z0-9_]*$/.test(id)) { toast('模版 ID 须为英文标识符（字母开头，仅字母/数字/下划线）'); return; }
+    if (id && state.templates.some((t) => t.id === id)) { toast('模版 ID 已存在：' + id); return; }
+    if (!id) id = 'tpl_' + Date.now().toString(36);
+  }
   const res = await window.kb.tplSave({
     id,
     name: $('tpl-name').value.trim(),
@@ -531,10 +352,10 @@ async function saveTplForm() {
   });
   if (!res.ok) { toast('保存失败：' + res.error, 4000); return; }
   const wasNew = !tplEditingId;
-  $('tpl-modal').hidden = true;
+  closeTplEditor();
   toast(wasNew ? '模版已创建' : '模版已更新');
   loadTemplates();
-  // 吸收前预检查走「新建模板」分支时，创建成功后用新模板继续吸收
+  // 提取前预检查走「新建模板」分支时，创建成功后用新模板继续提取
   if (wasNew && tplPendingIngest) {
     const p = tplPendingIngest;
     tplPendingIngest = null;
@@ -579,11 +400,12 @@ function appendTplGenLog(text, reasoning) {
 async function runTplGenerate() {
   const name = $('tpl-name').value.trim();
   const desc = $('tpl-desc').value.trim();
-  if (!name) { toast('请先填写名称'); setTplGenStatus('✖ 生成阶段未开始：请先填写名称', 'err'); return; }
+  // 名称与描述均必填才允许 AI 生成，保证生成质量
+  if (!name || !desc) { toast('请先填写名称和描述，再使用 AI 自动生成'); setTplGenStatus('✖ 生成阶段未开始：请先填写名称和描述', 'err'); return; }
   const btn = $('btn-tpl-ai');
   btn.disabled = true;
-  btn.textContent = '⏳ AI 生成中…';
-  setTplGenStatus('⚙ 生成阶段：AI 正在按名称补全模版 ID、关键词、实体/概念类型与提取规则…', 'running');
+  btn.textContent = 'AI 生成中…';
+  setTplGenStatus('生成阶段：AI 正在按名称补全模版 ID、关键词、实体/概念类型与提取规则…', 'running');
   // 清空上次输出并订阅流式增量，实时打印生成过程（思考/正文）
   const log = $('tpl-gen-log');
   if (log) { log.innerHTML = ''; log.hidden = true; }
@@ -603,8 +425,8 @@ async function runTplGenerate() {
     toast('已生成，请检查并按需调整');
   } finally {
     if (unsub) unsub();
-    btn.disabled = false;
-    btn.textContent = '✨ AI 自动生成模版';
+    btn.innerHTML = icoSvg('sparkles', 13) + ' AI 自动生成模版';
+    syncTplAiBtn();
   }
 }
 
@@ -614,26 +436,43 @@ async function openTplPromptModal() {
 }
 
 function bindTplEvents() {
-  $('nav-templates').addEventListener('click', showTplView);
+  // 领域模版入口在「知识图谱管理」子菜单内：经容器委派绑定，点击不触发图谱子视图切换
+  $('kg-submenu').addEventListener('click', (e) => {
+    if (e.target.closest('#nav-templates')) showTplView();
+  });
   $('btn-tpl-close').addEventListener('click', hideTplView);
   $('btn-tpl-new').addEventListener('click', () => openTplModal(null));
+  // 用户一旦手动输入，即开启必填校验标红
+  $('tpl-modal-body').addEventListener('input', () => { if (!tplTouched) { tplTouched = true; updateTplValidation(); } });
   $('btn-tpl-suggest').addEventListener('click', openTplSuggest);
   $('btn-tpl-suggest-close').addEventListener('click', () => { $('tpl-suggest-modal').hidden = true; });
   $('btn-tpl-suggest-done').addEventListener('click', () => { $('tpl-suggest-modal').hidden = true; });
   $('btn-tpl-prompt').addEventListener('click', openTplPromptModal);
   $('btn-tpl-prompt-close').addEventListener('click', () => { $('tpl-prompt-modal').hidden = true; });
-  // 取消新建模板 → 若存在待办吸收则一并中止
+  // 取消新建模板 → 若存在待办提取则一并中止
   const cancelTplModal = () => {
-    $('tpl-modal').hidden = true;
+    closeTplEditor();
     if (tplPendingIngest) {
       const p = tplPendingIngest;
       tplPendingIngest = null;
-      toast('已取消吸收：未选择领域模板');
+      toast('已取消提取：未选择领域模板');
       p.resolve(null);
     }
   };
   $('btn-tpl-cancel').addEventListener('click', cancelTplModal);
   $('btn-tpl-modal-close').addEventListener('click', cancelTplModal);
+  // 领域选择弹窗（知识图谱提取用）
+  const settleDomain = (mode) => {
+    const p = domainPicker;
+    domainPicker = null;
+    if (p) p.resolve(mode);
+  };
+  $('btn-domain-cancel').addEventListener('click', () => settleDomain(null));
+  $('btn-domain-ok').addEventListener('click', () => {
+    const el = document.querySelector('input[name="domain-mode"]:checked');
+    settleDomain(el ? el.value : 'auto');
+  });
+  document.querySelectorAll('input[name="domain-mode"]').forEach((r) => r.addEventListener('change', syncDomainPickState));
   $('btn-tpl-save').addEventListener('click', saveTplForm);
   $('btn-tpl-ai').addEventListener('click', runTplGenerate);
   $('btn-tpl-add-entity').addEventListener('click', () => { addTplRow('tpl-entity-rows', '类型名称', '一句话说明（可选）'); updateTplValidation(); });
@@ -669,12 +508,24 @@ async function loadRaws() {
   $('count-raws').textContent = state.raws.length || '';
   $('raw-stats').textContent = state.raws.length ? `共 ${state.raws.length} 个原始来源` : '';
   renderRawList();
+  if (typeof refreshSetupChecklist === 'function') refreshSetupChecklist();
 }
 
 function fmtBytes(n) {
   if (n < 1024) return n + ' B';
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
   return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+// URL 类来源的副标题简显：去掉 url: 前缀与协议，超长截断（完整地址见悬浮提示）
+function shortUrlPath(p) {
+  let s = String(p || '');
+  if (s.startsWith('url:')) s = s.slice(4);
+  try {
+    const u = new URL(s);
+    s = (u.hostname + u.pathname + u.search).replace(/\/+$/, '') || s;
+  } catch (_) { /* 非标准 URL 原样处理 */ }
+  return s.length > 48 ? s.slice(0, 45) + '…' : s;
 }
 
 function renderRawList() {
@@ -686,7 +537,7 @@ function renderRawList() {
     const warn = document.createElement('div');
     warn.className = 'raw-warn';
     const totalTxt = t.total && t.total > t.shown ? `约 ${t.total}${t.total >= limit * 20 ? '+' : ''} 个` : '过多';
-    warn.innerHTML = `<span class="raw-warn-ico">⚠️</span>
+    warn.innerHTML = `<span class="raw-warn-ico">${icoSvg('warn', 15)}</span>
       <span class="raw-warn-txt">目录 <b>${escapeHtml(t.dir)}</b> 含文件${totalTxt}，超过上限 ${limit}，当前仅列出前 ${t.shown} 个。
       它会在每次刷新时被遍历，建议解除后改选具体子目录；或在设置→作业中调高上限。</span>`;
     const btn = document.createElement('button');
@@ -699,7 +550,7 @@ function renderRawList() {
   if (!state.raws.length) {
     const empty = document.createElement('div');
     empty.className = 'raw-empty';
-    empty.textContent = '暂无原始来源。点右上「＋ 添加文件/目录」导入本地数据（可勾选单个文件，也可整目录导入），或在「📖 LLM Wiki」点 ＋ 吸收网页/文本。';
+    empty.textContent = '暂无原始来源。点右上「添加文件/目录」导入本地数据（可勾选单个文件，也可整目录导入），或点 ＋ 添加网页链接。';
     box.appendChild(empty);
     return;
   }
@@ -707,42 +558,50 @@ function renderRawList() {
     const row = document.createElement('div');
     row.className = 'raw-row';
     row.style.paddingLeft = indent + 'px';
-    // 本机引用（local:）仅解除引用不删本机文件；raw/ 下副本才是真删除
+    // 本机引用（local:）/网页链接（url:）仅解除引用不删本机文件/不删网页；raw/ 下副本才是真删除
     const isLocal = String(r.path).startsWith('local:');
-    const delLabel = isLocal ? '解除' : '删除';
-    const delTitle = isLocal ? '解除该来源的引用（不删除本机文件）' : '删除该原始文件（raw/ 内副本）';
-    // 吸收状态徽标：已吸收（绿）/ 吸收后文件已修改（橙，建议重新吸收）
+    const isUrl = String(r.path).startsWith('url:');
+    const isRef = isLocal || isUrl;
+    const delLabel = isRef ? '解除' : '删除';
+    const delTitle = isUrl ? '解除该链接的引用' : (isLocal ? '解除该来源的引用（不删除本机文件）' : '删除该原始文件（raw/ 内副本）');
+    const viewTitle = isUrl ? '在浏览器打开该链接' : '用本机默认软件打开该文件';
+    // 历史吸收状态徽标（旧版吸收功能的存量标记）：已吸收（绿）/ 吸收后文件已修改（橙）
     const badge = r.ingested
       ? (r.ingested.stale
-        ? `<span class="raw-badge stale" title="已于 ${formatDate(r.ingested.at)} 吸收，之后文件被修改过，建议重新吸收">已修改</span>`
-        : `<span class="raw-badge ok" title="已于 ${formatDate(r.ingested.at)} 吸收进 Wiki">已吸收</span>`)
+        ? `<span class="raw-badge stale" title="已于 ${formatDate(r.ingested.at)} 吸收，之后文件被修改过">已修改</span>`
+        : `<span class="raw-badge ok" title="已于 ${formatDate(r.ingested.at)} 吸收">已吸收</span>`)
       : '';
     row.innerHTML = `
-      <span class="raw-ext">${escapeHtml((r.ext || 'md').toUpperCase().slice(0, 4))}</span>
+      ${isUrl
+        ? `<span class="raw-ext raw-ext-url" title="网页链接引用">${icoSvg('link', 12)}</span>`
+        : `<span class="raw-ext">${escapeHtml((r.ext || 'md').toUpperCase().slice(0, 4))}</span>`}
       <span class="raw-main">
         <span class="raw-name" title="${escapeHtml(r.path)}">${escapeHtml(r.name)}</span>
-        <span class="raw-meta">${escapeHtml(r.path)} · ${fmtBytes(r.size)} · ${formatDate(r.mtime)}</span>
+        <span class="raw-meta" title="${escapeHtml(r.path)}">${escapeHtml(isUrl ? shortUrlPath(r.path) : r.path)}${isUrl ? '' : ` · ${fmtBytes(r.size)}`} · ${formatDate(r.mtime)}</span>
       </span>
       ${badge}
       <span class="raw-actions">
-        <button class="btn btn-ghost" data-act="view" title="用本机默认软件打开该文件">查看</button>
+        ${isUrl ? '<button class="btn btn-ghost" data-act="rename" title="改写该链接的展示名">改名</button>' : ''}
+        <button class="btn btn-ghost" data-act="view" title="${viewTitle}">查看</button>
         <button class="btn btn-ghost danger" data-act="del" title="${delTitle}">${delLabel}</button>
       </span>`;
     row.addEventListener('click', (e) => {
       const act = e.target.dataset && e.target.dataset.act;
       if (act === 'view') openRawNative(r.path);
       if (act === 'del') deleteRaw(r.path);
+      if (act === 'rename') renameRawUrl(r);
     });
-    // 右键菜单：提取 Wiki / 知识图谱等快捷操作
+    // 右键菜单：提取笔记 / 知识图谱等快捷操作
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
       openCtxMenu(e.clientX, e.clientY, [
-        { label: '📝 提取 Wiki', action: () => ingestRaw(r.path) },
-        { label: '🕸 提取知识图谱', action: () => graphRaw(r.path) },
+        { label: '提取笔记', action: () => extractRawNote(r.path) },
+        { label: '提取知识图谱', action: () => graphRaw(r.path) },
         { sep: true },
-        { label: '📂 查看（本机打开）', action: () => openRawNative(r.path) },
-        { label: isLocal ? '🗑 解除引用（不删本机文件）' : '🗑 删除', danger: true, action: () => deleteRaw(r.path) },
+        { label: isUrl ? '查看（浏览器打开）' : '查看（本机打开）', action: () => openRawNative(r.path) },
+        ...(isUrl ? [{ label: '改名', action: () => renameRawUrl(r) }] : []),
+        { label: isRef ? '解除引用' : '删除', danger: true, action: () => deleteRaw(r.path) },
       ]);
     });
     return row;
@@ -774,14 +633,16 @@ function renderRawList() {
     const countAll = (node) => node.files.length + [...node.dirs.values()].reduce((s, c) => s + countAll(c), 0);
     // 收集目录节点（含子目录）下的全部文件，供右键批量提取使用
     const collectFiles = (node) => node.files.slice().concat([...node.dirs.values()].flatMap(collectFiles));
-    // 折叠状态：根目录默认展开，子目录默认折叠（保留多级结构、逐级展开）
+    // 折叠状态：一级、二级默认收起，三级及更深默认展开（与笔记目录树策略一致；展开二级后其下全部可见）
+    const defaultCollapsed = (d) => d <= 1;
+    const isCollapsed = (key, d) => (key in rawTreeCollapsed) ? rawTreeCollapsed[key] : defaultCollapsed(d);
     const folderHeader = (name, count, key, depth, files, rootDir) => {
-      const collapsed = (key in rawTreeCollapsed) ? rawTreeCollapsed[key] : (depth > 0);
+      const collapsed = isCollapsed(key, depth);
       const fh = document.createElement('div');
       fh.className = 'wiki-domain-title wiki-group-toggle';
       fh.style.paddingLeft = (10 + depth * 14) + 'px';
-      fh.title = '右键：对该目录提取 Wiki / 知识图谱';
-      fh.innerHTML = `<span class="chevron${collapsed ? ' collapsed' : ''}">▾</span> 📁 ${escapeHtml(name)} <span class="wiki-group-count">${count}</span>`;
+      fh.title = '右键：对该目录提取笔记 / 知识图谱';
+      fh.innerHTML = `<span class="chevron${collapsed ? ' collapsed' : ''}">▾</span> ${icoSvg('folder-open', 13)} ${escapeHtml(name)} <span class="wiki-group-count">${count}</span>`;
       // 根目录行提供可见的「解除」按钮（仅移除引用，不删本机文件）
       if (rootDir) {
         const btn = document.createElement('button');
@@ -792,15 +653,15 @@ function renderRawList() {
         fh.appendChild(btn);
       }
       fh.addEventListener('click', () => { rawTreeCollapsed[key] = !collapsed; renderRawList(); });
-      // 右键菜单：对整个目录提取 Wiki / 知识图谱；根目录额外支持整个目录解除引用
+      // 右键菜单：对整个目录提取笔记 / 知识图谱；根目录额外支持整个目录解除引用
       fh.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
         const paths = files.map((f) => f.path);
         // 右键菜单只管提取；解除引用走目录行右侧的可见「解除」按钮，避免两处重复
         const items = [
-          { label: `📝 提取 Wiki（${paths.length} 个文件）`, action: () => ingestRawPaths(paths, name) },
-          { label: `🕸 提取知识图谱（${paths.length} 个文件）`, action: () => graphRawPaths(paths, name) },
+          { label: `提取笔记（${paths.length} 个文件）`, action: () => extractRawNotes(paths, name) },
+          { label: `提取知识图谱（${paths.length} 个文件）`, action: () => graphRawPaths(paths, name) },
         ];
         openCtxMenu(e.clientX, e.clientY, items);
       });
@@ -810,7 +671,7 @@ function renderRawList() {
       for (const [name, child] of [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
         const key = 'rawdir:' + prefix + '/' + name;
         box.appendChild(folderHeader(name, countAll(child), key, depth, collectFiles(child)));
-        if (!((key in rawTreeCollapsed) ? rawTreeCollapsed[key] : true)) renderNode(child, depth + 1, prefix + '/' + name);
+        if (!isCollapsed(key, depth)) renderNode(child, depth + 1, prefix + '/' + name);
       }
       node.files.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).forEach((f) => {
         box.appendChild(makeRow(f, 12 + depth * 14));
@@ -818,7 +679,7 @@ function renderRawList() {
     };
     const rootKey = 'rawdir:' + root;
     box.appendChild(folderHeader(pathBasename(root), refs.length, rootKey, 0, refs, root));
-    if (!((rootKey in rawTreeCollapsed) ? rawTreeCollapsed[rootKey] : false)) renderNode(tree, 1, root);
+    if (!isCollapsed(rootKey, 0)) renderNode(tree, 1, root);
   }
 }
 
@@ -828,7 +689,7 @@ function pathBasename(p) {
   return i >= 0 ? s.slice(i + 1) : s;
 }
 
-// ---------- 右键菜单（原始文件/目录提取 Wiki 与知识图谱） ----------
+// ---------- 右键菜单（原始文件/目录提取笔记与知识图谱） ----------
 let ctxMenuEl = null;
 let ctxBound = false;
 
@@ -869,38 +730,12 @@ function openCtxMenu(x, y, items) {
   if (rect.bottom > window.innerHeight) ctxMenuEl.style.top = Math.max(4, window.innerHeight - rect.height - 4) + 'px';
 }
 
-// 目录级批量提取 Wiki：已吸收过滤 + 领域模板预检查（与全量吸收逻辑一致）
-async function ingestRawPaths(paths, label) {
-  if (!paths.length) { toast('该目录下暂无可提取的文件', 2500); return; }
-  const isFresh = (p) => {
-    const r = (state.raws || []).find((x) => x.path === p);
-    return !!(r && r.ingested && !r.ingested.stale);
-  };
-  const fresh = paths.filter(isFresh);
-  const todo = paths.filter((p) => !isFresh(p));
-  let usePaths = todo;
-  let force = false;
-  if (!todo.length) {
-    if (!confirm(`「${label}」下 ${paths.length} 个文件均已吸收过。确定要重新提取全部吗？（将更新现有 Wiki 页面）`)) return;
-    usePaths = paths;
-    force = true;
-  } else if (fresh.length && !confirm(`「${label}」下 ${fresh.length} 个文件已吸收过且未变化，将只提取其余 ${todo.length} 个。继续？`)) return;
-  toast('正在匹配领域模板…', 2500);
-  const domain = await checkDomainBeforeIngest({ rawPaths: usePaths });
-  if (domain === null) return;
-  const res = await window.kb.jobsSubmit({ type: 'ingest', payload: finishIngestPayload({ settings: state.settings, rawPaths: usePaths, fromRaws: true, force }, domain) });
-  if (!res.ok) { toast('提交作业失败：' + res.error, 4000); return; }
-  toast(`已提交「${label}」生成 Wiki 作业（${usePaths.length} 个文件${force ? '，重新吸收' : ''}）`);
-  showJobsView();
-}
-
-// 目录级批量提取知识图谱（提交前领域预检查）
+// 目录级批量提取知识图谱（提交前选领域：自动/指定/自动新建/手动新建）
 async function graphRawPaths(paths, label) {
   if (!paths.length) { toast('该目录下暂无可提取的文件', 2500); return; }
-  toast('正在匹配领域模板…', 2500);
-  const domain = await checkDomainBeforeIngest({ rawPaths: paths });
-  if (domain === null) return;
-  const res = await window.kb.jobsSubmit({ type: 'graph', payload: { settings: state.settings, rawPaths: paths, ...graphDomainExtras(domain) } });
+  const extras = await pickDomainForExtract({ label, rawPaths: paths });
+  if (!extras) return;
+  const res = await window.kb.jobsSubmit({ type: 'graph', payload: { settings: state.settings, rawPaths: paths, ...extras } });
   if (!res.ok) { toast('提交作业失败：' + res.error, 4000); return; }
   toast(`已提交「${label}」生成图谱作业（${paths.length} 个文件）`);
   showJobsView();
@@ -912,70 +747,47 @@ async function openRawNative(relPath) {
   if (!res.ok) toast(res.error || '打开失败', 3000);
 }
 
-// 复用作业管线的 rawPaths 机制：跳过保存阶段，直接编译已有来源
-async function ingestRaw(relPath) {
-  // 重复吸收校验：已吸收且未修改 → 二次确认（确认后 force 强制重新吸收）
-  const rec = (state.raws || []).find((r) => r.path === relPath);
-  let force = false;
-  if (rec && rec.ingested && !rec.ingested.stale) {
-    if (!confirm(`该来源已于 ${formatDate(rec.ingested.at)} 吸收过且文件未变化，再次吸收将更新现有 Wiki 页面。确定继续？`)) return;
-    force = true;
-  }
-  // 领域模板预检查
-  toast('正在匹配领域模板…', 2500);
-  const domain = await checkDomainBeforeIngest({ rawPaths: [relPath] });
-  if (domain === null) return;
-  const res = await window.kb.jobsSubmit({ type: 'ingest', payload: finishIngestPayload({ settings: state.settings, rawPaths: [relPath], fromRaws: true, force }, domain) });
-  if (!res.ok) { toast('提交作业失败：' + res.error, 4000); return; }
-  toast('生成 Wiki 作业已提交');
+async function extractRawNote(relPath) {
+  const res = await window.kb.jobsSubmit({ type: 'extract-note', payload: { settings: state.settings, rawPaths: [relPath] } });
+  if (!res.ok) { toast('提交提取笔记作业失败：' + (res.error || '未知错误'), 4000); return; }
+  toast('提取笔记作业已提交');
   showJobsView();
 }
 
-// 仅从该原始来源抽取知识图谱（作业管线 rawPaths 模式，提交前领域预检查）
+async function extractRawNotes(paths, label) {
+  if (!paths.length) { toast('该目录下暂无可提取的文件', 2500); return; }
+  if (!confirm(`将「${label}」下 ${paths.length} 个来源提交为提取笔记作业，继续吗？`)) return;
+  const res = await window.kb.jobsSubmit({ type: 'extract-note', payload: { settings: state.settings, rawPaths: paths } });
+  if (!res.ok) { toast('提交提取笔记作业失败：' + (res.error || '未知错误'), 4000); return; }
+  toast(`已提交「${label}」提取笔记作业（${paths.length} 个来源）`);
+  showJobsView();
+}
+
+// 仅从该原始来源抽取知识图谱（作业管线 rawPaths 模式，提交前选领域）
 async function graphRaw(relPath) {
-  toast('正在匹配领域模板…', 2500);
-  const domain = await checkDomainBeforeIngest({ rawPaths: [relPath] });
-  if (domain === null) return;
-  const res = await window.kb.jobsSubmit({ type: 'graph', payload: { settings: state.settings, rawPaths: [relPath], ...graphDomainExtras(domain) } });
+  const extras = await pickDomainForExtract({ label: pathBasename(relPath), rawPaths: [relPath] });
+  if (!extras) return;
+  const res = await window.kb.jobsSubmit({ type: 'graph', payload: { settings: state.settings, rawPaths: [relPath], ...extras } });
   if (!res.ok) { toast('提交作业失败：' + res.error, 4000); return; }
   toast('生成图谱作业已提交');
   showJobsView();
 }
 
-// 从某领域模版的 Wiki 页面抽取知识图谱（domain 范围，类型受模版实体/概念约束）
-async function graphTpl(t) {
-  const res = await window.kb.jobsSubmit({
-    type: 'graph',
-    payload: {
-      settings: state.settings,
-      scope: 'wiki',
-      domain: t.id,
-      templateName: t.name,
-      typeHints: {
-        entity: (t.entityTypes || []).map((x) => x.name).filter(Boolean),
-        concept: (t.conceptTypes || []).map((x) => x.name).filter(Boolean),
-      },
-    },
-  });
-  if (!res.ok) { toast('提交作业失败：' + res.error, 4000); return; }
-  toast(`已提交「${t.name}」领域图谱生成作业`);
-  showJobsView();
-}
-
 async function deleteRaw(relPath) {
   const isLocal = String(relPath).startsWith('local:');
-  if (isLocal) {
-    if (!confirm(`解除来源“${relPath}”的引用？\n仅移除引用，本机文件不受影响；已编译的 Wiki 页面不受影响。`)) return;
-  } else if (!confirm(`删除原始来源“${relPath}”？已编译的 Wiki 页面不受影响。`)) return;
+  const isUrl = String(relPath).startsWith('url:');
+  if (isLocal || isUrl) {
+    if (!confirm(`解除来源“${relPath}”的引用？\n仅移除引用，${isUrl ? '不会删除网页' : '本机文件不受影响'}；已提取的笔记与图谱不受影响。`)) return;
+  } else if (!confirm(`删除原始来源“${relPath}”？已提取的笔记与图谱不受影响。`)) return;
   const res = await window.kb.rawRemove({ settings: state.settings, relPath });
   if (!res.ok) { toast('操作失败：' + res.error, 4000); return; }
-  toast(isLocal ? '已解除引用' : '已删除');
+  toast(isLocal || isUrl ? '已解除引用' : '已删除');
   loadRaws();
 }
 
 // 整个目录解除引用（仅移除知识库引用，不删除本机文件）
 async function removeRawDir(dir, name, count) {
-  if (!confirm(`解除目录“${name}”的整个引用（共 ${count} 个来源）？\n仅移除引用，本机文件不受影响；已编译的 Wiki 页面不受影响。`)) return;
+  if (!confirm(`解除目录“${name}”的整个引用（共 ${count} 个来源）？\n仅移除引用，本机文件不受影响；已提取的笔记与图谱不受影响。`)) return;
   const res = await window.kb.rawRemoveDir({ settings: state.settings, dir });
   if (!res.ok) { toast('解除失败：' + res.error, 4000); return; }
   toast(`已解除目录“${name}”的引用`);
@@ -983,7 +795,7 @@ async function removeRawDir(dir, name, count) {
 }
 
 async function addRawFiles() {
-  const res = await window.kb.wikiPickFiles();
+  const res = await window.kb.rawPickFiles();
   if (!res || !res.ok || !res.paths || !res.paths.length) return;
   toast(`正在解析导入 ${res.paths.length} 个文件…`, 3000);
   const r = await window.kb.rawAddFiles({ settings: state.settings, paths: res.paths });
@@ -1045,7 +857,7 @@ function renderPickdirPath(dir) {
   el.innerHTML = '';
   const root = document.createElement('span');
   root.className = 'seg';
-  root.textContent = '💻 此电脑';
+  root.innerHTML = icoSvg('storage', 13) + ' 此电脑';
   root.addEventListener('click', () => browseTo(''));
   el.appendChild(root);
   if (!dir) return;
@@ -1085,7 +897,7 @@ function renderPickdirList(res) {
   for (const d of res.dirs) {
     const row = document.createElement('div');
     row.className = 'pickdir-row';
-    row.innerHTML = `<span>📁</span><span class="pd-name">${escapeHtml(d.name)}</span><span class="pd-meta">文件夹</span>`;
+    row.innerHTML = `<span>${icoSvg('folder-open', 14)}</span><span class="pd-name">${escapeHtml(d.name)}</span><span class="pd-meta">文件夹</span>`;
     row.addEventListener('click', () => browseTo(d.path));
     box.appendChild(row);
   }
@@ -1109,7 +921,7 @@ function renderPickdirList(res) {
     const ext = document.createElement('span');
     ext.className = 'pd-ext' + (supported ? '' : ' unsupported');
     ext.textContent = f.ext || '文件';
-    ext.title = supported ? '支持格式' : '非支持格式，吸收时将跳过';
+    ext.title = supported ? '支持格式' : '非支持格式，导入时将跳过';
     row.appendChild(ext);
     const meta = document.createElement('span');
     meta.className = 'pd-meta';
@@ -1163,27 +975,72 @@ async function addRawDir() {
   loadRaws();
 }
 
-// 添加链接：拉取网页保存为原始来源（存 raw/）
+// 判断返回的标题是否为 URL 兜底名（与主进程 urlDisplayName 规则一致）：
+// 是则说明服务端没读到真标题（需登录/超时等），需要让用户补填
+function isUrlFallbackTitle(title, url) {
+  try {
+    const u = new URL(url);
+    const seg = u.pathname.split('/').filter(Boolean).pop() || '';
+    const fallback = decodeURIComponent(seg ? `${u.hostname}/${seg}` : u.hostname);
+    return !title || title === fallback || title === u.hostname;
+  } catch (_) {
+    return !title;
+  }
+}
+
+// 添加链接：只保存链接信息（不下载正文/不转存 md），只取一次网页标题做展示名。
+// 需登录的站点可填用户名/密码：弹出应用内登录窗时自动填充，登录态（Cookie）会被持久化保留，
+// 之后问答/提取读取该链接正文时自动带上登录态。
 async function addRawUrl() {
-  const url = await askInput('输入网页链接（http/https）：', '', { placeholder: 'https://example.com/article' });
+  const form = await askForm('添加网页链接', [
+    { key: 'url', label: '网页链接（http/https）', placeholder: 'https://example.com/article', required: true },
+    { key: 'username', label: '用户名（可选，需登录的站点填写）', placeholder: '留空表示无需登录' },
+    { key: 'password', label: '密码（可选）', placeholder: '留空表示无需登录', type: 'password' },
+  ], { tip: '需登录的站点（如语雀/飞书）填上账号密码，登录窗会自动填充；登录成功后登录态会被保留，读取正文时自动带上。' });
+  if (!form) return;
+  const url = (form.url || '').trim();
   if (!url) return;
-  if (!/^https?:\/\//i.test(url.trim())) { toast('链接需以 http:// 或 https:// 开头', 3000); return; }
-  toast('正在拉取网页…', 2500);
-  const r = await window.kb.rawAddSource({ settings: state.settings, url: url.trim() });
-  if (!r.ok) { toast('拉取失败：' + r.error, 4000); return; }
-  toast('已添加链接来源');
+  if (!/^https?:\/\//i.test(url)) { toast('链接需以 http:// 或 https:// 开头', 3000); return; }
+  const credentials = (form.username || '').trim() || (form.password || '')
+    ? { username: (form.username || '').trim(), password: form.password || '' }
+    : undefined;
+  // 仅保存链接信息（不下载正文/不转存 md）；主进程先匿名取标题，失败再隐藏窗真实渲染，
+  // 需登录的站点会弹出应用内登录窗（登录一次后同站点后续链接自动带登录态）
+  toast('正在读取网页标题…（需登录的页面会弹出登录窗）', 8000);
+  const r = await window.kb.rawAddUrl({ settings: state.settings, url, credentials });
+  if (!r.ok) { toast('添加失败：' + r.error, 4000); return; }
+  loadRaws();
+  if (!isUrlFallbackTitle(r.title, url)) { toast(`已添加：${r.title}`, 3000); return; }
+  // 匿名/渲染/登录都取不到标题时：添加后立即让用户补填展示名，
+  // 避免列表里一直显示 URL 兜底名；留空则维持域名/路径简名，之后仍可行内「改名」
+  const name = await askInput(r.login ? '登录后仍未读到网页标题，请输入显示名称：' : '未能读到网页标题（页面可能需登录），请输入显示名称：', '', { placeholder: '留空用域名/路径简名' });
+  if (!name || !name.trim()) { toast('已添加，可点行内「改名」补填显示名称', 4000); return; }
+  const res = await window.kb.rawRenameUrl({ settings: state.settings, url: r.relPath, title: name.trim() });
+  if (res.ok) toast(`已添加：${res.title}`, 3000);
+  else toast('已添加，但命名失败：' + res.error, 4000);
+  loadRaws();
+}
+
+// 改写链接的展示名：语雀/飞书这类登录后才渲染正文的页面，服务端取不到真标题，靠手改最省事
+async function renameRawUrl(r) {
+  const cur = String(r.name || '');
+  const name = await askInput('链接显示名称：', cur, { placeholder: '留空则回退为域名/路径简名' });
+  if (name === null || name === undefined) return;
+  const res = await window.kb.rawRenameUrl({ settings: state.settings, url: r.path, title: name.trim() });
+  if (!res.ok) { toast('改名失败：' + res.error, 4000); return; }
+  toast(`已改名：${res.title}`);
   loadRaws();
 }
 
 function bindRawEvents() {
   $('nav-raws').addEventListener('click', showRawView);
-  // 侧边栏「原始文件」右键：全部原始来源生成 Wiki / 知识图谱（按钮入口已统一为右键）
+  // 侧边栏「原始文件」右键：批量提取笔记 / 知识图谱
   $('nav-raws').addEventListener('contextmenu', (e) => {
     e.preventDefault();
     e.stopPropagation();
     openCtxMenu(e.clientX, e.clientY, [
-      { label: '📝 全部来源提取 Wiki', action: () => rawsToWiki() },
-      { label: '🕸 全部来源提取知识图谱', action: () => rawsToGraph() },
+      { label: '全部来源提取笔记', action: () => extractRawNotes((state.raws || []).map((r) => r.path), '全部原始来源') },
+      { label: '全部来源提取知识图谱', action: () => rawsToGraph() },
     ]);
   });
   // 侧边栏 ＋：直接选择文档上传到 raw/，并打开原始文件页
@@ -1203,41 +1060,14 @@ function bindRawEvents() {
   $('pickdir-modal').addEventListener('click', (e) => { if (e.target === $('pickdir-modal')) closePickDir(null); });
 }
 
-// 全部原始来源生成 Wiki（复用作业管线 rawPaths，跳过保存阶段；已吸收且未变化的默认跳过）
-async function rawsToWiki() {
-  const all = state.raws || [];
-  if (!all.length) { toast('暂无原始来源', 2500); return; }
-  const fresh = all.filter((r) => r.ingested && !r.ingested.stale);
-  const todo = all.filter((r) => !(r.ingested && !r.ingested.stale));
-  if (!todo.length) {
-    // 全部已吸收：用户明确确认后才强制重吸
-    if (!confirm(`全部 ${all.length} 个来源均已吸收过。确定要重新吸收全部吗？（将更新现有 Wiki 页面）`)) return;
-    toast('正在匹配领域模板…', 2500);
-    const domain = await checkDomainBeforeIngest({ rawPaths: all.map((r) => r.path) });
-    if (domain === null) return;
-    const res = await window.kb.jobsSubmit({ type: 'ingest', payload: finishIngestPayload({ settings: state.settings, rawPaths: all.map((r) => r.path), fromRaws: true, force: true }, domain) });
-    if (!res.ok) { toast('提交作业失败：' + res.error, 4000); return; }
-    toast(`已提交「全部原始来源」重新吸收作业（${all.length} 个来源）`);
-    showJobsView();
-    return;
-  }
-  if (fresh.length && !confirm(`${fresh.length} 个来源已吸收过且未变化，将只吸收其余 ${todo.length} 个。继续？（如需重新吸收已吸收来源，请逐条操作）`)) return;
-  if (!fresh.length && !confirmRegen('wiki')) return;
-  toast('正在匹配领域模板…', 2500);
-  const domain = await checkDomainBeforeIngest({ rawPaths: todo.map((r) => r.path) });
-  if (domain === null) return;
-  const res = await window.kb.jobsSubmit({ type: 'ingest', payload: finishIngestPayload({ settings: state.settings, rawPaths: todo.map((r) => r.path), fromRaws: true }, domain) });
-  if (!res.ok) { toast('提交作业失败：' + res.error, 4000); return; }
-  toast(`已提交生成 Wiki 作业（${todo.length} 个来源${fresh.length ? `，已跳过 ${fresh.length} 个已吸收` : ''}）`);
-  showJobsView();
-}
-
 // 全部原始来源生成知识图谱
 async function rawsToGraph() {
   const paths = (state.raws || []).map((r) => r.path);
   if (!paths.length) { toast('暂无原始来源', 2500); return; }
   if (!confirmRegen('graph')) return;
-  const res = await window.kb.jobsSubmit({ type: 'graph', payload: { settings: state.settings, rawPaths: paths } });
+  const extras = await pickDomainForExtract({ label: '全部原始来源', rawPaths: paths });
+  if (!extras) return;
+  const res = await window.kb.jobsSubmit({ type: 'graph', payload: { settings: state.settings, rawPaths: paths, ...extras } });
   if (!res.ok) { toast('提交作业失败：' + res.error, 4000); return; }
   toast(`已提交「全部原始来源」生成图谱作业（${paths.length} 个来源）`);
   showJobsView();

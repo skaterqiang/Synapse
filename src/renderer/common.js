@@ -5,7 +5,7 @@
 const state = {
   folders: [],   // {id, name, parentId}
   notes: [],     // {id, title, content, tags[], folderId, pinned, createdAt, updatedAt}
-  settings: {},  // {apiBaseUrl, apiKey, model, wikiRoot, wikiCollapsed, maxJobsHistory, chatRetries, urlFetchTimeout, sourceMaxChars, wikiAskMaxPages, logTailLines, defaultEditorMode}
+  settings: {},  // {apiBaseUrl, apiKey, model, maxJobsHistory, chatRetries, urlFetchTimeout, sourceMaxChars, logTailLines, defaultEditorMode}
   view: { type: 'all', id: null, query: '' }, // type: all | folder | tag | search
   selectedNoteId: null,
   editorMode: 'split',
@@ -13,21 +13,16 @@ const state = {
   currentDbPath: '',                // 当前 SQLite 数据文件路径（设置页回填用）
   aiBusy: false,
   aiBusySessionId: null,              // 正在回答的会话 id（仅内存，用于列表“回答中”标识）
-  wiki: { exists: false, pages: [] }, // LLM Wiki 描述信息
-  wikiPage: null,                     // 当前打开的 wiki 页面相对路径
-  aiMode: 'notes',                    // notes | wiki
-  ingestTab: 'url',                   // url | text | files
-  ingestFiles: [],                    // 待吸收的本地文件 [{path, name}]
-  jobs: [],                           // Wiki 处理作业列表
+  jobs: [],                           // 后台作业列表
   jobsFilter: 'all',                  // 作业页筛选：all | active | success | failed
   jobsExpanded: {},                   // 作业页展开状态 { jobId: true }
   graph: { nodes: [], edges: [], updatedAt: 0 }, // 知识图谱（本体层）
-  graphScope: 'all',                  // 图谱抽取范围：all | wiki | notes
   noteListHidden: false,              // 笔记列表栏是否被用户收起
-  aiSources: { notes: true, wiki: true, graph: true, raws: true }, // AI 问答数据源（多选）
+  aiSources: { notes: false, graph: false, raws: false }, // AI 问答数据源
   kg: { tab: 'overview', onto: null, ontoTab: 'classes', entitySel: null, focus: null }, // 知识图谱模块子视图状态；focus = 邻居视图中心节点
   templates: [],                      // 领域模版列表
   raws: [],                           // raw/ 原始来源列表
+  folderCollapsed: {},                // 目录树折叠状态
 };
 
 let saveTimer = null;
@@ -44,6 +39,12 @@ function escapeHtml(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// 统一线性图标：渲染 index.html 顶部 SVG sprite 中的 symbol
+function icoSvg(name, size) {
+  const s = size || 14;
+  return '<svg class="ico" width="' + s + '" height="' + s + '"><use href="#i-' + name + '"/></svg>';
 }
 
 function formatDate(ts) {
@@ -107,7 +108,7 @@ function toast(msg, ms = 2200) {
 function renderMarkdown(text) {
   try {
     let html = marked.parse(text || '', { breaks: true });
-    // 消毒：剥离 script/事件属性等（AI 回答与 Wiki 内容不可信）；
+    // 消毒：剥离 script/事件属性等（AI 回答与外部内容不可信）；
     // 在默认协议白名单基础上放行 kb-asset:（笔记附件图自定义协议）
     if (window.DOMPurify) {
       html = window.DOMPurify.sanitize(html, {
@@ -129,6 +130,51 @@ function renderMarkdown(text) {
   } catch (_) {
     return escapeHtml(text);
   }
+}
+
+// ---------- 工具返回的图片预览（MCP 生图 / 文件类结果） ----------
+// 匹配 http(s) 图片链接，允许带查询串（OSS 签名链接形如 .png?Expires=…&Signature=…）
+const IMAGE_URL_RE = /https?:\/\/[^\s"'<>]+?\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s"'<>]*)?/gi;
+function extractImageUrls(text) {
+  const s = String(text || '');
+  const out = [];
+  let m;
+  IMAGE_URL_RE.lastIndex = 0;
+  while ((m = IMAGE_URL_RE.exec(s))) {
+    let u = m[0].replace(/[),.;，。；]+$/, ''); // 去掉尾部标点
+    if (u && !out.includes(u)) out.push(u);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+// 生成可点击的图片预览条；点击用系统浏览器打开，不跳转应用内窗口
+function buildImagePreview(urls, label) {
+  if (!urls || !urls.length) return null;
+  const box = document.createElement('div');
+  box.className = 'img-preview';
+  const head = document.createElement('div');
+  head.className = 'img-preview-head';
+  head.textContent = `${label || '🖼 生成的图片'}（${urls.length}，点击打开原图）`;
+  box.appendChild(head);
+  urls.forEach((u) => {
+    const a = document.createElement('a');
+    a.className = 'img-preview-item';
+    a.href = u; a.title = u;
+    a.addEventListener('click', (e) => { e.preventDefault(); try { window.kb.openExternal(u); } catch (_) {} });
+    const img = document.createElement('img');
+    img.src = u; img.alt = '生成图片'; img.loading = 'lazy';
+    img.addEventListener('error', () => a.classList.add('broken'));
+    a.appendChild(img);
+    box.appendChild(a);
+  });
+  return box;
+}
+// 在容器内追加图片预览（先清旧的，避免流式重渲染重复插入）
+function appendImagePreview(containerEl, text, label) {
+  if (!containerEl) return;
+  containerEl.querySelectorAll(':scope > .img-preview').forEach((x) => x.remove());
+  const pv = buildImagePreview(extractImageUrls(text), label);
+  if (pv) containerEl.appendChild(pv);
 }
 
 // 高亮搜索词（先转义再包裹 mark）
@@ -184,6 +230,71 @@ function askInput(title, defaultValue = '', opts = {}) {
   });
 }
 
+// 多字段表单弹窗：一次收集多项输入（如添加链接时的 URL + 用户名 + 密码）。
+// fields: [{ key, label, placeholder, type('text'|'password'), value, required }]
+// 返回 { key: value, ... }；取消/点遮罩返回 null。回车提交（最后一个字段回车 = 确定）。
+function askForm(title, fields, opts = {}) {
+  return new Promise((resolve) => {
+    $('form-title').textContent = title;
+    const tip = $('form-tip');
+    if (opts.tip) { tip.textContent = opts.tip; tip.hidden = false; } else { tip.hidden = true; }
+    const wrap = $('form-fields');
+    wrap.innerHTML = '';
+    const inputs = [];
+    for (const f of fields || []) {
+      const label = document.createElement('label');
+      label.textContent = f.label || f.key;
+      const input = document.createElement('input');
+      input.type = f.type === 'password' ? 'password' : 'text';
+      input.placeholder = f.placeholder || '';
+      input.value = f.value || '';
+      input.dataset.key = f.key;
+      label.appendChild(input);
+      wrap.appendChild(label);
+      inputs.push(input);
+    }
+    $('form-modal').hidden = false;
+    if (inputs[0]) { inputs[0].focus(); inputs[0].select(); }
+
+    const close = (val) => {
+      $('form-modal').hidden = true;
+      $('btn-form-ok').removeEventListener('click', onOk);
+      $('btn-form-cancel').removeEventListener('click', onCancel);
+      $('form-modal').removeEventListener('click', onMask);
+      inputs.forEach((i) => i.removeEventListener('keydown', onKey));
+      resolve(val);
+    };
+    const collect = () => {
+      const out = {};
+      for (const f of fields || []) {
+        const el = wrap.querySelector(`input[data-key="${f.key}"]`);
+        out[f.key] = el ? el.value : '';
+      }
+      return out;
+    };
+    const onOk = () => {
+      // 必填校验：留空的必填项聚焦提示，不提交
+      for (const f of fields || []) {
+        if (f.required) {
+          const el = wrap.querySelector(`input[data-key="${f.key}"]`);
+          if (el && !el.value.trim()) { el.focus(); return; }
+        }
+      }
+      close(collect());
+    };
+    const onCancel = () => close(null);
+    const onMask = (e) => { if (e.target === $('form-modal')) close(null); };
+    const onKey = (e) => {
+      if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); onOk(); }
+      if (e.key === 'Escape') close(null);
+    };
+    $('btn-form-ok').addEventListener('click', onOk);
+    $('btn-form-cancel').addEventListener('click', onCancel);
+    $('form-modal').addEventListener('click', onMask);
+    inputs.forEach((i) => i.addEventListener('keydown', onKey));
+  });
+}
+
 function persist() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
@@ -203,45 +314,83 @@ function renderSidebar() {
   $('nav-jobs').classList.toggle('active', !$('jobs-view').hidden);
   $('nav-templates').classList.toggle('active', !$('tpl-view').hidden);
   $('nav-raws').classList.toggle('active', !$('raw-view').hidden);
-  // 知识图谱：只高亮当前选中的子菜单项
-  document.querySelectorAll('#kg-submenu .nav-sub-item').forEach((el) => {
+  // 知识图谱：只高亮当前选中的子菜单项（领域模版入口 .nav-tpl 的高亮由 nav-templates 行单独控制）
+  document.querySelectorAll('#kg-submenu .nav-sub-item:not(.nav-tpl)').forEach((el) => {
     el.classList.toggle('active', !$('graph-view').hidden && state.kg.tab === el.dataset.tab);
   });
-  // 整页视图（作业/模版/原始文件/图谱/设置）打开时，笔记列表类导航不保留高亮
-  const navDimmed = !$('settings-view').hidden || !$('jobs-view').hidden || !$('tpl-view').hidden || !$('raw-view').hidden || !$('graph-view').hidden;
+  // 整页视图（AI 问答/作业/模版/原始文件/图谱/设置）打开时，笔记列表类导航不保留高亮
+  const navDimmed = !$('settings-view').hidden || !$('jobs-view').hidden || !$('tpl-view').hidden || !$('raw-view').hidden || !$('graph-view').hidden || !$('ai-view').hidden;
+  // AI 问答是首页，入口同样给出选中态，避免当前页面在侧边栏无对应高亮
+  $('btn-ai-toggle').classList.toggle('active', !$('ai-view').hidden);
 
   // 目录树（支持一级展示全部，子目录缩进）
   const tree = $('folder-tree');
   tree.innerHTML = '';
   const roots = state.folders.filter((f) => !f.parentId);
   const childrenOf = (id) => state.folders.filter((f) => f.parentId === id);
+  const descendantIds = (id) => {
+    const ids = new Set([id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      state.folders.forEach((f) => {
+        if (f.parentId && ids.has(f.parentId) && !ids.has(f.id)) { ids.add(f.id); changed = true; }
+      });
+    }
+    return ids;
+  };
 
   const renderFolder = (folder, depth) => {
-    const count = state.notes.filter((n) => n.folderId === folder.id).length;
+    const children = childrenOf(folder.id);
+    const collapsed = !!state.folderCollapsed[folder.id];
+    // 🗑 垃圾桶是虚拟目录：未分类（folderId=null）的笔记都计入它
+    const count = folder.id === '__trash__'
+      ? state.notes.filter((n) => !n.folderId).length
+      : state.notes.filter((n) => descendantIds(folder.id).has(n.folderId)).length;
+    // 直属笔记（叶子节点）：参与“可展开”判定，展开符号统一为小三角（▾/▸）
+    // 🗑 垃圾桶是虚拟目录：它的“直属”笔记即未分类（folderId=null），展开可查看
+    const ownNotes = state.notes
+      .filter((n) => (folder.id === '__trash__' ? !n.folderId : n.folderId === folder.id))
+      .sort((a, b) => (a.title || '').localeCompare(b.title || '', 'zh'));
+    const hasKids = children.length + ownNotes.length > 0;
+    const isTrash = folder.id === '__trash__';
     const div = document.createElement('div');
     div.className = 'folder-item' + (!navDimmed && state.view.type === 'folder' && state.view.id === folder.id ? ' active' : '');
     div.style.paddingLeft = 10 + depth * 16 + 'px';
     div.innerHTML = `
-      <span style="margin-right:6px">${depth > 0 ? '↳' : '📁'}</span>
+      <span class="folder-toggle${hasKids ? '' : ' empty'}" data-act="toggle" title="${collapsed ? '展开目录' : '收起目录'}">${hasKids && !collapsed ? '▾' : '▸'}</span>
       <span class="folder-name">${escapeHtml(folder.name)}</span>
-      <span class="folder-actions">
-        <button class="icon-btn" data-act="add" title="在该目录下新建笔记">＋</button>
-        <button class="icon-btn" data-act="rename" title="重命名">✏</button>
-        <button class="icon-btn" data-act="del" title="删除">✕</button>
-      </span>
+      ${isTrash ? '' : `<span class="folder-actions">
+        <button class="icon-btn" data-act="add" title="在该目录下新建笔记">${icoSvg('add', 12)}</button>
+        <button class="icon-btn" data-act="rename" title="重命名">${icoSvg('edit', 12)}</button>
+        <button class="icon-btn" data-act="del" title="删除">${icoSvg('close', 12)}</button>
+      </span>`}
       <span class="nav-count">${count}</span>`;
-    // 右键菜单：该目录笔记提取 Wiki / 知识图谱（按钮入口已统一为右键）
+    // 右键菜单：普通目录提取知识图谱；垃圾桶只提供「清空垃圾桶」
     div.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (folder.id === '__trash__') {
+        const n = state.notes.filter((x) => !x.folderId).length;
+        openCtxMenu(e.clientX, e.clientY, [{ label: `清空垃圾桶（${n} 篇，不可恢复）`, action: emptyTrash }]);
+        return;
+      }
       const notes = folderDescendantNotes(folder.id);
       openCtxMenu(e.clientX, e.clientY, [
-        { label: `📝 提取 Wiki（${notes.length} 篇笔记）`, action: () => notesToWiki(notes, '目录·' + folder.name, '笔记目录') },
-        { label: `🕸 提取知识图谱（${notes.length} 篇笔记）`, action: () => notesToGraph(notes, '目录·' + folder.name) },
+        { label: `提取知识图谱（${notes.length} 篇笔记）`, action: () => notesToGraph(notes, '目录·' + folder.name) },
       ]);
     });
     div.addEventListener('click', (e) => {
       const act = e.target.dataset && e.target.dataset.act;
+      if (act === 'toggle') {
+        e.stopPropagation();
+        state.folderCollapsed[folder.id] = !collapsed;
+        try { localStorage.setItem('kb.folderCollapsed', JSON.stringify(state.folderCollapsed)); } catch (_) {}
+        // 用户手动调整过展开状态后，持久化自定义标记，后续不再套用默认策略
+        try { localStorage.setItem('kb.folderCollapsedCustom', '1'); } catch (_) {}
+        renderSidebar();
+        return;
+      }
       if (act === 'add') {
         e.stopPropagation();
         promptCreateNote(folder.id);
@@ -259,12 +408,28 @@ function renderSidebar() {
         return;
       }
       if (act === 'del') {
-        const noteCount = state.notes.filter((n) => n.folderId === folder.id).length;
-        if (!confirm(`删除目录"${folder.name}"？目录下 ${noteCount} 篇笔记将移至"未分类"。`)) return;
-        state.notes.forEach((n) => { if (n.folderId === folder.id) n.folderId = null; });
-        state.folders.forEach((f) => { if (f.parentId === folder.id) f.parentId = folder.parentId || null; });
-        state.folders = state.folders.filter((f) => f.id !== folder.id);
-        if (state.view.type === 'folder' && state.view.id === folder.id) state.view = { type: 'all', id: null, query: '' };
+        // 删除整个目录树：收集全部后代子目录，其下所有笔记移至"垃圾桶"（trash/），目录整体移除
+        const descIds = new Set([folder.id]);
+        let grew = true;
+        while (grew) {
+          grew = false;
+          for (const f of state.folders) {
+            if (f.parentId && descIds.has(f.parentId) && !descIds.has(f.id)) { descIds.add(f.id); grew = true; }
+          }
+        }
+        const noteCount = state.notes.filter((n) => descIds.has(n.folderId)).length;
+        const subCount = descIds.size - 1;
+        if (!confirm(`删除目录"${folder.name}"？${subCount ? `含 ${subCount} 个子目录，` : ''}目录下共 ${noteCount} 篇笔记将移至"垃圾桶"（磁盘 trash/ 目录），可在垃圾桶内右键还原。`)) return;
+        // 记录各笔记移入垃圾桶前的目录相对路径，供「还原到原来的位置」使用
+        // （目录记录随后被移除，须先按当前目录树计算）
+        state.notes.forEach((n) => {
+          if (descIds.has(n.folderId)) {
+            n.trashFrom = folderRelPath(n.folderId);
+            n.folderId = null;
+          }
+        });
+        state.folders = state.folders.filter((f) => !descIds.has(f.id));
+        if (state.view.type === 'folder' && descIds.has(state.view.id)) state.view = { type: 'all', id: null, query: '' };
         persist();
         renderAll();
         e.stopPropagation();
@@ -277,12 +442,44 @@ function renderSidebar() {
       renderAll();
     });
     tree.appendChild(div);
-    childrenOf(folder.id).forEach((c) => renderFolder(c, depth + 1));
+    if (!collapsed) {
+      children.forEach((c) => renderFolder(c, depth + 1));
+      // 直属笔记叶子节点：目录树此前只展示子目录，导入目录下的笔记文件不可见（如「技术风险」）
+      ownNotes.forEach((n) => {
+        const nd = document.createElement('div');
+        nd.className = 'folder-item note-leaf' + (n.id === state.selectedNoteId ? ' active' : '');
+        nd.style.paddingLeft = 10 + (depth + 1) * 16 + 'px';
+        nd.innerHTML = `<span class="folder-toggle">${icoSvg('notes', 12)}</span><span class="folder-name" title="${escapeHtml(n.title || '无标题笔记')}">${escapeHtml(n.title || '无标题笔记')}</span>`;
+        nd.addEventListener('click', () => selectNote(n.id));
+        // 垃圾桶叶节点右键：还原到原来的位置
+        if (folder.id === '__trash__') {
+          nd.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openCtxMenu(e.clientX, e.clientY, [{ label: '还原到原来的位置', action: () => restoreNoteFromTrash(n) }]);
+          });
+        }
+        tree.appendChild(nd);
+      });
+    }
   };
+  // 默认展开策略：一级、二级目录收起，三级及更深层级全部展开；用户手动调整过后以持久化状态为准
+  let customCollapsed = false;
+  try { customCollapsed = localStorage.getItem('kb.folderCollapsedCustom') === '1'; } catch (_) {}
+  if (!customCollapsed) {
+    const depthOf = (f) => {
+      let d = 0, cur = f;
+      while (cur && cur.parentId) { d++; cur = state.folders.find((x) => x.id === cur.parentId); }
+      return d;
+    };
+    const def = {};
+    state.folders.forEach((f) => { def[f.id] = depthOf(f) <= 1; });
+    state.folderCollapsed = def;
+  }
   roots.forEach((f) => renderFolder(f, 0));
 
   if (state.folders.length === 0) {
-    tree.innerHTML = '<div style="padding:4px 10px;font-size:12px;color:#b0b6bf">暂无目录，点上方 ＋ 创建</div>';
+    tree.innerHTML = '<div style="padding:4px 10px;font-size:12px;color:#b0b6bf">暂无目录，点上方 + 创建</div>';
   }
 
   // 标签云
@@ -309,7 +506,6 @@ function renderSidebar() {
   }
 
   $('nav-all-notes').classList.toggle('active', !navDimmed && (state.view.type === 'all' || state.view.type === 'search'));
-  $('wiki-header').classList.toggle('active', !navDimmed && state.view.type === 'wiki');
 }
 
 // ================= 设置 =================
@@ -320,12 +516,13 @@ const NUM_SETTING_FIELDS = {
   maxJobsHistory: ['set-maxhistory', 1, 500],
   chatRetries: ['set-retries', 0, 5],
   maxConcurrentJobs: ['set-maxconcurrent', 1, 8],
+  graphConcurrency: ['set-graphconc', 1, 8],
   urlFetchTimeout: ['set-urltimeout', 1, 600],
   sourceMaxChars: ['set-sourcechars', 1000, 1000000],
   rawDirMaxFiles: ['set-rawdirmax', 10, 100000],
-  wikiAskMaxPages: ['set-askpages', 1, 20],
   maxToolRounds: ['set-toolrounds', 1, 12],
   logTailLines: ['set-loglines', 1, 500],
+  mineruTimeout: ['set-minerutimeout', 10, 21600],
 };
 
 // 服务商预设：仅支持阿里云百炼与 Ollama（默认阿里云）
@@ -553,6 +750,8 @@ function renderModelList() {
   if (fields && stash) stash.appendChild(fields);
   box.innerHTML = '';
   modelEntryList().forEach((m) => box.appendChild(modelCard(m, fields)));
+  // 模型列表变化时同步刷新 MinerU 模型选择器
+  renderMineruModelOptions();
 }
 
 // entry: modelEntryList() 的一项（primary 为 true 时为默认模型）
@@ -562,22 +761,24 @@ function modelCard(entry, primaryFields) {
   const open = !!modelExpanded[key];
   const needKey = providerNeedsKey(entry.provider);
   const keyTag = entry.apiKey
-    ? '<span class="model-badge ok">已配 Key</span>'
-    : (needKey ? '<span class="model-badge warn" title="该 provider 通常需要 API Key">无 Key</span>' : '<span class="model-badge">无需 Key</span>');
+    ? '<span class="model-badge ok" data-keybadge>已配 Key</span>'
+    : (needKey ? '<span class="model-badge warn" data-keybadge title="该 provider 通常需要 API Key">无 Key</span>' : '<span class="model-badge" data-keybadge>无需 Key</span>');
   const wrap = document.createElement('div');
   wrap.className = 'mcp-card' + (open ? ' open' : '');
   wrap.innerHTML =
     '<div class="mcp-card-head">'
     + '<span class="mcp-caret">▾</span>'
-    + '<span class="model-badge alt">' + escapeHtml(providerLabel(entry.provider)) + '</span>'
-    + '<span class="mcp-test-name">' + escapeHtml(entry.model || '(未填模型名)') + '</span>'
+    + '<span class="model-badge alt" data-provbadge>' + escapeHtml(providerLabel(entry.provider)) + '</span>'
+    + '<span class="mcp-test-name" data-modelname>' + escapeHtml(entry.model || '(未填模型名)') + '</span>'
     + (isPrimary ? '<span class="model-badge cur">默认</span>' : '')
     + keyTag
-    + '<span class="mcp-test-target" title="' + escapeHtml(entry.baseUrl || '') + '">' + escapeHtml(entry.baseUrl || '') + '</span>'
+    + '<span class="mcp-test-target" data-baseurl title="' + escapeHtml(entry.baseUrl || '') + '">' + escapeHtml(entry.baseUrl || '') + '</span>'
     + '<span class="mcp-head-acts">'
     + (isPrimary
-      ? '<button type="button" class="skill-act danger" data-del title="删除后由下一个模型接任默认">删除</button>'
-      : '<button type="button" class="skill-act" data-primary title="设为默认模型（与当前默认互换）">设为默认</button>'
+      ? '<button type="button" class="skill-act" data-edit title="展开卡片编辑配置（底部「保存修改」写入）">编辑</button>'
+        + '<button type="button" class="skill-act danger" data-del title="删除后由下一个模型接任默认">删除</button>'
+      : '<button type="button" class="skill-act" data-edit title="展开卡片编辑配置（字段改动即存）">编辑</button>'
+        + '<button type="button" class="skill-act" data-primary title="设为默认模型（与当前默认互换）">设为默认</button>'
         + '<button type="button" class="skill-act danger" data-del>删除</button>')
     + '</span>'
     + '</div>'
@@ -591,6 +792,13 @@ function modelCard(entry, primaryFields) {
     renderModelList();
   });
 
+  // 卡头「编辑」：展开/收起卡片进入内联编辑（保存由表单底部「保存修改」/字段即存负责）
+  wrap.querySelector('[data-edit]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    modelExpanded[key] = !modelExpanded[key];
+    renderModelList();
+  });
+
   if (isPrimary) {
     // 默认模型：直接复用原有字段节点（保留 id 与已绑定的事件）
     if (primaryFields) body.appendChild(primaryFields);
@@ -598,7 +806,7 @@ function modelCard(entry, primaryFields) {
       e.stopPropagation();
       const rest = extraModels();
       // 默认模型是问答的兜底，至少得留一个模型可用
-      if (!rest.length) { toast('至少需保留一个模型。先「＋ 添加模型」再删除当前默认', 4000); return; }
+      if (!rest.length) { toast('至少需保留一个模型。先「添加模型」再删除当前默认', 4000); return; }
       const next = rest[0];
       const nextName = next.model || '(未填模型名)';
       if (!confirm(`删除默认模型「${entry.model || '(未填模型名)'}」？\n删除后由「${nextName}」接任默认模型。`)) return;
@@ -654,7 +862,11 @@ function extraModelForm(m) {
     + '</div>'
     + '<button type="button" class="btn btn-ghost" data-fetch>获取模型</button>'
     + '</div>'
-    + '<p class="modal-tip" data-fetchtip></p>';
+    + '<p class="modal-tip" data-fetchtip></p>'
+    + '<div class="model-save-row">'
+    + '<button type="button" class="btn btn-primary" data-saveform>保存修改</button>'
+    + '<span class="modal-tip">修改上方配置后点「保存修改」写入，保存后立即生效</span>'
+    + '</div>';
 
   const prov = box.querySelector('[data-f="provider"]');
   const url = box.querySelector('[data-f="baseUrl"]');
@@ -682,17 +894,49 @@ function extraModelForm(m) {
     if (typeof refreshAiModelUi === 'function') refreshAiModelUi();
     if (opts.rerender) renderModelList();
   };
+  // 就地刷新卡头徽章：字段改动后不整卡重建。
+  // 桌面端原生 select 打开期间若 renderModelList() 重建 DOM 会销毁该 select，
+  // 表现为「下拉点不动/选了没反应」，因此这里只更新卡头对应节点
+  const syncCardHead = () => {
+    const card = box.closest('.mcp-card');
+    if (!card) return;
+    const e = extraModels().find((x) => x.id === m.id) || {};
+    const p = normalizeProvider(e.provider);
+    const provBadge = card.querySelector('[data-provbadge]');
+    if (provBadge) provBadge.textContent = providerLabel(p);
+    const nameBadge = card.querySelector('[data-modelname]');
+    if (nameBadge) nameBadge.textContent = (e.model || '').trim() || '(未填模型名)';
+    const urlBadge = card.querySelector('[data-baseurl]');
+    if (urlBadge) { urlBadge.textContent = e.baseUrl || ''; urlBadge.title = e.baseUrl || ''; }
+    const keyBadge = card.querySelector('[data-keybadge]');
+    if (keyBadge) {
+      if (e.apiKey) { keyBadge.className = 'model-badge ok'; keyBadge.textContent = '已配 Key'; keyBadge.removeAttribute('title'); }
+      else if (providerNeedsKey(p)) { keyBadge.className = 'model-badge warn'; keyBadge.textContent = '无 Key'; keyBadge.title = '该 provider 通常需要 API Key'; }
+      else { keyBadge.className = 'model-badge'; keyBadge.textContent = '无需 Key'; keyBadge.removeAttribute('title'); }
+    }
+  };
   prov.addEventListener('change', () => {
     const preset = PROVIDER_PRESETS[prov.value] || PROVIDER_PRESETS[DEFAULT_PROVIDER];
     if (preset.url) url.value = preset.url;
     if (!providerNeedsKey(prov.value)) keyEl.value = '';
     syncKeyTip();
     clearModelOptions(ddId);
-    save({ provider: prov.value, baseUrl: url.value.trim(), apiKey: keyEl.value.trim() }, { rerender: true });
+    save({ provider: prov.value, baseUrl: url.value.trim(), apiKey: keyEl.value.trim() });
+    syncCardHead();
   });
-  url.addEventListener('change', () => save({ baseUrl: url.value.trim() }, { rerender: true }));
-  keyEl.addEventListener('change', () => save({ apiKey: keyEl.value.trim() }, { rerender: true }));
-  nameEl.addEventListener('change', () => save({ model: nameEl.value.trim() }, { rerender: true }));
+  url.addEventListener('change', () => { save({ baseUrl: url.value.trim() }); syncCardHead(); });
+  keyEl.addEventListener('change', () => { save({ apiKey: keyEl.value.trim() }); syncCardHead(); });
+  nameEl.addEventListener('change', () => { save({ model: nameEl.value.trim() }); syncCardHead(); });
+  // 显式「保存修改」：把当前表单全部字段一次写回（与失焦自动保存互为兜底）
+  box.querySelector('[data-saveform]').addEventListener('click', () => {
+    save({
+      provider: normalizeProvider(prov.value),
+      baseUrl: url.value.trim(),
+      apiKey: keyEl.value.trim(),
+      model: nameEl.value.trim(),
+    }, { rerender: true });
+    toast('已保存模型修改', 2500);
+  });
 
   // 获取模型 + ▾ 下拉（每张卡片独立一份候选）
   const fetchBtn = box.querySelector('[data-fetch]');
@@ -715,7 +959,7 @@ function extraModelForm(m) {
     fillModelOptions(ddId, res.models);
     const n = (res.models || []).length;
     fetchTip.textContent = n ? `已获取 ${n} 个模型，点 ▾ 选择` : '该接口未返回任何模型';
-    if (n && !nameEl.value.trim()) { nameEl.value = res.models[0]; save({ model: res.models[0] }, { rerender: true }); }
+    if (n && !nameEl.value.trim()) { nameEl.value = res.models[0]; save({ model: res.models[0] }); syncCardHead(); }
   });
   ddBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -736,7 +980,8 @@ function extraModelForm(m) {
           ev.stopPropagation();
           nameEl.value = name;
           ddMenu.hidden = true;
-          save({ model: name }, { rerender: true });
+          save({ model: name });
+          syncCardHead();
         });
         ddMenu.appendChild(d);
       });
@@ -771,7 +1016,7 @@ function renderExtEditors() {
   renderSkillGrid();
 }
 
-// 展开状态（按服务器名）：默认全部收起，与 Wiki 多级列表的默认折叠约定一致
+// 展开状态（按服务器名）：默认全部收起，与多级列表的默认折叠约定一致
 const mcpExpanded = {};
 
 // 每个 MCP 服务器一张可折叠卡片：卡头常驻（名称/类型/状态），展开后含其只读配置与独立测试
@@ -781,7 +1026,7 @@ function renderMcpCards() {
   box.innerHTML = '';
   const list = (state.settings && state.settings.mcpServers) || [];
   if (!list.length) {
-    box.innerHTML = '<div class="mcp-empty">暂无 MCP 服务器。点上方「＋ 添加」或「📝 Configure MCP Servers」写入配置</div>';
+    box.innerHTML = '<div class="mcp-empty">暂无 MCP 服务器。点上方「添加」或「Configure MCP Servers」写入配置</div>';
     return;
   }
   list.forEach((m) => box.appendChild(mcpCard(m)));
@@ -813,19 +1058,20 @@ function mcpCard(m) {
     + '<div class="mcp-card-body"' + (open ? '' : ' hidden') + '>'
     + '<pre class="mcp-json-view"></pre>'
     + '<div class="mcp-tool-bar">'
-    + '<select class="mcp-tool-sel"><option value="">工具：自动选择</option></select>'
+    + '<select class="mcp-tool-sel" title="测试时实际调用哪个工具。自动选择 = 填了测试内容时自动挑一个搜索类工具；首次测试后可在此显式指定（多工具服务建议显式指定，避免猜错）"><option value="">工具：自动选择</option></select>'
     + '<input type="text" class="mcp-args" placeholder="参数 JSON（可选），例：{&quot;city&quot;:&quot;西安&quot;}" />'
     + '</div>'
     + '<div class="mcp-tool-hint" hidden></div>'
+    + '<div class="mcp-tool-explain">「工具」下拉：测试时实际调用该服务器的哪个工具。默认「自动选择」——填了测试内容时自动挑一个搜索类工具并猜测入参；首次测试后下拉会列出该服务器的全部工具，可显式指定（多工具服务建议指定，避免猜错工具或参数）。选中工具后会显示其必填/全部参数，并预填参数骨架。</div>'
     + '<div class="mcp-test-bar">'
     + '<input type="text" class="mcp-test-query" placeholder="测试内容（可选），留空只测连接与列工具" />'
-    + '<button type="button" class="btn btn-ghost mcp-test-btn" data-test>🔍 测试</button>'
+    + '<button type="button" class="btn btn-ghost mcp-test-btn" data-test>' + icoSvg('search', 12) + '测试</button>'
     + '<button type="button" class="btn btn-ghost mcp-copy-btn" data-copy hidden>⎘ 复制</button>'
     + '</div>'
     + '<pre class="mcp-test-out" hidden></pre>'
     + '</div>';
   // 该服务器自身的配置片段（仍为只读 JSON，编辑一律走 JSON 弹窗）
-  wrap.querySelector('.mcp-json-view').textContent = JSON.stringify(mcpArrayToObject([m]), null, 2);
+  wrap.querySelector('.mcp-json-view').textContent = JSON.stringify(mcpArrayToObject([m], true), null, 2);
 
   const head = wrap.querySelector('.mcp-card-head');
   const body = wrap.querySelector('.mcp-card-body');
@@ -882,7 +1128,7 @@ function mcpCard(m) {
 // 依据技能名生成稳定的柔和配色，让卡片图标有区分度
 function skillHue(name) {
   let h = 0;
-  for (const c of String(name || '⚡')) h = (h * 31 + c.charCodeAt(0)) % 360;
+  for (const c of String(name || 'skill')) h = (h * 31 + c.charCodeAt(0)) % 360;
   return h;
 }
 function renderSkillGrid() {
@@ -890,18 +1136,18 @@ function renderSkillGrid() {
   const q = (($('skill-search') && $('skill-search').value) || '').trim().toLowerCase();
   box.innerHTML = '';
   const list = (state.settings.skills || []).filter((k) => !q || (k.name || '').toLowerCase().includes(q) || (k.desc || k.description || '').toLowerCase().includes(q));
-  if (!list.length) { box.innerHTML = '<div style="grid-column:1/-1;color:var(--text-sub);font-size:12.5px;padding:12px 0">暂无技能，点「＋ 创建技能」选择含 SKILL.md 的目录</div>'; return; }
+  if (!list.length) { box.innerHTML = '<div style="grid-column:1/-1;color:var(--text-sub);font-size:12.5px;padding:12px 0">暂无技能，点「创建技能」选择含 SKILL.md 的目录</div>'; return; }
   list.forEach((k) => {
     const card = document.createElement('div');
     card.className = 'skill-card' + (k.enabled ? '' : ' off');
     const dirTag = k.dir ? String(k.dir).split('/').filter(Boolean).slice(-1)[0] : '';
     const hue = skillHue(k.name);
     card.innerHTML =
-      '<div class="skill-card-head"><span class="skill-card-ico" style="background:hsl(' + hue + ' 70% 94%);color:hsl(' + hue + ' 60% 42%)">⚡</span>' +
+      '<div class="skill-card-head"><span class="skill-card-ico" style="background:hsl(' + hue + ' 70% 94%);color:hsl(' + hue + ' 60% 42%)">' + icoSvg('skill', 14) + '</span>' +
       '<span class="skill-card-name" title="' + escapeHtml(k.name || '') + '">' + escapeHtml(k.name || '') + '</span>' +
       '<label class="skill-switch" title="' + (k.enabled ? '已启用，点击停用' : '已停用，点击启用') + '"><input type="checkbox" data-en ' + (k.enabled ? 'checked' : '') + '><span class="skill-switch-slider"></span></label></div>' +
       '<div class="skill-card-desc">' + escapeHtml(k.desc || k.description || '（无描述）') + '</div>' +
-      '<div class="skill-card-foot">' + (dirTag ? '<span class="skill-card-tag" title="' + escapeHtml(k.dir || '') + '">📁 ' + escapeHtml(dirTag) + '</span>' : '<span class="skill-card-tag skill-card-tag-empty">未关联目录</span>') +
+      '<div class="skill-card-foot">' + (dirTag ? '<span class="skill-card-tag" title="' + escapeHtml(k.dir || '') + '">' + icoSvg('folder-open', 12) + escapeHtml(dirTag) + '</span>' : '<span class="skill-card-tag skill-card-tag-empty">未关联目录</span>') +
       '<span class="skill-card-actions">' +
       '<button type="button" class="skill-act" data-edit>编辑</button>' +
       '<button type="button" class="skill-act danger" data-del>删除</button></span></div>';
@@ -916,6 +1162,17 @@ function renderSkillGrid() {
 }
 // ---------- 技能编辑 ----------
 let editingSkill = null;
+// 编辑弹窗「📂 打开」：用系统文件管理器打开技能目录（Web 模式由服务端本机打开）
+async function openSkillEditDir() {
+  const dir = ($('skill-edit-dir').value || '').trim();
+  if (!dir) { toast('该技能未关联目录', 2500); return; }
+  try {
+    const r = await window.kb.openPath({ path: dir });
+    if (r && !r.ok) toast('无法打开目录：' + (r.error || dir), 3000);
+  } catch (err) {
+    toast('无法打开目录：' + (err.message || err), 3000);
+  }
+}
 function openSkillEdit(k) {
   editingSkill = k;
   $('skill-edit-name').value = k.name || '';
@@ -949,11 +1206,97 @@ async function addSkillByDir() {
   persist(); renderExtEditors(); refreshAllExtMenus();
   toast('已添加技能：' + r.name);
 }
+// ---------- 技能在线安装：兼容 npx skills add / skills.sh / GitHub 仓库 ----------
+const DEFAULT_SKILL_INSTALL_CMD = 'npx skills add https://github.com/anthropics/skills --skill docx';
+let skillInstalling = false;
+function openSkillInstall() {
+  const logBox = $('skill-install-log');
+  logBox.hidden = true; logBox.textContent = '';
+  $('skill-install-status').textContent = '';
+  // 默认安装命令：预填上次保存的修改值（允许直接修改，安装后自动记住）
+  const input = $('skill-install-input');
+  input.value = (state.settings && state.settings.skillInstallCmd) || input.value || DEFAULT_SKILL_INSTALL_CMD;
+  $('skill-install-modal').hidden = false;
+  setTimeout(() => { const i = $('skill-install-input'); if (i) { i.focus(); i.select(); } }, 50);
+}
+function appendSkillInstallLog(line) {
+  const box = $('skill-install-log');
+  if (!box) return;
+  box.hidden = false;
+  const text = String(line || '');
+  // 进度行（⏳）原地刷新，避免刷屏
+  if (text.startsWith('⏳')) {
+    let el = box.querySelector('[data-progress]');
+    if (!el) {
+      el = document.createElement('div');
+      el.setAttribute('data-progress', '1');
+      box.appendChild(el);
+    }
+    el.textContent = text;
+  } else {
+    const div = document.createElement('div');
+    div.textContent = text;
+    box.appendChild(div);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+async function runSkillInstall() {
+  if (skillInstalling) return;
+  const input = ($('skill-install-input').value || '').trim();
+  if (!input) { toast('请输入安装来源（npx 命令 / skills.sh 链接 / GitHub 仓库 / owner/repo）', 3500); return; }
+  // 记住修改后的默认安装命令，下次打开弹窗自动预填
+  state.settings = state.settings || {};
+  if (state.settings.skillInstallCmd !== input) { state.settings.skillInstallCmd = input; persist(); }
+  skillInstalling = true;
+  const btn = $('btn-skill-install-go');
+  const status = $('skill-install-status');
+  const oldText = btn.textContent;
+  btn.disabled = true; btn.textContent = '安装中…';
+  const logBox = $('skill-install-log');
+  logBox.textContent = ''; logBox.hidden = false;
+  status.textContent = '⏳ 下载并安装中…';
+  // 状态栏显示已耗时，下载期间有持续反馈
+  const t0 = Date.now();
+  const tick = setInterval(() => {
+    if (status.textContent.startsWith('⏳')) status.textContent = `⏳ 下载并安装中… 已耗时 ${Math.round((Date.now() - t0) / 1000)}s`;
+  }, 1000);
+  const off = window.kb.onSkillInstallLog ? window.kb.onSkillInstallLog((d) => appendSkillInstallLog((d && d.line) || '')) : null;
+  try {
+    const res = await window.kb.skillInstall({ input });
+    if (res && res.ok) {
+      // 与「＋ 创建技能」一致：以目录引用方式登记到设置.skills
+      state.settings.skills = state.settings.skills || [];
+      const have = new Set(state.settings.skills.map((k) => k.name));
+      let added = 0;
+      for (const it of res.installed || []) {
+        if (have.has(it.name)) { appendSkillInstallLog('⏭ 已存在同名技能，跳过登记：' + it.name); continue; }
+        state.settings.skills.push({ name: it.name, dir: it.dir, desc: it.description || '', description: it.description || '', instructions: '', enabled: true });
+        have.add(it.name); added++;
+      }
+      persist(); renderExtEditors(); refreshAllExtMenus();
+      status.textContent = `✅ 完成：新装 ${added} 个技能`;
+      toast(added ? `已安装 ${added} 个技能` : '技能均已存在，未重复登记', 3000);
+    } else {
+      status.textContent = '❌ ' + ((res && res.error) || '安装失败');
+      toast('技能安装失败：' + ((res && res.error) || '未知错误'), 4000);
+    }
+  } catch (err) {
+    status.textContent = '❌ ' + (err.message || err);
+    toast('技能安装异常：' + (err.message || err), 4000);
+  } finally {
+    clearInterval(tick);
+    if (off) off();
+    btn.disabled = false; btn.textContent = oldText;
+    skillInstalling = false;
+  }
+}
 // ---------- MCP JSON 配置（Cline 风格） ----------
-function mcpArrayToObject(arr) {
+function mcpArrayToObject(arr, keepRaw) {
   const o = {};
   (arr || []).forEach((m) => {
     if (!m || !m.name) return;
+    // keepRaw：卡片/编辑弹窗回显用户保存时的原始 JSON，不做归一化改写
+    if (keepRaw && m.raw && typeof m.raw === 'object') { o[m.name] = m.raw; return; }
     const v = {};
     if (m.type) v.type = m.type;
     if (m.command) v.command = m.command;
@@ -987,11 +1330,14 @@ function mcpObjectToArray(obj) {
     if (v.env && typeof v.env === 'object') e.env = v.env;
     const auth = v.headers && (v.headers.Authorization || v.headers.authorization);
     if (auth) {
-      // ${XXX} 占位符表示使用模型 Key；否则视为固定 Authorization 头
-      if (/\$\{/.test(auth)) e.useModelKey = true;
+      // ${XXX} 占位符：标记 useModelKey，同时保留 env.Authorization 原文，
+      // 调用端按「进程环境变量 → 模型 Key」解析；展示仍回显原文
+      if (/\$\{/.test(auth)) { e.useModelKey = true; e.env = Object.assign({}, e.env, { Authorization: auth }); }
       else e.env = Object.assign({}, e.env, { Authorization: auth });
     } else if (v.useModelKey) e.useModelKey = true;
     if (v.description) e.desc = String(v.description);
+    // 原样保留用户输入的 JSON 对象：展示/再编辑时优先回显原文，连接仍用归一化字段
+    e.raw = v;
     out.push(e);
   }
   return out;
@@ -1136,6 +1482,10 @@ async function runMcpTest(server, btn, status, queryEl, outEl, wrap) {
   }
   out.hidden = false;
   out.textContent = lines.join('\n');
+  // 生图/文件类工具返回的图片链接，渲染为可点击预览（而不是裸 URL 文本）
+  if (wrap) wrap.querySelectorAll('.img-preview').forEach((x) => x.remove());
+  const pv = buildImagePreview(extractImageUrls(ok ? (res && res.result) || '' : ''), '🖼 返回的图片');
+  if (pv) out.insertAdjacentElement('afterend', pv);
   if (wrap) { const cb = wrap.querySelector('[data-copy]'); if (cb) cb.hidden = false; }
   toast(ok ? `「${label}」测试通过（${cost} ms）` : `「${label}」测试失败`, 3000);
 }
@@ -1151,7 +1501,7 @@ function openMcpJson(name) {
   if (!one) { toast('服务器不存在：' + name, 3000); return; }
   mcpJsonMode = 'edit';
   editingMcpName = one.name;
-  $('mcp-json-text').value = JSON.stringify(mcpArrayToObject([one]), null, 2);
+  $('mcp-json-text').value = JSON.stringify(mcpArrayToObject([one], true), null, 2);
   $('mcp-json-title').textContent = `编辑 MCP：${one.name}`;
   $('mcp-json-tip').textContent = '仅编辑该服务器，保存后合入现有配置（其他服务器不受影响）。改键名即重命名；清空 mcpServers 则删除该条';
   $('mcp-json-err').textContent = '';
@@ -1248,13 +1598,21 @@ function showSettingsView() {
     fillDec('set-temperature', s.temperature);
     fillDec('set-topp', s.topP);
     fillDec('set-maxtokens', s.maxTokens);
-    $('set-wikiroot').value = s.wikiRoot || '';
     window.kb.dataRoot().then((p) => { state.currentRoot = p; $('set-dataroot').value = p; });
     const fillNum = (id, v) => { $(id).value = Number.isFinite(v) ? String(v) : ''; };
     for (const [key, [id]] of Object.entries(NUM_SETTING_FIELDS)) fillNum(id, s[key]);
+    $('set-noteexts').value = typeof s.noteImportExts === 'string' ? s.noteImportExts : '';
+    $('set-minerucmd').value = typeof s.mineruConvertCmd === 'string' ? s.mineruConvertCmd : '';
+    // 解析方式：显式设置优先；旧数据无该键时按是否已配置命令推断
+    const mineruMode = s.mineruMode === 'mineru' || s.mineruMode === 'builtin'
+      ? s.mineruMode
+      : (s.mineruConvertCmd ? 'mineru' : 'builtin');
+    $('set-minerumode-builtin').checked = mineruMode !== 'mineru';
+    $('set-minerumode-mineru').checked = mineruMode === 'mineru';
+    applyMineruModeUI();
+    renderMineruModelOptions();
     $('set-editormode').value = EDITOR_MODES.includes(s.defaultEditorMode) ? s.defaultEditorMode : 'split';
     $('set-aiassist').value = s.aiAssistPrompt || '';
-    window.kb.wikiDefaultRoot().then((p) => { $('set-wikiroot').placeholder = '留空则自动探测：' + p; });
     window.kb.getDataPath().then((p) => { state.currentDbPath = p; $('set-dbpath').value = p; $('data-path').textContent = '数据文件：' + p; });
   } catch (e) { console.error('设置填充失败:', e); }
   renderEditor();
@@ -1313,6 +1671,296 @@ async function applyDbPath() {
   toast(res.changed ? '数据已迁移至：' + res.path : '数据文件位置已更新', 4000);
 }
 
+// 解析方式切换的即时视觉反馈：选 MinerU 时高亮命令输入区，选内置时弱化
+function applyMineruModeUI() {
+  const isMineru = $('set-minerumode-mineru').checked;
+  const cmd = $('set-minerucmd');
+  const btn = $('btn-test-mineru');
+  const card = $('mineru-config-card');
+  if (cmd) cmd.closest('.setting-row').classList.toggle('mineru-active', isMineru);
+  if (btn) btn.disabled = false;
+  if (card) card.style.display = isMineru ? '' : 'none';
+}
+
+// MinerU 视觉模型选择器：列出「模型配置」中的全部模型（主模型 + 更多模型）。
+// 当前生效项按 settings.mineruVlmModel + mineruOllamaUrl 匹配选中；
+// 未匹配到（如还没应用过）时不选中，提示用户显式应用
+function renderMineruModelOptions() {
+  const sel = $('set-mineru-model');
+  if (!sel) return;
+  const s = state.settings || {};
+  const curModel = String(s.mineruVlmModel || '').trim();
+  const curUrl = String(s.mineruOllamaUrl || '').trim().replace(/\/+$/, '');
+  const list = modelEntryList();
+  sel.innerHTML = '';
+  const ph = document.createElement('option');
+  ph.value = '';
+  ph.textContent = '（未选择：从下方列表选择并应用）';
+  sel.appendChild(ph);
+  list.forEach((m) => {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    const label = providerLabel(m.provider);
+    opt.textContent = `${label} · ${m.model || '（未填模型名）'}`;
+    // 匹配规则：模型名相同，且端点（剥 /v1 后）相同或该条目未填 baseUrl
+    const mUrl = String(m.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
+    if (curModel && m.model === curModel && (!curUrl || !mUrl || mUrl === curUrl)) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  if (!curModel) sel.value = '';
+}
+
+// 应用所选模型到 MinerU：主进程重写包装脚本（模型名/端点/Key），成功后回写设置并持久化。
+// 不自动切换解析方式（用户可能只想换模型），但会提示当前为内置解析
+async function applyMineruModelSelection() {
+  const sel = $('set-mineru-model');
+  if (!sel) return;
+  const id = sel.value;
+  if (!id) { toast('请先选择一个模型', 3000); return; }
+  const entry = findModelEntry(id);
+  if (!entry) { toast('所选模型不存在', 3000); return; }
+  if (!entry.model || !entry.baseUrl) { toast('该模型缺少模型名或 Base URL，请先在「模型配置」补全', 4000); return; }
+  const btn = $('btn-mineru-apply-model');
+  const oldText = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '应用中…'; }
+  try {
+    const res = await window.kb.mineruApplyModel({ settings: state.settings, entry });
+    if (res && res.ok) {
+      state.settings.mineruVlmModel = res.vlmModel;
+      state.settings.mineruOllamaUrl = res.ollamaUrl;
+      persist();
+      markSettingsSaved();
+      renderMineruModelOptions();
+      toast(`MinerU 已切换模型：${res.vlmModel}`, 3000);
+      if (!$('set-minerumode-mineru').checked) toast('提示：当前解析方式仍为「内置解析」，如需 MinerU 解析请切换上方开关', 5000);
+    } else {
+      toast('应用失败：' + ((res && res.error) || '未知错误'), 5000);
+    }
+  } catch (err) {
+    toast('应用异常：' + (err.message || err), 5000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = oldText; }
+  }
+}
+
+// MinerU 配置测试：用内置样本或上传的 PDF 实跑一次转换，验证命令/依赖/模型链路；
+// 中间解析日志经 mineru:test-log 流式推送实时展示；产物保存在 <数据根>/test/<日期-时间>/
+let mineruTestPdf = null; // { base64, name, size } 已上传的测试文件（可选）
+let mineruTestOutDir = null; // 最近一次测试的产物目录（📂 打开目录按钮用）
+
+function pickMineruTestPdf() {
+  $('mineru-test-file').click();
+}
+
+function onMineruTestFilePicked() {
+  const input = $('mineru-test-file');
+  const info = $('mineru-test-fileinfo');
+  const f = input.files && input.files[0];
+  if (!f) return;
+  if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') {
+    toast('仅支持上传 PDF 文件', 3000);
+    input.value = '';
+    return;
+  }
+  if (f.size > 50 * 1024 * 1024) {
+    toast('文件过大（超过 50MB），请换小一点的', 3000);
+    input.value = '';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    mineruTestPdf = { base64: String(reader.result).split(',')[1] || '', name: f.name, size: f.size };
+    info.hidden = false;
+    info.textContent = `已上传：${f.name}（${(f.size / 1024).toFixed(1)} KB），「测试配置」将使用该文件`;
+  };
+  reader.readAsDataURL(f);
+}
+
+// 普通日志追加新行；进度行覆盖上一条进度行（tqdm 高频刷新不再堆成刷屏墙，接近终端原位更新效果）。
+// replace 标记来自主进程对 \r 的切分；兼容未带标记的旧进程，退化为 tqdm 进度模式识别；
+// 旧主进程只按 \n 切行，单条事件可能含多段 \r 进度碎片，这里再切一次保证展示干净
+const MINERU_PROGRESS_RE = /\d+%\|.*\|\s*\d+\/\d+\s*\[/;
+function appendMineruTestLog(line, replace) {
+  const box = $('mineru-test-log');
+  if (!box) return;
+  box.hidden = false;
+  const segs = String(line || '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').split('\r').map((s) => s.trim()).filter(Boolean);
+  if (!segs.length) return;
+  const pushLine = (text, rep) => {
+    let last = box.lastElementChild;
+    if (rep || MINERU_PROGRESS_RE.test(text)) {
+      if (!last || !last.classList.contains('mineru-progress')) {
+        last = document.createElement('div');
+        last.className = 'mineru-progress';
+        box.appendChild(last);
+      }
+      last.textContent = text;
+    } else {
+      const div = document.createElement('div');
+      div.textContent = text;
+      box.appendChild(div);
+    }
+  };
+  segs.forEach((seg, i) => pushLine(seg, i < segs.length - 1 ? true : !!replace));
+  box.scrollTop = box.scrollHeight;
+}
+
+// 📂 打开目录：用系统文件管理器直接打开最近一次测试的产物目录
+// 桌面端走 shell.openPath；Web 模式由服务端在本机执行 open/explorer/xdg-open
+function updateOpenTestDirBtn() {
+  const b = $('btn-open-testdir');
+  const p = $('mineru-test-outdir');
+  const row = p && p.parentElement;
+  if (b) b.hidden = !mineruTestOutDir;
+  if (p) {
+    p.hidden = !mineruTestOutDir;
+    p.textContent = mineruTestOutDir || '';
+    p.title = mineruTestOutDir || ''; // 路径过长被省略号截断时，悬停可看全
+  }
+  if (row && row.classList.contains('mineru-result-row')) row.hidden = !mineruTestOutDir;
+}
+
+async function openMineruTestDir() {
+  if (!mineruTestOutDir) return;
+  try {
+    const r = await window.kb.openPath({ path: mineruTestOutDir });
+    if (!r || !r.ok) toast('无法打开目录：' + ((r && r.error) || mineruTestOutDir), 5000);
+  } catch (err) {
+    toast('无法打开目录：' + (err.message || err), 3000);
+  }
+}
+
+// 清空垃圾桶：永久删除全部未分类笔记（磁盘文件由 persist→saveStore 同步清理）
+function emptyTrash() {
+  const count = state.notes.filter((n) => !n.folderId).length;
+  if (!count) { toast('垃圾桶已经是空的', 2500); return; }
+  if (!confirm(`清空垃圾桶？${count} 篇笔记将被永久删除，不可恢复。`)) return;
+  state.notes = state.notes.filter((n) => n.folderId);
+  if (state.selectedNoteId && !state.notes.some((n) => n.id === state.selectedNoteId)) state.selectedNoteId = null;
+  persist();
+  renderAll();
+  toast(`已清空垃圾桶，删除 ${count} 篇笔记`, 3000);
+}
+
+// 一键自动安装 MinerU：无环境时在 <安装目录>/plugin/mineru/ 下建 venv、装 mineru、生成包装脚本，
+// 完成后自动回填「文档转换命令」并切到 MinerU 解析，一步完成配置；日志复用测试日志展示组件
+let mineruInstalling = false;
+async function installMineruAuto() {
+  if (mineruInstalling) return;
+  if (!window.kb.mineruInstall) { toast('当前环境不支持一键安装', 3000); return; }
+  if (!confirm('将在 Synapse 安装目录下新建 plugin/mineru 目录，自动创建 Python 虚拟环境并安装 mineru（依赖较多，可能 5–20 分钟）。安装完成后自动回填转换命令并切换到 MinerU 解析。继续？')) return;
+  mineruInstalling = true;
+  const btn = $('btn-install-mineru');
+  const tip = $('mineru-install-tip');
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '安装中…';
+  tip.hidden = false;
+  tip.textContent = '⏳ 正在安装 MinerU 环境，日志见下方…';
+  const logBox = $('mineru-test-log');
+  logBox.textContent = '';
+  logBox.hidden = false;
+  startMineruElapsed();
+  const off = window.kb.onMineruInstallLog ? window.kb.onMineruInstallLog((d) => appendMineruTestLog((d && d.line) || '', d && d.replace)) : null;
+  try {
+    const res = await window.kb.mineruInstall({ settings: state.settings });
+    if (res && res.ok) {
+      tip.textContent = `✅ 安装完成：${res.runner}。已自动回填转换命令并切换为 MinerU 解析，可点「测试配置」验证`;
+      $('set-minerucmd').value = `${res.runner} -p {input} -o {output}`;
+      $('set-minerumode-mineru').checked = true;
+      $('set-minerumode-builtin').checked = false;
+      applyMineruModeUI();
+      saveSettingsFields();
+      toast('MinerU 一键安装完成，配置已就绪', 4000);
+    } else {
+      tip.textContent = `❌ 安装失败：${(res && res.error) || '未知错误'}（日志见下方）`;
+      toast('MinerU 安装失败', 3000);
+    }
+  } catch (err) {
+    tip.textContent = `❌ 安装异常：${err.message || err}`;
+    toast('MinerU 安装异常', 3000);
+  } finally {
+    if (off) off();
+    stopMineruElapsed();
+    btn.disabled = false;
+    btn.textContent = oldText;
+    mineruInstalling = false;
+  }
+}
+
+// 测试运行期间在状态行实时显示已耗时秒数（用户要求测试时一直有时间计秒）
+let mineruElapsedTimer = null;
+function startMineruElapsed() {
+  stopMineruElapsed();
+  const status = $('mineru-test-status');
+  const t0 = Date.now();
+  const tick = () => { if (status) status.textContent = `⏳ 正在转换，已耗时 ${Math.floor((Date.now() - t0) / 1000)}s，中间解析日志见下方…`; };
+  tick();
+  mineruElapsedTimer = setInterval(tick, 500);
+}
+function stopMineruElapsed() {
+  if (mineruElapsedTimer) { clearInterval(mineruElapsedTimer); mineruElapsedTimer = null; }
+}
+
+async function testMineruConfig() {
+  const btn = $('btn-test-mineru');
+  const status = $('mineru-test-status');
+  const cmd = ($('set-minerucmd').value || '').trim();
+  if (!cmd) { toast('请先填写文档转换命令再测试', 3000); return; }
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = '测试中…';
+  const resultBox = $('mineru-result');
+  if (resultBox) resultBox.hidden = false;
+  const sampleReset = $('mineru-test-sample');
+  if (sampleReset) { sampleReset.hidden = true; sampleReset.textContent = ''; }
+  startMineruElapsed(); // 实时计秒直到测试结束（成功/失败均停表）
+  const logBox = $('mineru-test-log');
+  logBox.textContent = '';
+  logBox.hidden = false;
+  mineruTestOutDir = null;
+  updateOpenTestDirBtn();
+  const off = window.kb.onMineruTestLog ? window.kb.onMineruTestLog((d) => appendMineruTestLog((d && d.line) || '', d && d.replace)) : null;
+  try {
+    // 以当前表单值为准（未保存也可测试）
+    const overrides = { mineruConvertCmd: cmd, mineruMode: 'mineru' };
+    const payload = { settings: state.settings, overrides };
+    if (mineruTestPdf) { payload.pdfBase64 = mineruTestPdf.base64; payload.fileName = mineruTestPdf.name; }
+    const res = await window.kb.mineruTest(payload);
+    const box = $('mineru-result');
+    const sampleEl = $('mineru-test-sample');
+    if (res && res.ok) {
+      status.textContent = `✅ 测试通过：转换成功（${res.elapsedSec}s，产出 ${res.mdLength} 字符）`;
+      // 样本内容独立成块展示（主进程已压缩为前 3 行、限 200 字符），不再挤进状态行
+      if (sampleEl) {
+        sampleEl.hidden = !res.sample;
+        sampleEl.textContent = res.sample ? '样本内容：' + res.sample : '';
+      }
+      mineruTestOutDir = res.outDir || null;
+      updateOpenTestDirBtn();
+      if (box) box.hidden = false;
+      toast('MinerU 配置测试通过', 3000);
+    } else {
+      status.textContent = `❌ 测试失败：${(res && res.error) || '未知错误'}`;
+      if (sampleEl) { sampleEl.hidden = true; sampleEl.textContent = ''; }
+      mineruTestOutDir = (res && res.outDir) || null;
+      updateOpenTestDirBtn();
+      if (box) box.hidden = false;
+      toast('MinerU 配置测试失败', 3000);
+    }
+  } catch (err) {
+    status.textContent = `❌ 测试异常：${err.message || err}`;
+    const box2 = $('mineru-result');
+    if (box2) box2.hidden = false;
+    toast('MinerU 配置测试异常', 3000);
+  } finally {
+    if (off) off();
+    stopMineruElapsed();
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
 // 设置表单自动保存（除数据根目录/数据文件位置这两个需显式应用的项）
 function saveSettingsFields() {
   // 保留非表单字段，避免保存时丢失
@@ -1336,12 +1984,20 @@ function saveSettingsFields() {
   if (topPV === null) delete s.topP; else s.topP = topPV;
   const maxTV = readDec('set-maxtokens', 1, 1000000);
   if (maxTV === null) delete s.maxTokens; else s.maxTokens = Math.round(maxTV);
-  s.wikiRoot = $('set-wikiroot').value.trim();
   // 数值项：留空/非法则删除，由主进程回退默认值
   for (const [key, [id, min, max]] of Object.entries(NUM_SETTING_FIELDS)) {
     const v = readNumInput(id, min, max);
     if (v === null) delete s[key]; else s[key] = v;
   }
+  // 笔记导入文件类型：归一为“小写、无前导点、逗号分隔”再存，避免同一类型写法不一而重复；留空则删除、主进程回退默认
+  const extsRaw = ($('set-noteexts').value || '').trim();
+  if (!extsRaw) delete s.noteImportExts;
+  else s.noteImportExts = [...new Set(extsRaw.split(/[,;\s]+/).map((x) => x.trim().replace(/^\./, '').toLowerCase()).filter(Boolean))].join(', ');
+  // MinerU 解析方式与转换命令：方式决定开关语义；命令留空删除
+  const mineruMode = $('set-minerumode-mineru').checked ? 'mineru' : 'builtin';
+  s.mineruMode = mineruMode;
+  const mineruCmd = ($('set-minerucmd').value || '').trim();
+  if (!mineruCmd) delete s.mineruConvertCmd; else s.mineruConvertCmd = mineruCmd;
   const mode = $('set-editormode').value;
   if (EDITOR_MODES.includes(mode)) {
     s.defaultEditorMode = mode;
@@ -1354,7 +2010,7 @@ function saveSettingsFields() {
   persist();
   markSettingsSaved();
   renderAiExt(); // 扩展（MCP/Skills）变更后即时刷新 AI 面板选择行
-  loadWiki();
+  if (typeof refreshSetupChecklist === 'function') refreshSetupChecklist();
 }
 
 // 自动保存反馈：不用 toast，避免频繁改动时弹窗打扰
@@ -1367,15 +2023,11 @@ function markSettingsSaved() {
   autosaveTimer = setTimeout(() => { el.textContent = ''; }, 2000);
 }
 
-// 生成 Wiki/图谱前的「已生成过则确认重新生成」守卫
+// 生成图谱前的「已生成过则确认重新生成」守卫
 function confirmRegen(kind) {
-  const generated = kind === 'wiki'
-    ? ((state.wiki && state.wiki.pages) || []).length > 0
-    : ((state.graph && state.graph.nodes) || []).length > 0;
+  const generated = ((state.graph && state.graph.nodes) || []).length > 0;
   if (!generated) return true;
-  return confirm(kind === 'wiki'
-    ? 'Wiki 已生成过，是否重新生成？（将更新现有页面）'
-    : '知识图谱已生成过，是否重新生成？（将更新现有图谱）');
+  return confirm('知识图谱已生成过，是否重新生成？（将更新现有图谱）');
 }
 
 // ================= 提示词管理（主区域页） =================
@@ -1417,7 +2069,6 @@ async function renderPromptCards() {
 }
 
 function showPromptsView() {
-  $('wiki-viewer').hidden = true;
   $('settings-view').hidden = true;
   $('jobs-view').hidden = true;
   hideMainViews();
@@ -1487,16 +2138,14 @@ function renderAll() {
   syncNoteListVisibility();
 }
 
-// 主内容区专题页（设置/作业/图谱/模版/原始文件/Wiki 阅读器）统一让位，避免切换导航时旧页残留
-// keepWikiViewer：点 LLM Wiki 标题只回到索引列表，正在阅读的页面不强制关闭
-function hideMainViews({ keepWikiViewer = false } = {}) {
-  ['settings-view', 'jobs-view', 'graph-view', 'tpl-view', 'raw-view', 'prompts-view', 'prompt-editor-view', 'ai-view'].forEach((id) => { $(id).hidden = true; });
-  if (!keepWikiViewer) $('wiki-viewer').hidden = true;
+// 主内容区专题页（设置/作业/图谱/模版/原始文件）统一让位，避免切换导航时旧页残留
+function hideMainViews() {
+  ['settings-view', 'jobs-view', 'graph-view', 'tpl-view', 'tpl-editor-view', 'raw-view', 'prompts-view', 'prompt-editor-view', 'ai-view', 'docs-view'].forEach((id) => { $(id).hidden = true; });
 }
 
 // 设置页/任一主框架专题页打开或用户主动收起时，笔记列表与其分隔条让位（专题页全屏）
 function syncNoteListVisibility() {
-  const mainOpen = ['ai-view', 'jobs-view', 'graph-view', 'raw-view', 'tpl-view', 'prompts-view', 'settings-view'].some((id) => !$(id).hidden);
+  const mainOpen = ['ai-view', 'jobs-view', 'graph-view', 'raw-view', 'tpl-view', 'tpl-editor-view', 'prompts-view', 'settings-view', 'docs-view'].some((id) => !$(id).hidden);
   const hidden = mainOpen || state.noteListHidden;
   document.querySelector('.note-list-pane').style.display = hidden ? 'none' : '';
   $('notelist-resizer').style.display = hidden ? 'none' : '';

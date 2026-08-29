@@ -37,23 +37,17 @@ contextBridge.exposeInMainWorld('kb', {
     return () => ipcRenderer.removeListener('ai:step', handler);
   },
 
-  // LLM Wiki
-  wikiDefaultRoot: () => ipcRenderer.invoke('wiki:defaultRoot'),
-  wikiDescribe: (settings) => ipcRenderer.invoke('wiki:describe', settings),
-  wikiRead: (payload) => ipcRenderer.invoke('wiki:read', payload),
-  wikiPickFiles: () => ipcRenderer.invoke('wiki:pickFiles'),
-  wikiAsk: (payload) => ipcRenderer.invoke('wiki:ask', payload),
-  wikiFileAnswer: (payload) => ipcRenderer.invoke('wiki:fileAnswer', payload),
-  onWikiRefs: (callback) => {
-    const handler = (_event, refs) => callback(refs);
-    ipcRenderer.on('wiki:refs', handler);
-    return () => ipcRenderer.removeListener('wiki:refs', handler);
-  },
   // 领域模版 AI 生成：流式增量（{ text, reasoning }），供弹窗实时打印生成过程
   onTplGenChunk: (callback) => {
     const handler = (_event, chunk) => callback(chunk);
     ipcRenderer.on('tpl:gen-chunk', handler);
     return () => ipcRenderer.removeListener('tpl:gen-chunk', handler);
+  },
+  // AI 问答引用事件：知识检索完成后一次回传 笔记/图谱/原始文件 引用（与 web/kb-shim.js 对齐）
+  onAiRefs: (callback) => {
+    const handler = (_event, refs) => callback(refs);
+    ipcRenderer.on('ai:refs', handler);
+    return () => ipcRenderer.removeListener('ai:refs', handler);
   },
 
   // 领域模版
@@ -71,9 +65,35 @@ contextBridge.exposeInMainWorld('kb', {
   rawList: (settings) => ipcRenderer.invoke('raw:list', settings),
   // 原始文件关键字检索（作为 AI 问答知识源）
   rawSearch: (payload) => ipcRenderer.invoke('raw:search', payload),
+  rawExtractNote: (payload) => ipcRenderer.invoke('raw:extractNote', payload),
+  mineruTest: (payload) => ipcRenderer.invoke('mineru:test', payload),
+  onMineruTestLog: (callback) => {
+    const handler = (_e, data) => callback(data);
+    ipcRenderer.on('mineru:test-log', handler);
+    return () => ipcRenderer.removeListener('mineru:test-log', handler);
+  },
+  mineruInstall: (payload) => ipcRenderer.invoke('mineru:install', payload),
+  // 应用「模型配置」里的模型到 MinerU 包装脚本
+  mineruApplyModel: (payload) => ipcRenderer.invoke('mineru:apply-model', payload),
+  onMineruInstallLog: (callback) => {
+    const handler = (_e, data) => callback(data);
+    ipcRenderer.on('mineru:install-log', handler);
+    return () => ipcRenderer.removeListener('mineru:install-log', handler);
+  },
+  rawPickFiles: () => ipcRenderer.invoke('raw:pickFiles'),
+  // 知识访问统一接口：源清单 + 一次性检索（各源并行，结果已归一）
+  knowledgeSources: () => ipcRenderer.invoke('knowledge:sources'),
+  knowledgeRetrieve: (payload) => ipcRenderer.invoke('knowledge:retrieve', payload),
   readAttachments: (payload) => ipcRenderer.invoke('ai:readAttachments', payload),
-  rawAddSource: (payload) => ipcRenderer.invoke('raw:addSource', payload),
+  rawAddUrl: (payload) => ipcRenderer.invoke('raw:addUrl', payload),
+  rawRenameUrl: (payload) => ipcRenderer.invoke('raw:renameUrl', payload),
   skillRead: (payload) => ipcRenderer.invoke('skill:read', payload),
+  skillInstall: (payload) => ipcRenderer.invoke('skill:install', payload),
+  onSkillInstallLog: (callback) => {
+    const handler = (_e, data) => callback(data);
+    ipcRenderer.on('skill:install-log', handler);
+    return () => ipcRenderer.removeListener('skill:install-log', handler);
+  },
   chatGetHistory: () => ipcRenderer.invoke('chat:getHistory'),
   chatSaveHistory: (list) => ipcRenderer.invoke('chat:saveHistory', list),
   chatGetSessions: () => ipcRenderer.invoke('chat:getSessions'),
@@ -85,6 +105,7 @@ contextBridge.exposeInMainWorld('kb', {
   skillRun: (payload) => ipcRenderer.invoke('skill:run', payload),
   openPath: (payload) => ipcRenderer.invoke('shell:openPath', payload),
   revealPath: (payload) => ipcRenderer.invoke('shell:revealPath', payload),
+  readDoc: (payload) => ipcRenderer.invoke('docs:read', payload),
   rawOpen: (payload) => ipcRenderer.invoke('raw:open', payload),
   rawRemove: (payload) => ipcRenderer.invoke('raw:remove', payload),
   rawRemoveDir: (payload) => ipcRenderer.invoke('raw:removeDir', payload),
@@ -103,6 +124,12 @@ contextBridge.exposeInMainWorld('kb', {
     ipcRenderer.on('jobs:update', handler);
     return () => ipcRenderer.removeListener('jobs:update', handler);
   },
+  jobsLogs: (id) => ipcRenderer.invoke('jobs:logs', { id }),
+  onJobsLog: (callback) => {
+    const handler = (_event, d) => callback(d);
+    ipcRenderer.on('jobs:log', handler);
+    return () => ipcRenderer.removeListener('jobs:log', handler);
+  },
 
   // 其他
   exportNote: (options) => ipcRenderer.invoke('dialog:export', options),
@@ -114,6 +141,7 @@ contextBridge.exposeInMainWorld('kb', {
   graphGet: () => ipcRenderer.invoke('graph:get'),
   graphClear: () => ipcRenderer.invoke('graph:clear'),
   graphOntology: () => ipcRenderer.invoke('graph:ontology'),
+  graphResolveSources: (payload) => ipcRenderer.invoke('graph:resolveSources', payload),
   ontoSave: (payload) => ipcRenderer.invoke('onto:save', payload),
   ontoRemove: (payload) => ipcRenderer.invoke('onto:remove', payload),
   graphAsk: (payload) => ipcRenderer.invoke('graph:ask', payload),

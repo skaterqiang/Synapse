@@ -27,9 +27,24 @@ class RetriableError extends Error {}
 // 交互问答停止控制：仅 streamChat/agenticChat 受停止影响，作业编排用的 chatOnce 不受影响；
 // 同一时刻只有一个交互请求，新请求开始时重置控制器即可覆盖旧请求的残留停止
 let aiAbort = null;
+// 流令牌：全局广播事件（ai:chunk/ai:done 等）不区分请求，旧流若未被终止会继续向新问答灌事件。
+// 每次开启新流时递增令牌并静默 abort 旧流；旧流发事件前校验令牌，被顶替后不再发声。
+let streamSeq = 0;
+let streamToken = null;
+function beginStream() {
+  if (aiAbort && !aiAbort.signal.aborted) { try { aiAbort.abort(); } catch (_) {} }
+  const ctrl = new AbortController();
+  aiAbort = ctrl;
+  const token = ++streamSeq;
+  streamToken = token;
+  return { ctrl, token };
+}
 function stopAi() {
   if (aiAbort) aiAbort.abort();
 }
+// 交互流程在开始时注册自己的控制器，使 stopAi 能中断前置阶段的 fetch
+function setAbortController(ctrl) { aiAbort = ctrl; }
+const abortErr = () => Object.assign(new Error('已停止回答。'), { name: 'AbortError' });
 const isAbortErr = (err) => !!(err && (err.name === 'AbortError' || (err.cause && err.cause.name === 'AbortError')));
 
 // 推理增量字段各家命名不一：DashScope/百炼=reasoning_content，Ollama=reasoning，部分=thinking。
@@ -89,8 +104,11 @@ async function streamChat(event, settings, messages) {
   }
 
   let resp;
-  aiAbort = new AbortController();
-  const signal = aiAbort.signal;
+  // 开启新流：顶替（静默 abort）尚未结束的旧流，避免旧流事件串进本次回答
+  const { ctrl, token } = beginStream();
+  const isMine = () => streamToken === token;
+  const send = (ch, d) => { if (isMine()) event.sender.send(ch, d); };
+  const signal = ctrl.signal;
   try {
     resp = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
@@ -102,14 +120,14 @@ async function streamChat(event, settings, messages) {
       signal,
     });
   } catch (err) {
-    if (signal.aborted) { event.sender.send('ai:error', '已停止回答。'); return; }
-    event.sender.send('ai:error', `网络请求失败：${err.message}${err.cause ? `（${err.cause.code || err.cause.message}）` : ''}`);
+    if (signal.aborted) { if (isMine()) event.sender.send('ai:error', '已停止回答。'); return; }
+    send('ai:error', `网络请求失败：${err.message}${err.cause ? `（${err.cause.code || err.cause.message}）` : ''}`);
     return;
   }
 
   if (!resp.ok) {
     const detail = (await resp.text().catch(() => '')).slice(0, 300);
-    event.sender.send('ai:error', `接口返回错误 (${resp.status})：${detail}`);
+    send('ai:error', `接口返回错误 (${resp.status})：${detail}`);
     return;
   }
 
@@ -117,25 +135,27 @@ async function streamChat(event, settings, messages) {
     // 聊天界面只推正文增量，thinking 不混入回答；
     // 推理增量以 ai:step(thinking) 下发，无工具路径（streamChat）也能实时展示思考过程
     await consumeSseStream(resp, (delta, isReasoning) => {
-      if (isReasoning) event.sender.send('ai:step', { kind: 'thinking', text: delta });
-      else event.sender.send('ai:chunk', delta);
+      if (isReasoning) send('ai:step', { kind: 'thinking', text: delta });
+      else send('ai:chunk', delta);
     });
-    event.sender.send('ai:done');
+    send('ai:done');
   } catch (err) {
-    if (signal.aborted || isAbortErr(err)) { event.sender.send('ai:error', '已停止回答。'); return; }
-    event.sender.send('ai:error', `读取响应流失败：${err.message}`);
+    if (signal.aborted || isAbortErr(err)) { if (isMine()) event.sender.send('ai:error', '已停止回答。'); return; }
+    send('ai:error', `读取响应流失败：${err.message}`);
   } finally {
     if (aiAbort && aiAbort.signal === signal) aiAbort = null;
+    if (streamToken === token) streamToken = null;
   }
 }
 
 // 非流式对话（用于编排步骤）：内部流式接收并累积全文返回
 // 重试次数默认读 settings.chatRetries（设置弹窗可配），递归重试时显式传入剩余次数
 // onDelta 可选：流式增量回调，供作业系统上报执行细节
-async function chatOnce(settings, messages, retries, onDelta) {
+async function chatOnce(settings, messages, retries, onDelta, signal) {
   const left = retries !== undefined ? retries : num(settings, 'chatRetries', 2, 0, 5);
   const baseUrl = (settings.apiBaseUrl || DEFAULTS.apiBaseUrl).replace(/\/$/, '');
   if (!settings.apiKey && requiresApiKey(settings)) throw new Error('尚未配置 API Key，请先在设置中填写。');
+  if (signal && signal.aborted) throw abortErr();
   try {
     let resp;
     try {
@@ -143,8 +163,11 @@ async function chatOnce(settings, messages, retries, onDelta) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
         body: JSON.stringify(withModelParams({ model: normalizeModel(settings.model), messages, stream: true }, settings)),
+        ...(signal ? { signal } : {}),
       });
     } catch (err) {
+      // 停止导致的 abort 不重试，直接抛出
+      if (signal && signal.aborted) throw abortErr();
       // 网络层失败（DNS/连接/超时）视为可重试，并带上根因便于诊断
       throw new RetriableError(`网络请求失败：${err.message}${err.cause ? `（${err.cause.code || err.cause.message}）` : ''}`);
     }
@@ -164,7 +187,7 @@ async function chatOnce(settings, messages, retries, onDelta) {
   } catch (err) {
     // 仅可重试错误（网络/5xx/空返回）才重试，4xx 客户端错误直接抛出
     if (left > 0 && err instanceof RetriableError) {
-      return chatOnce(settings, messages, left - 1, onDelta);
+      return chatOnce(settings, messages, left - 1, onDelta, signal); // 透传 signal，重试轮仍可被停止/超时中断
     }
     throw err;
   }
@@ -253,10 +276,11 @@ async function agenticChat(event, settings, messages, tools, toolRouter) {
   // “只说不做”补偿标记：小模型常口头说“让我搜索”却不发 tool_calls，检测到后催一次，最多一次避免乒乓循环
   let nudged = false;
   // 停止控制：用户点“停止”时 abort 当前请求并在下一轮循环/工具间隙退出，避免继续白跑工具轮
-  const ctrl = new AbortController();
-  aiAbort = ctrl;
+  const { ctrl, token } = beginStream();
+  const isMine = () => streamToken === token;
+  const send = (ch, d) => { if (isMine()) event.sender.send(ch, d); };
   const signal = ctrl.signal;
-  const stopped = () => { event.sender.send('ai:error', '已停止回答。'); };
+  const stopped = () => { if (isMine()) event.sender.send('ai:error', '已停止回答。'); };
   try {
   for (let round = 0; round < maxRounds; round++) {
     if (signal.aborted) { stopped(); return; }
@@ -271,9 +295,9 @@ async function agenticChat(event, settings, messages, tools, toolRouter) {
       });
     } catch (err) {
       if (signal.aborted || isAbortErr(err)) { stopped(); return; }
-      event.sender.send('ai:error', `网络请求失败：${err.message}`); return;
+      send('ai:error', `网络请求失败：${err.message}`); return;
     }
-    if (!resp.ok) { const d = (await resp.text().catch(() => '')).slice(0, 300); event.sender.send('ai:error', `接口返回错误 (${resp.status})：${d}`); return; }
+    if (!resp.ok) { const d = (await resp.text().catch(() => '')).slice(0, 300); send('ai:error', `接口返回错误 (${resp.status})：${d}`); return; }
     // 本轮是否已把正文实时流给渲染层，避免结尾重复下发
     let streamed = false;
     let sawToolCall = false;
@@ -283,35 +307,35 @@ async function agenticChat(event, settings, messages, tools, toolRouter) {
         resp,
         (d, isReasoning) => {
           // thinking 增量实时推送，渲染进程折叠展示
-          if (isReasoning) { event.sender.send('ai:step', { kind: 'thinking', text: d }); return; }
+          if (isReasoning) { send('ai:step', { kind: 'thinking', text: d }); return; }
           // 正文增量也实时下发：否则长回答期间界面只能干等到整轮结束。
           // 已出现 tool_calls 的轮次不流正文，它属于工具前言，改作步骤展示
           if (sawToolCall) return;
-          event.sender.send('ai:chunk', d);
+          send('ai:chunk', d);
           streamed = true;
         },
         () => { sawToolCall = true; },
       );
     } catch (err) {
       if (signal.aborted || isAbortErr(err)) { stopped(); return; }
-      event.sender.send('ai:error', `读取响应流失败：${err.message}`); return;
+      send('ai:error', `读取响应流失败：${err.message}`); return;
     }
     if (acc.toolCalls.length) {
       // 前言已实时流出时不再重复作为 thought 步骤下发
-      if (acc.content && !streamed) event.sender.send('ai:step', { kind: 'thought', text: acc.content });
+      if (acc.content && !streamed) send('ai:step', { kind: 'thought', text: acc.content });
       msgs.push({ role: 'assistant', content: acc.content || null, tool_calls: acc.toolCalls.map((t) => ({ id: t.id, type: 'function', function: { name: t.name, arguments: t.arguments } })) });
       const toolResults = [];
       for (const t of acc.toolCalls) {
         // 已停止时不再执行后续工具调用，直接退出循环（已执行的结果仍保留在 msgs 中）
         if (signal.aborted) { stopped(); return; }
-        event.sender.send('ai:step', { kind: 'tool', name: t.name, args: t.arguments });
+        send('ai:step', { kind: 'tool', name: t.name, args: t.arguments });
         let result = '';
         const def = toolMap.get(t.name);
         if (def) {
           try { let args = {}; try { args = JSON.parse(t.arguments || '{}'); } catch (_) {} result = await toolRouter(def, args); } catch (e) { result = '工具调用失败：' + e.message; }
         }
         // 推送工具结果摘要（供步骤展示）；links 取自完整返回，供引用区展示
-        event.sender.send('ai:step', {
+        send('ai:step', {
           kind: 'tool-result',
           name: t.name,
           text: String(result || '').slice(0, 600),
@@ -344,13 +368,14 @@ async function agenticChat(event, settings, messages, tools, toolRouter) {
       msgs.push({ role: 'user', content: '注意：你刚才表示要去搜索/查询，但还没有实际调用任何工具。请不要只做口头说明，现在就立即调用合适的工具（如联网搜索）获取信息，再基于工具结果给出最终回答。' });
       continue;
     }
-    if (acc.content && !streamed) event.sender.send('ai:chunk', acc.content);
-    event.sender.send('ai:done');
+    if (acc.content && !streamed) send('ai:chunk', acc.content);
+    send('ai:done');
     return;
   }
-  event.sender.send('ai:error', '工具调用轮数超限，已停止。');
+  send('ai:error', '工具调用轮数超限，已停止。');
   } finally {
     if (aiAbort === ctrl) aiAbort = null;
+    if (streamToken === token) streamToken = null;
   }
 }
 
@@ -412,4 +437,4 @@ async function listModels(settings) {
   }
 }
 
-module.exports = { RetriableError, consumeSseStream, streamChat, chatOnce, extractJson, agenticChat, listModels, stopAi, ASK_PROTOCOL };
+module.exports = { RetriableError, consumeSseStream, streamChat, chatOnce, extractJson, agenticChat, listModels, stopAi, setAbortController, ASK_PROTOCOL };

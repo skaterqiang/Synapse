@@ -7,11 +7,15 @@
     'ai:step': [],
     'ai:done': [],
     'ai:error': [],
-    'wiki:refs': [],
     'tpl:gen-chunk': [],
     'jobs:update': [],
+    'jobs:log': [],
     'kg:facts': [],
     'kg:stage': [],
+    'mineru:test-log': [],
+    'mineru:install-log': [],
+    'skill:install-log': [],
+    'ai:refs': [],
   };
 
   const es = new EventSource('/api/events');
@@ -57,14 +61,8 @@
     onAiError: on('ai:error'),
     onAiStep: on('ai:step'),
 
-    // LLM Wiki
-    wikiDefaultRoot: () => call('wiki:defaultRoot'),
-    wikiDescribe: (settings) => call('wiki:describe', settings),
-    wikiRead: (payload) => call('wiki:read', payload),
-    wikiAsk: (payload) => call('wiki:ask', payload),
-    wikiFileAnswer: (payload) => call('wiki:fileAnswer', payload),
-    onWikiRefs: on('wiki:refs'),
     onTplGenChunk: on('tpl:gen-chunk'),
+    onAiRefs: on('ai:refs'),
 
     // 领域模版
     tplList: () => call('tpl:list'),
@@ -78,9 +76,20 @@
     // 原始文件管理（目录选择在浏览器不可用，返回 canceled 由前端提示）
     rawList: (settings) => call('raw:list', settings),
     rawSearch: (payload) => call('raw:search', payload),
+    rawExtractNote: (payload) => call('raw:extractNote', payload),
+    mineruTest: (payload) => call('mineru:test', payload),
+    onMineruTestLog: on('mineru:test-log'),
+    mineruInstall: (payload) => call('mineru:install', payload),
+    mineruApplyModel: (payload) => call('mineru:apply-model', payload),
+    onMineruInstallLog: on('mineru:install-log'),
+    knowledgeSources: () => call('knowledge:sources'),
+    knowledgeRetrieve: (payload) => call('knowledge:retrieve', payload),
     readAttachments: (payload) => call('ai:readAttachments', payload),
-    rawAddSource: (payload) => call('raw:addSource', payload),
+    rawAddUrl: (payload) => call('raw:addUrl', payload),
+    rawRenameUrl: (payload) => call('raw:renameUrl', payload),
     skillRead: (payload) => call('skill:read', payload),
+    skillInstall: (payload) => call('skill:install', payload),
+    onSkillInstallLog: on('skill:install-log'),
     chatGetHistory: () => call('chat:getHistory'),
     chatSaveHistory: (list) => call('chat:saveHistory', list),
     chatGetSessions: () => call('chat:getSessions'),
@@ -89,6 +98,7 @@
     skillRun: (payload) => call('skill:run', payload),
     openPath: (payload) => call('shell:openPath', payload),
     revealPath: (payload) => call('shell:revealPath', payload),
+    readDoc: (payload) => call('docs:read', payload),
     rawPickDir: () => Promise.resolve({ ok: false, canceled: false }),
     openExternal: (url) => { try { window.open(url, '_blank'); return Promise.resolve({ ok: true }); } catch (e) { return Promise.resolve({ ok: false, error: e.message }); } },
     rawOpen: () => Promise.resolve({ ok: false, error: '网页模式不支持打开本地文件，请在桌面端使用' }),
@@ -105,6 +115,8 @@
     jobsClear: () => call('jobs:clear'),
     jobsRetry: (payload) => call('jobs:retry', payload),
     onJobsUpdate: on('jobs:update'),
+    onJobsLog: on('jobs:log'),
+    jobsLogs: (id) => call('jobs:logs', { id }),
 
     // 其他
     getDataPath: () => call('app:getDataPath'),
@@ -115,6 +127,7 @@
     graphGet: () => call('graph:get'),
     graphClear: () => call('graph:clear'),
     graphOntology: () => call('graph:ontology'),
+    graphResolveSources: (payload) => call('graph:resolveSources', payload),
     ontoSave: (payload) => call('onto:save', payload),
     ontoRemove: (payload) => call('onto:remove', payload),
     graphAsk: (payload) => call('graph:ask', payload),
@@ -170,8 +183,8 @@
       }
     },
 
-    // 选择吸收文件：页面文件选择 + 上传，返回服务端落盘路径供作业流程读取
-    wikiPickFiles: () => new Promise((resolve) => {
+    // 选择附件文件：页面文件选择 + 上传，返回服务端落盘路径
+    rawPickFiles: () => new Promise((resolve) => {
       const input = document.createElement('input');
       input.type = 'file';
       input.multiple = true;

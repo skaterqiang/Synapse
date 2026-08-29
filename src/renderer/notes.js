@@ -4,8 +4,18 @@ function getFilteredNotes() {
   const { type, id, query } = state.view;
   let list = state.notes.slice();
 
-  if (type === 'folder') {
-    list = list.filter((n) => n.folderId === id);
+  if (type === 'all') {
+    // 目录浏览模式：只看根目录直属笔记（未分类/垃圾桶），子目录笔记进入目录后逐层浏览
+    list = list.filter((n) => !n.folderId);
+  } else if (type === 'folder') {
+    if (id === '__trash__') {
+      // 🗑 垃圾桶是虚拟目录：未分类（folderId=null）的笔记都归它
+      list = list.filter((n) => !n.folderId);
+    } else {
+      // 含子目录：侧边栏计数本来就是递归的，列表只看直属会出现
+      // “目录显示有 N 篇、点开却是空”（层级深的导入目录尤其明显）
+      list = folderDescendantNotes(id);
+    }
   } else if (type === 'tag') {
     list = list.filter((n) => (n.tags || []).includes(id));
   } else if (type === 'search') {
@@ -37,16 +47,16 @@ function getViewTitle() {
   const { type, id, query } = state.view;
   if (type === 'folder') {
     const f = state.folders.find((x) => x.id === id);
-    return f ? `📁 ${f.name}` : '目录';
+    if (!f) return '目录';
+    return f.id === '__trash__' ? f.name : f.name; // 垃圾桶名称由主进程给定
   }
-  if (type === 'tag') return `🏷 ${id}`;
-  if (type === 'search') return `🔍 搜索"${query}"`;
-  return '全部笔记';
+  if (type === 'tag') return `标签：${id}`;
+  if (type === 'search') return `搜索"${query}"`;
+  return '笔记';
 }
 
 // ================= 渲染：笔记列表 =================
 function renderNoteList() {
-  if (state.view.type === 'wiki') { renderWikiList(); return; }
   if (state.view.type === 'search') { renderSearchResults(); return; }
   const list = getFilteredNotes();
   $('note-list-title').textContent = getViewTitle();
@@ -54,38 +64,206 @@ function renderNoteList() {
 
   const container = $('note-list');
   container.innerHTML = '';
+
+  // 全部笔记：目录浏览模式（根目录 = 子目录 + 直属笔记，目录可点击进入）
+  if (state.view.type === 'all') { renderBrowseList(); return; }
+
   if (list.length === 0) {
-    container.innerHTML = '<div class="list-empty">暂无笔记<br>点击「全部笔记」或目录旁的 ＋ 开始记录</div>';
+    container.innerHTML = '<div class="list-empty">暂无笔记<br>点击「笔记」或目录旁的 ＋ 开始记录</div>';
     return;
   }
 
-  const q = state.view.type === 'search' ? state.view.query : '';
-  list.forEach((note) => {
-    const card = document.createElement('div');
-    card.className = 'note-card' + (note.id === state.selectedNoteId ? ' active' : '');
-    const snippet = noteSnippet(note.content);
-    const words = wordCount(note.content);
-    const tagsHtml = (note.tags || []).slice(0, 3)
-      .map((t) => `<span class="mini-tag">${highlight(t, q)}</span>`).join('');
-    card.innerHTML = `
-      <div class="note-card-title">${note.pinned ? '📌 ' : ''}${highlight(note.title || '无标题笔记', q)}</div>
-      <div class="note-card-snippet">${highlight(snippet, q) || '<span style="opacity:.5">（空笔记）</span>'}</div>
-      <div class="note-card-footer"><span class="nc-time" title="${formatDate(note.updatedAt)}">${formatRelDate(note.updatedAt)}</span><span class="nc-words">${words} 字</span>${tagsHtml}</div>`;
-    card.addEventListener('click', () => selectNote(note.id));
-    // 右键菜单：提取 Wiki / 知识图谱（按钮入口已统一为右键）
-    card.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openCtxMenu(e.clientX, e.clientY, [
-        { label: '📝 提取 Wiki', action: () => { selectNote(note.id); noteToWiki(); } },
-        { label: '🕸 提取知识图谱', action: () => { selectNote(note.id); noteToGraph(); } },
-      ]);
-    });
-    container.appendChild(card);
-  });
+  list.forEach((note) => container.appendChild(buildNoteCard(note, '', subPathOf(note))));
 }
 
-// 全局搜索：跨 笔记/原始文件/Wiki/知识图谱 分类展示结果
+// 笔记卡片：全部笔记/目录/标签视图共用（q 为高亮词，sub 为目录归属徽标）
+function buildNoteCard(note, q, sub) {
+  const card = document.createElement('div');
+  card.className = 'note-card' + (note.id === state.selectedNoteId ? ' active' : '');
+  const snippet = noteSnippet(note.content);
+  const words = wordCount(note.content);
+  const tagsHtml = (note.tags || []).slice(0, 3)
+    .map((t) => `<span class="mini-tag">${highlight(t, q)}</span>`).join('');
+  card.innerHTML = `
+    <div class="note-card-title">${note.pinned ? icoSvg('pin', 12) : ''}${highlight(note.title || '无标题笔记', q)}</div>
+    <div class="note-card-snippet">${highlight(snippet, q) || '<span style="opacity:.5">（空笔记）</span>'}</div>
+    <div class="note-card-footer">${sub ? `<span class="nc-sub" title="位于目录 ${escapeHtml(sub)}">${icoSvg('folder-open', 11)} ${escapeHtml(sub)}</span>` : ''}<span class="nc-time" title="${formatDate(note.updatedAt)}">${formatRelDate(note.updatedAt)}</span><span class="nc-words">${words} 字</span>${tagsHtml}</div>`;
+  card.addEventListener('click', () => selectNote(note.id));
+  // 右键菜单：垃圾桶内优先「还原到原来的位置」，其余视图提取知识图谱/移动目录
+  card.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const inTrash = state.view.type === 'folder' && state.view.id === '__trash__';
+    const items = [];
+    // 垃圾桶视图内所有笔记可还原；其他视图中带 trashFrom 标记（曾被移入垃圾桶）的也可还原
+    if (inTrash || note.trashFrom != null) items.push({ label: '还原到原来的位置', action: () => restoreNoteFromTrash(note) }, { sep: true });
+    items.push(
+      { label: '提取知识图谱', action: () => { selectNote(note.id); noteToGraph(); } },
+      { label: '移动到目录…', action: () => openMoveFolderMenu(note, e.clientX, e.clientY) },
+    );
+    openCtxMenu(e.clientX, e.clientY, items);
+  });
+  return card;
+}
+
+// 目录 id → 相对笔记根目录路径（与主进程 folderDirMap 同规则：safeName 后按 / 拼接）
+function folderRelPath(folderId) {
+  if (!folderId) return '';
+  const byId = new Map(state.folders.map((f) => [f.id, f]));
+  const safe = (s) => String(s || '').trim().replace(/[\\/:*?"<>|]/g, '-').slice(0, 80) || 'untitled';
+  const chain = [];
+  let cur = byId.get(folderId);
+  while (cur) { chain.unshift(safe(cur.name)); cur = cur.parentId ? byId.get(cur.parentId) : null; }
+  return chain.join('/');
+}
+
+// 相对路径反查目录 id（用于还原时定位原目录）
+function folderIdByRel(rel) {
+  if (!rel) return null;
+  for (const f of state.folders) if (f.id !== '__trash__' && folderRelPath(f.id) === rel) return f.id;
+  return null;
+}
+
+// 还原垃圾桶内笔记到原来的位置：trashFrom 记录移入垃圾桶前的目录相对路径（''=根目录）；
+// 原目录已被删除时按原路径逐级重建目录链（同名目录复用），确保「还原到原来的位置」始终成立
+function restoreNoteFromTrash(note) {
+  const rel = String(note.trashFrom || '');
+  let folderId = folderIdByRel(rel);
+  if (!folderId && rel) {
+    const byRel = new Map(state.folders.filter((f) => f.id !== '__trash__').map((f) => [folderRelPath(f.id), f]));
+    let parent = null;
+    let acc = '';
+    for (const seg of rel.split('/')) {
+      if (!seg) continue;
+      acc = acc ? `${acc}/${seg}` : seg;
+      let f = byRel.get(acc);
+      if (!f) {
+        f = { id: uid(), name: seg, parentId: parent };
+        state.folders.push(f);
+        byRel.set(acc, f);
+      }
+      parent = f.id;
+    }
+    folderId = parent;
+  }
+  delete note.trashFrom;
+  note.folderId = folderId;
+  note.updatedAt = Date.now();
+  persist();
+  renderAll();
+  toast(folderId ? `已还原到「${folderPathOf(note)}」` : '已还原到根目录', 2500);
+}
+
+// 右键「移动到目录」：先选顶级目录，含子目录则弹二级菜单；🗑 垃圾桶=未分类
+function openMoveFolderMenu(note, x, y) {
+  const byId = new Map(state.folders.map((f) => [f.id, f]));
+  const fullPath = (f) => {
+    const chain = [];
+    let cur = f;
+    while (cur) { chain.unshift(cur.name); cur = cur.parentId ? byId.get(cur.parentId) : null; }
+    return chain.join(' / ');
+  };
+  const doMove = (folderId) => {
+    if ((note.folderId || null) === (folderId || null)) return;
+    if (!folderId && note.folderId) note.trashFrom = folderRelPath(note.folderId); // 移入垃圾桶：记录原位置
+    if (folderId) delete note.trashFrom; // 移出垃圾桶：还原标记不再需要
+    note.folderId = folderId || null;
+    note.updatedAt = Date.now();
+    persist();
+    renderNoteList();
+    renderSidebar();
+    renderEditor();
+    toast(`已移动到「${folderId ? fullPath(byId.get(folderId)) : '垃圾桶'}」`, 2500);
+  };
+  function pickWithin(parent) {
+    const desc = [];
+    const walk = (pid) => state.folders.filter((f) => f.parentId === pid).forEach((s) => { desc.push(s); walk(s.id); });
+    walk(parent.id);
+    if (!desc.length) { doMove(parent.id); return; }
+    const items = [{ label: `${parent.name}（本级）`, action: () => doMove(parent.id) }, { sep: true }];
+    desc.forEach((s) => items.push({ label: `↳ ${fullPath(s)}`, action: () => doMove(s.id) }));
+    openCtxMenu(x, y, items);
+  }
+  const topItems = [{ label: '垃圾桶（未分类）', action: () => doMove(null) }];
+  const tops = state.folders.filter((f) => !f.parentId);
+  if (tops.length) topItems.push({ sep: true });
+  tops.forEach((f) => topItems.push({ label: f.name, action: () => pickWithin(f) }));
+  openCtxMenu(x, y, topItems);
+}
+
+// 目录视图含子目录笔记：非直属的只显示相对当前目录的子路径，否则分不清来历
+function subPathOf(note) {
+  if (state.view.type !== 'folder' || !note.folderId || note.folderId === state.view.id) return '';
+  const byId = new Map(state.folders.map((f) => [f.id, f]));
+  const chain = [];
+  let cur = byId.get(note.folderId);
+  while (cur && cur.id !== state.view.id) {
+    chain.unshift(cur.name);
+    cur = cur.parentId ? byId.get(cur.parentId) : null;
+  }
+  return chain.join(' / ');
+}
+
+// 全部笔记视图的目录归属徽标：完整目录路径（如 技术风险 / 子目录），未分类为空
+function folderPathOf(note) {
+  if (!note.folderId) return '';
+  const byId = new Map(state.folders.map((f) => [f.id, f]));
+  const chain = [];
+  let cur = byId.get(note.folderId);
+  while (cur) {
+    chain.unshift(cur.name);
+    cur = cur.parentId ? byId.get(cur.parentId) : null;
+  }
+  return chain.join(' / ');
+}
+
+// 目录行：与侧边栏目录节点类似，点击进入该目录（列表展示含子目录的递归笔记）
+function buildFolderRow(folder) {
+  const count = folderDescendantNotes(folder.id).length;
+  const row = document.createElement('div');
+  row.className = 'nl-folder-row';
+  row.title = `进入目录「${folder.name}」`;
+  row.innerHTML = `<span class="nl-folder-ico">${icoSvg('folder-open', 14)}</span><span class="nl-folder-name">${escapeHtml(folder.name)}</span><span class="nl-group-count">${count}</span><span class="nl-folder-enter">›</span>`;
+  row.addEventListener('click', () => {
+    state.view = { type: 'folder', id: folder.id, query: '' };
+    renderAll();
+  });
+  return row;
+}
+
+// 全部笔记：目录浏览模式——根目录展示「子目录 + 直属笔记（未分类）」，
+// 目录可点击逐层进入，与侧边栏目录树的浏览体验一致
+function renderBrowseList() {
+  const container = $('note-list');
+  // 🗑 垃圾桶是虚拟目录（内容=未分类笔记），根目录笔记组已展示，避免重复
+  const roots = state.folders.filter((f) => !f.parentId && f.id !== '__trash__');
+  const rootNotes = state.notes
+    .filter((n) => !n.folderId)
+    .sort((a, b) => {
+      if (!!b.pinned !== !!a.pinned) return b.pinned ? 1 : -1;
+      return b.updatedAt - a.updatedAt;
+    });
+  $('note-list-count').textContent = `${roots.length} 个目录 / ${rootNotes.length} 篇根目录笔记`;
+  if (roots.length) {
+    const head = document.createElement('div');
+    head.className = 'nl-group';
+    head.innerHTML = `<span>${icoSvg('folder-open', 13)} 目录</span><span class="nl-group-count">${roots.length}</span>`;
+    container.appendChild(head);
+    roots.forEach((f) => container.appendChild(buildFolderRow(f)));
+  }
+  if (rootNotes.length) {
+    const head = document.createElement('div');
+    head.className = 'nl-group';
+    head.innerHTML = `<span>${icoSvg('notes', 13)} 根目录笔记</span><span class="nl-group-count">${rootNotes.length}</span>`;
+    container.appendChild(head);
+    rootNotes.forEach((n) => container.appendChild(buildNoteCard(n, '', '')));
+  }
+  if (!roots.length && !rootNotes.length) {
+    container.innerHTML = '<div class="list-empty">根目录为空<br>点击「笔记」或目录旁的 ＋ 开始记录</div>';
+  }
+}
+
+// 全局搜索：跨笔记/原始文件/知识图谱分类展示结果
 function renderSearchResults() {
   const q = (state.view.query || '').trim().toLowerCase();
   $('note-list-title').textContent = getViewTitle();
@@ -93,15 +271,14 @@ function renderSearchResults() {
   container.innerHTML = '';
   if (!q) {
     $('note-list-count').textContent = '';
-    container.innerHTML = '<div class="list-empty">输入关键词搜索<br>笔记 / 原始文件 / Wiki / 知识图谱</div>';
+    container.innerHTML = '<div class="list-empty">输入关键词搜索<br>笔记 / 原始文件 / 知识图谱</div>';
     return;
   }
   const has = (s) => String(s || '').toLowerCase().includes(q);
   const notes = state.notes.filter((n) => has(n.title) || has(n.content) || (n.tags || []).some(has));
   const raws = (state.raws || []).filter((r) => has(r.name) || has(r.path));
-  const wikis = ((state.wiki && state.wiki.pages) || []).filter((p) => has(p.title) || has(p.path) || has(p.description));
   const graphs = ((state.graph && state.graph.nodes) || []).filter((n) => has(n.name) || has(n.desc));
-  const total = notes.length + raws.length + wikis.length + graphs.length;
+  const total = notes.length + raws.length + graphs.length;
   $('note-list-count').textContent = total ? `${total} 条结果` : '';
   if (!total) {
     container.innerHTML = `<div class="list-empty">未找到与「${escapeHtml(state.view.query)}」相关的内容</div>`;
@@ -121,27 +298,14 @@ function renderSearchResults() {
     item.addEventListener('click', onClick);
     container.appendChild(item);
   };
-  if (notes.length) { secHead('📝', '笔记', notes.length); notes.forEach((n) => row('📝', n.title || '无标题笔记', '', () => selectNote(n.id))); }
-  if (raws.length) { secHead('📄', '原始文件', raws.length); raws.forEach((r) => row('📄', r.name, r.path, () => showRawView())); }
-  if (wikis.length) { secHead('📚', 'Wiki', wikis.length); wikis.forEach((p) => row(typeIcon(p.type), p.title || p.path, p.path, () => openWikiPage(p.path))); }
-  if (graphs.length) { secHead('🕸', '知识图谱', graphs.length); graphs.forEach((n) => row('🕸', n.name, n.type, () => { state.kg.tab = 'entities'; state.kg.entitySel = n.id; showGraphView(); })); }
+  if (notes.length) { secHead(icoSvg('notes', 13), '笔记', notes.length); notes.forEach((n) => row(icoSvg('notes', 13), n.title || '无标题笔记', '', () => selectNote(n.id))); }
+  if (raws.length) { secHead(icoSvg('folder-open', 13), '原始文件', raws.length); raws.forEach((r) => row(icoSvg('folder-open', 13), r.name, r.path, () => showRawView())); }
+  if (graphs.length) { secHead(icoSvg('kg', 13), '知识图谱', graphs.length); graphs.forEach((n) => row(icoSvg('kg', 13), n.name, n.type, () => { state.kg.tab = 'entities'; state.kg.entitySel = n.id; showGraphView(); })); }
 }
 
-// 中间列表 Wiki 分组折叠状态（会话内记忆）
 // ================= 渲染：编辑器 =================
 function currentNote() {
   return state.notes.find((n) => n.id === state.selectedNoteId) || null;
-}
-
-function renderFolderSelect() {
-  const sel = $('note-folder');
-  sel.innerHTML = '<option value="">未分类</option>';
-  state.folders.forEach((f) => {
-    const opt = document.createElement('option');
-    opt.value = f.id;
-    opt.textContent = (f.parentId ? '↳ ' : '') + f.name;
-    sel.appendChild(opt);
-  });
 }
 
 function renderEditor() {
@@ -150,12 +314,6 @@ function renderEditor() {
   syncNoteListVisibility();
   // 作业管理页打开时，编辑区让位
   if (!$('jobs-view').hidden) {
-    empty.hidden = true;
-    content.hidden = true;
-    return;
-  }
-  // Wiki 阅读器打开时，编辑区让位
-  if (!$('wiki-viewer').hidden) {
     empty.hidden = true;
     content.hidden = true;
     return;
@@ -174,6 +332,12 @@ function renderEditor() {
   }
   // 领域模版页打开时，编辑区让位
   if (!$('tpl-view').hidden) {
+    empty.hidden = true;
+    content.hidden = true;
+    return;
+  }
+  // 领域模版编辑页打开时，编辑区让位
+  if (!$('tpl-editor-view').hidden) {
     empty.hidden = true;
     content.hidden = true;
     return;
@@ -213,9 +377,6 @@ function renderEditor() {
 
   if (document.activeElement !== $('note-title')) $('note-title').value = note.title || '';
   if (document.activeElement !== $('note-content')) $('note-content').value = note.content || '';
-  $('note-tags').value = (note.tags || []).join(', ');
-  renderFolderSelect();
-  $('note-folder').value = note.folderId || '';
   $('note-time').textContent = `更新于 ${formatRelDate(note.updatedAt)}`;
   $('note-time').title = formatDate(note.updatedAt);
   const words = wordCount(note.content);
@@ -238,8 +399,43 @@ function applyEditorMode() {
 function updatePreview() {
   const note = currentNote();
   if (note && state.editorMode !== 'edit') {
-    $('note-preview').innerHTML = renderMarkdown(note.content);
+    const box = $('note-preview');
+    box.innerHTML = renderMarkdown(note.content);
+    // 预览里的任务清单可直接勾选：marked 默认输出 disabled 的复选框，
+    // 这里解除禁用并按出现顺序编号，点击后由 toggleTaskInContent 回写正文
+    box.querySelectorAll('input[type="checkbox"]').forEach((cb, i) => {
+      cb.disabled = false;
+      cb.dataset.task = String(i);
+      cb.title = '点击勾选/取消，会同步写回正文';
+    });
   }
+}
+
+// 预览中勾选任务：把正文里第 index 个任务标记翻转（GFM 任务清单，兼容 - * + 与有序列表）
+// 计数时跳过围栅代码块，否则代码里的 “- [ ]” 会把序号错开导致改错行
+function toggleTaskInContent(index, checked) {
+  const note = currentNote();
+  if (!note) return;
+  const taskRe = /^(\s*(?:[-*+]|\d+[.)])\s+\[)([ xX])(\])/;
+  const lines = String(note.content || '').split('\n');
+  let inFence = false;
+  let seen = -1;
+  let hit = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*(```|~~~)/.test(lines[i])) { inFence = !inFence; continue; }
+    if (inFence || !taskRe.test(lines[i])) continue;
+    seen++;
+    if (seen === index) { hit = i; break; }
+  }
+  if (hit < 0) { updatePreview(); return; } // 序号对不上（正文已变）时不动，重渲染恢复真实状态
+  lines[hit] = lines[hit].replace(taskRe, `$1${checked ? 'x' : ' '}$3`);
+  const next = lines.join('\n');
+  if (next === note.content) return;
+  // 经正文文本框回写，复用同一条保存链路（含字数/时间/持久化）
+  $('note-content').value = next;
+  updateNoteFromEditor();
+  updatePreview();
+  renderNoteList();
 }
 
 function updateNoteFromEditor() {
@@ -255,15 +451,15 @@ function updateNoteFromEditor() {
   }
   note.title = title;
   note.content = $('note-content').value;
-  note.tags = $('note-tags').value
-    .split(/[,，]/)
-    .map((t) => t.trim())
-    .filter(Boolean);
+  // 标签输入框已按用户要求移除；笔记已有 tags 数据保留不动
   note.updatedAt = Date.now();
   $('note-time').textContent = `更新于 ${formatRelDate(note.updatedAt)}`;
   $('note-time').title = formatDate(note.updatedAt);
   $('note-date').textContent = `${wordCount(note.content)} 字`;
   persist();
+  // 工具栏插入（表格/格式/图片等）是程序改 value，不触发 input 事件，
+  // 防抖的预览刷新不会跑，这里正文落库后立即同步预览
+  updatePreview();
 }
 
 function selectNote(id) {
@@ -276,12 +472,14 @@ function selectNote(id) {
 
 // ================= 笔记操作 =================
 function createNote(folderId, title) {
+  let fid = folderId !== undefined ? folderId : (state.view.type === 'folder' ? state.view.id : null);
+  if (fid === '__trash__') fid = null; // 垃圾桶是虚拟目录，笔记以 folderId=null 归属它
   const note = {
     id: uid(),
     title: title || uniqueNoteTitle('新建笔记', null),
     content: '',
     tags: [],
-    folderId: folderId !== undefined ? folderId : (state.view.type === 'folder' ? state.view.id : null),
+    folderId: fid,
     pinned: false,
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -315,12 +513,23 @@ function uniqueNoteTitle(base, exceptId) {
   return `${b} ${i}`;
 }
 
+// 删除：普通目录下的笔记移入垃圾桶（记录原位置 trashFrom，可右键还原）；
+// 垃圾桶内的笔记删除即永久删除（不可恢复）
 function deleteNote() {
   const note = currentNote();
   if (!note) return;
-  if (!confirm(`确定删除笔记"${note.title || '无标题'}"？`)) return;
-  state.notes = state.notes.filter((n) => n.id !== note.id);
-  window.kb.noteDeleteVersions({ noteId: note.id });
+  if (!note.folderId) {
+    if (!confirm(`永久删除笔记"${note.title || '无标题'}"？此操作不可恢复。`)) return;
+    delete note.trashFrom;
+    state.notes = state.notes.filter((n) => n.id !== note.id);
+    window.kb.noteDeleteVersions({ noteId: note.id });
+    toast('已永久删除', 2500);
+  } else {
+    if (!confirm(`确定删除笔记"${note.title || '无标题'}"？将移入"垃圾桶"，可在垃圾桶内右键还原。`)) return;
+    note.trashFrom = folderRelPath(note.folderId);
+    note.folderId = null;
+    toast('已移入垃圾桶，可在垃圾桶内右键还原', 2500);
+  }
   state.selectedNoteId = null;
   persist();
   renderAll();
@@ -366,7 +575,7 @@ function wrapSelection(before, after) {
   ta.selectionStart = s + before.length;
   ta.selectionEnd = s + before.length + sel.length;
   ta.focus();
-  updateNoteFromEditor();
+  commitEditorText();
 }
 
 // 对选区覆盖的行逐行变换（标题/列表/引用等）
@@ -381,7 +590,7 @@ function transformLines(fn) {
   ta.selectionStart = start;
   ta.selectionEnd = start + out.length;
   ta.focus();
-  updateNoteFromEditor();
+  commitEditorText();
 }
 
 function applyFormat(fmt) {
@@ -412,7 +621,7 @@ function insertAtCursor(text) {
   ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
   ta.selectionStart = ta.selectionEnd = s + text.length;
   ta.focus();
-  updateNoteFromEditor();
+  commitEditorText();
 }
 
 function insertTable() {
@@ -507,6 +716,9 @@ async function aiAssistNote() {
   }
 }
 
+function commitEditorText() {
+  updateNoteFromEditor();
+}
 // ================= 历史版本（右侧抽屉） =================
 let versionView = null; // 当前查看的版本号；null = 列表视图
 let versionDiff = null; // 当前对比的 [旧, 新] 版本号；null = 非对比视图
@@ -522,7 +734,7 @@ function closeVersionsDrawer() {
 function syncVersionDrawerView() {
   const viewing = versionView != null;
   const diffing = versionDiff != null;
-  $('versions-drawer-title').textContent = diffing ? '🔀 版本对比' : (viewing ? `版本内容 · ${versionView}` : '🕘 历史版本');
+  $('versions-drawer-title').textContent = diffing ? '版本对比' : (viewing ? `版本内容 · ${versionView}` : '历史版本');
   $('btn-versions-back').hidden = !viewing && !diffing;
   $('versions-tip').hidden = viewing || diffing;
   $('version-list').hidden = viewing || diffing;
@@ -571,7 +783,7 @@ async function loadVersionList(noteId) {
     sel.appendChild(cb);
     const info = document.createElement('div');
     info.className = 'version-info';
-    info.innerHTML = `<span class="version-no">🕘 ${escapeHtml(ver.version)}</span><span class="version-label">${escapeHtml(ver.label || '')}</span>`;
+    info.innerHTML = `<span class="version-no">${icoSvg('history', 12)} ${escapeHtml(ver.version)}</span><span class="version-label">${escapeHtml(ver.label || '')}</span>`;
     const acts = document.createElement('div');
     acts.className = 'version-actions';
     const bView = document.createElement('button');
@@ -679,29 +891,14 @@ async function restoreVersion(noteId, version) {
   await loadVersionList(noteId);
 }
 
-// 将当前笔记吸收生成 LLM Wiki 页面（复用吸收作业 text 模式，提交前领域模板预检查）
-async function noteToWiki() {
-  const note = currentNote();
-  if (!note) { toast('请先选择一篇笔记', 2500); return; }
-  if (!(note.content || '').trim()) { toast('笔记内容为空，无法生成 Wiki', 2500); return; }
-  toast('正在匹配领域模板…', 2500);
-  const domain = await checkDomainBeforeIngest({ texts: [`# ${note.title || ''}\n${note.content || ''}`] });
-  if (domain === null) return;
-  const res = await window.kb.jobsSubmit({ type: 'ingest', payload: finishIngestPayload({ settings: state.settings, text: note.content, title: note.title }, domain) });
-  if (!res.ok) { toast('提交失败：' + res.error, 4000); return; }
-  toast('已提交「生成 Wiki」作业');
-  showJobsView();
-}
-
-// 从当前笔记抽取知识图谱（内联语料模式，提交前领域模板预检查）
+// 从当前笔记抽取知识图谱（内联语料模式，提交前选领域）
 async function noteToGraph() {
   const note = currentNote();
   if (!note) { toast('请先选择一篇笔记', 2500); return; }
   if (!(note.content || '').trim()) { toast('笔记内容为空，无法生成图谱', 2500); return; }
-  toast('正在匹配领域模板…', 2500);
-  const domain = await checkDomainBeforeIngest({ texts: [`# ${note.title || ''}\n${note.content || ''}`] });
-  if (domain === null) return;
-  const res = await window.kb.jobsSubmit({ type: 'graph', payload: { settings: state.settings, inlineSources: [{ label: '笔记·' + (note.title || note.id), text: `# ${note.title || ''}\n${note.content || ''}` }], ...graphDomainExtras(domain) } });
+  const extras = await pickDomainForExtract({ kind: 'graph', label: '笔记·' + (note.title || note.id), texts: [`# ${note.title || ''}\n${note.content || ''}`] });
+  if (!extras) return;
+  const res = await window.kb.jobsSubmit({ type: 'graph', payload: { settings: state.settings, inlineSources: [{ label: '笔记·' + (note.title || note.id), text: `# ${note.title || ''}\n${note.content || ''}` }], ...extras } });
   if (!res.ok) { toast('提交失败：' + res.error, 4000); return; }
   toast('已提交「生成图谱」作业');
   showJobsView();
@@ -720,38 +917,21 @@ function folderDescendantNotes(folderId) {
   return state.notes.filter((n) => ids.has(n.folderId));
 }
 
-// 集合级（全部笔记/目录）生成 Wiki：多篇笔记作为来源提交吸收作业（过滤空内容，提交前领域预检查）
-async function notesToWiki(notes, label, kind) {
-  const list = notes.filter((n) => (n.content || '').trim());
-  if (!list.length) { toast('该范围内没有可吸收的笔记内容', 2500); return; }
-  if (!confirmRegen('wiki')) return;
-  toast('正在匹配领域模板…', 2500);
-  const domain = await checkDomainBeforeIngest({ texts: list.map((n) => `# ${n.title || ''}\n${n.content || ''}`) });
-  if (domain === null) return;
-  const res = await window.kb.jobsSubmit({ type: 'ingest', payload: finishIngestPayload({ settings: state.settings, collectionLabel: label, collectionKind: kind, noteSources: list.map((n) => ({ title: n.title, content: n.content || '' })) }, domain) });
-  if (!res.ok) { toast('提交失败：' + res.error, 4000); return; }
-  toast(`已提交「${label}」生成 Wiki 作业`);
-  showJobsView();
-}
-
-// 集合级（全部笔记/目录）生成图谱：内联语料模式（过滤空内容，提交前领域预检查）
+// 集合级（全部笔记/目录）生成图谱：内联语料模式（过滤空内容，提交前选领域）
 async function notesToGraph(notes, label) {
   const list = notes.filter((n) => (n.content || '').trim());
   if (!list.length) { toast('该范围内没有可抽取的笔记内容', 2500); return; }
   if (!confirmRegen('graph')) return;
-  toast('正在匹配领域模板…', 2500);
-  const domain = await checkDomainBeforeIngest({ texts: list.map((n) => `# ${n.title || ''}\n${n.content || ''}`) });
-  if (domain === null) return;
-  const res = await window.kb.jobsSubmit({ type: 'graph', payload: { settings: state.settings, inlineSources: list.map((n) => ({ label: '笔记·' + (n.title || n.id), text: `# ${n.title || ''}\n${n.content || ''}` })), ...graphDomainExtras(domain) } });
+  const extras = await pickDomainForExtract({ kind: 'graph', label, texts: list.map((n) => `# ${n.title || ''}\n${n.content || ''}`) });
+  if (!extras) return;
+  const res = await window.kb.jobsSubmit({ type: 'graph', payload: { settings: state.settings, inlineSources: list.map((n) => ({ label: '笔记·' + (n.title || n.id), text: `# ${n.title || ''}\n${n.content || ''}` })), ...extras } });
   if (!res.ok) { toast('提交失败：' + res.error, 4000); return; }
   toast(`已提交「${label}」生成图谱作业`);
   showJobsView();
 }
 
 function bindEditorToolbar() {
-  $('btn-ai-assist').addEventListener('click', aiAssistNote);
-  // 生成 Wiki / 图谱按钮已统一为笔记卡片右键菜单（noteToWiki / noteToGraph）
-  $('btn-versions').addEventListener('click', openVersionsDrawer);
+  // btn-ai-assist / btn-versions 的绑定在 app.js
   $('btn-versions-close').addEventListener('click', closeVersionsDrawer);
   $('btn-versions-back').addEventListener('click', backToVersionList);
   $('btn-versions-compare').addEventListener('click', showVersionDiff);

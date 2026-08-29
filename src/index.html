@@ -2,50 +2,104 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: kb-asset: https://www.google.com" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: kb-asset: kb-doc: https:;" />
   <title>Synapse</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=20260829b" />
   <link rel="stylesheet" href="lib/hljs-atom-one-dark.min.css" />
 </head>
 <body>
+  <!-- 全局图标库：统一线性 SVG 图标（viewBox 0 0 24 24，stroke=currentColor），
+       通过 <svg class="ico"><use href="#i-xxx"/></svg> 引用，替代各系统渲染不一的 emoji -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-notes" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></g></symbol>
+      <symbol id="i-kg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="12" r="2.2"/><circle cx="18.5" cy="5.5" r="2.2"/><circle cx="18.5" cy="18.5" r="2.2"/><path d="M7.4 11l8.8-4.3"/><path d="M7.4 13l8.8 4.3"/><path d="M18.5 7.7v8.6"/></g></symbol>
+      <symbol id="i-overview" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 8.5 8.5"/><path d="M14.8 9.2l-2 3.6-3.6 2z" fill="currentColor" stroke="none"/></g></symbol>
+      <symbol id="i-entities" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><path d="M13.5 17h7"/><path d="M17 13.5v7"/></g></symbol>
+      <symbol id="i-ontology" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5V6a2 2 0 0 1 2-2h14v13.5H6.5a2.5 2.5 0 0 0 0 5H20"/><path d="M8 8.5h8"/></g></symbol>
+      <symbol id="i-ask" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.3 0-2.6-.3-3.7-.8L3 21l1.8-5.8A8.5 8.5 0 1 1 21 11.5z"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.7-2.3 2.2-2.3 3.7"/><path d="M12.5 17h.01"/></g></symbol>
+      <symbol id="i-template" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 12.5L17.9 3.3a.9.9 0 0 1 1.2 1.2L10.7 16.5z"/><path d="M14.5 6.5l3 3"/><path d="M12 21h8.5"/></g></symbol>
+      <symbol id="i-prompts" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8a5 5 0 0 1 10 0c0 3-2.5 4-2.5 6.5h-5C9.5 12 7 11 7 8z"/><path d="M10.5 18h3"/><path d="M11 21h2"/></g></symbol>
+      <symbol id="i-sparkles" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l1.8 4.9L18.8 10.6l-4.9 1.8L12 17.4l-1.9-5-4.9-1.8 4.9-1.7z"/><path d="M18.5 15.5l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9z"/></g></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.26.6.86 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></g></symbol>
+      <symbol id="i-tune" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h9"/><path d="M17 6.5h3"/><circle cx="15" cy="6.5" r="2.2"/><path d="M4 12h3"/><path d="M11 12h9"/><circle cx="9" cy="12" r="2.2"/><path d="M4 17.5h13"/><path d="M21 17.5h-1"/><circle cx="19" cy="17.5" r="2.2"/></g></symbol>
+      <symbol id="i-storage" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5.5" rx="8" ry="2.8"/><path d="M4 5.5v6.3c0 1.6 3.6 2.8 8 2.8s8-1.2 8-2.8V5.5"/><path d="M4 11.8v6.2c0 1.6 3.6 2.8 8 2.8s8-1.2 8-2.8v-6.2"/></g></symbol>
+      <symbol id="i-jobs" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="M8 12.5l2.6 2.6L16.2 9.4"/></g></symbol>
+      <symbol id="i-parse" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M8.5 13.5l3.5-3.5 3.5 3.5"/><path d="M12 10.5V17"/></g></symbol>
+      <symbol id="i-editor" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></g></symbol>
+      <symbol id="i-mcp" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></g></symbol>
+      <symbol id="i-skill" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3.5 14H10l-1 8L18.5 10H12z"/></g></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></g></symbol>
+      <symbol id="i-book" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></g></symbol>
+      <symbol id="i-logo" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="5.5" r="2.5" fill="currentColor" stroke="none"/><circle cx="18.5" cy="5.5" r="2.5" fill="currentColor" stroke="none"/><circle cx="12" cy="16.5" r="2.5" fill="currentColor" stroke="none"/><path d="M7.5 5.5h9" stroke-width="2"/><path d="M6.9 7.1l3.7 7.4" stroke-width="2"/><path d="M17.1 7.1l-3.7 7.4" stroke-width="2"/><path d="M3 19.5c1.5-1 3.5-1.5 5.5-1.5 1.5 0 2.8.3 3.5.8.7-.5 2-.8 3.5-.8 2 0 4 .5 5.5 1.5" stroke-width="1.5"/></g></symbol>
+      <symbol id="i-add" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></g></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></g></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 10.5l5 5 5-5"/><path d="M4.5 20h15"/></g></symbol>
+      <symbol id="i-history" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.3"/><path d="M3 4v5h5"/><path d="M12 7.5V12l3 2"/></g></symbol>
+      <symbol id="i-pin" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4l5.5 5.5-3 1L11 16.5l-1 3L5.5 15l3-1L14.5 8z" transform="rotate(45 12 12)"/><path d="M9.5 14.5L4 20"/></g></symbol>
+      <symbol id="i-folder-open" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M3.5 10h17"/></g></symbol>
+      <symbol id="i-delete" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9.5 7V4.5h5V7"/><path d="M6.5 7l1 13h9l1-13"/><path d="M10 11v5"/><path d="M14 11v5"/></g></symbol>
+      <symbol id="i-clean" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h9"/><path d="M14 5l5 5L9.5 19.5H4.5V14.5z"/><path d="M12.5 6.5l5 5"/></g></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 3v5h-5"/></g></symbol>
+      <symbol id="i-fit" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/></g></symbol>
+      <symbol id="i-save" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h11l4 4v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M8 3v5h7"/><path d="M7.5 21v-7h9v7"/></g></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></g></symbol>
+      <symbol id="i-star" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.7l-5.2 2.9 1-5.8-4.3-4.1 5.9-.9z"/></g></symbol>
+      <symbol id="i-checklist" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l1.2 1.2L7.5 5"/><path d="M10.5 6H20"/><path d="M4 12l1.2 1.2L7.5 11"/><path d="M10.5 12H20"/><path d="M4 18l1.2 1.2L7.5 17"/><path d="M10.5 18H20"/></g></symbol>
+      <symbol id="i-table" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17"/><path d="M3.5 14.5h17"/><path d="M12.5 4.5v15"/></g></symbol>
+      <symbol id="i-attach" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 12.6l-7.1 7.1a5.5 5.5 0 0 1-7.8-7.8l7.1-7.1a3.7 3.7 0 0 1 5.2 5.2l-6.6 6.6a1.8 1.8 0 0 1-2.6-2.6l6.6-6.5"/></g></symbol>
+      <symbol id="i-chat" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.3 0-2.6-.3-3.7-.8L3 21l1.8-5.8A8.5 8.5 0 1 1 21 11.5z"/><circle cx="8.2" cy="11.5" r=".4" fill="currentColor"/><circle cx="12" cy="11.5" r=".4" fill="currentColor"/><circle cx="15.8" cy="11.5" r=".4" fill="currentColor"/></g></symbol>
+      <symbol id="i-warn" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5L2.5 20h19z"/><path d="M12 9.5v5"/><path d="M12 17.3h.01"/></g></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4.5 4.5 0 0 0 6.4.4l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.7 1.7"/><path d="M14 10a4.5 4.5 0 0 0-6.4-.4l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.7-1.7"/></g></symbol>
+    </defs>
+  </svg>
   <div class="app">
     <!-- 侧边栏收起后的图标栏：保留主入口图标，点击派发到对应导航项
          （不能放在笔记列表工具栏：主框架页下笔记列表也会隐藏） -->
     <div class="sidebar-rail" id="sidebar-rail" hidden>
       <button class="rail-btn rail-expand" id="btn-sidebar-show" title="展开侧边栏">»</button>
       <div class="rail-sep"></div>
-      <button class="rail-btn" data-click="#nav-all-notes" title="全部笔记">📝</button>
-      <button class="rail-btn" data-click="#nav-raws" title="原始文件">🗄</button>
-      <button class="rail-btn" data-click="#wiki-header" title="LLM Wiki">📖</button>
-      <button class="rail-btn" data-click="#nav-templates" title="领域模版">📐</button>
-      <button class="rail-btn" data-click="#kg-submenu [data-tab=&quot;overview&quot;]" title="知识图谱">🪐</button>
-      <button class="rail-btn" data-click="#nav-jobs" title="作业管理">🗂</button>
-      <button class="rail-btn" data-click="#nav-prompts" title="提示词管理">📜</button>
+      <button class="rail-btn" data-click="#nav-raws" title="原始文件"><svg class="ico" width="16" height="16"><use href="#i-folder-open"/></svg></button>
+      <button class="rail-btn" data-click="#nav-all-notes" title="笔记"><svg class="ico" width="16" height="16"><use href="#i-notes"/></svg></button>
+      <button class="rail-btn" data-click="#nav-templates" title="领域模版（知识图谱管理）"><svg class="ico" width="16" height="16"><use href="#i-template"/></svg></button>
+      <button class="rail-btn" data-click="#kg-submenu [data-tab=&quot;overview&quot;]" title="知识图谱"><svg class="ico" width="16" height="16"><use href="#i-kg"/></svg></button>
+      <button class="rail-btn" data-click="#nav-jobs" title="作业管理"><svg class="ico" width="16" height="16"><use href="#i-jobs"/></svg></button>
+      <button class="rail-btn" data-click="#nav-prompts" title="提示词管理"><svg class="ico" width="16" height="16"><use href="#i-prompts"/></svg></button>
       <div class="rail-spacer"></div>
-      <button class="rail-btn" data-click="#btn-ai-toggle" title="AI 问答">✨</button>
-      <button class="rail-btn" data-click="#btn-settings" title="设置">⚙️</button>
+      <button class="rail-btn" data-click="#btn-ai-toggle" title="AI 问答"><svg class="ico" width="16" height="16"><use href="#i-sparkles"/></svg></button>
+      <button class="rail-btn" data-click="#btn-settings" title="设置"><svg class="ico" width="16" height="16"><use href="#i-settings"/></svg></button>
     </div>
     <!-- 左侧导航 -->
     <aside class="sidebar">
       <div class="sidebar-header">
-        <div class="logo">📚 Synapse</div>
+        <div class="logo"><svg class="ico logo-ico" width="18" height="18"><use href="#i-logo"/></svg>Synapse</div>
         <button class="icon-btn" id="btn-sidebar-hide" title="收起侧边栏">«</button>
       </div>
       <div class="sidebar-search">
-        <input type="text" id="search-input" placeholder="🔍 搜索笔记 / 原始文件 / Wiki / 图谱…" />
+        <input type="text" id="search-input" placeholder="搜索笔记 / 原始文件 / 图谱…" />
       </div>
       <nav class="sidebar-nav">
-        <div class="nav-item" id="nav-all-notes">
-          <span>📝 全部笔记</span>
+        <!-- 原始文件是知识入口（先导入资料再提取），因此排在全部笔记之前 -->
+        <div class="nav-item" id="nav-raws">
+          <span><svg class="ico" width="15" height="15"><use href="#i-folder-open"/></svg>原始文件</span>
           <span class="nav-side">
-            <span class="nav-count" id="count-all">0</span>
-            <button class="icon-btn" id="btn-new-note" title="新建笔记">＋</button>
+            <span class="nav-count" id="count-raws"></span>
+            <button class="icon-btn" id="btn-raws-add" title="上传文档到 raw/"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg></button>
           </span>
         </div>
+
+        <div class="nav-item" id="nav-all-notes">
+          <span><svg class="ico" width="15" height="15"><use href="#i-notes"/></svg>笔记</span>
+          <span class="nav-side">
+            <span class="nav-count" id="count-all">0</span>
+            <button class="icon-btn" id="btn-new-note" title="新建笔记"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg></button>
+          </span>
+        </div>
+
         <div class="nav-submenu">
           <div class="nav-sub-head">
             <span>目录</span>
-            <button class="icon-btn" id="btn-add-folder" title="新建目录">＋</button>
+            <button class="icon-btn" id="btn-add-folder" title="新建目录"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg></button>
           </div>
           <div id="folder-tree"></div>
 
@@ -53,48 +107,34 @@
           <div id="tag-list"></div>
         </div>
 
-        <div class="nav-item" id="nav-raws">
-          <span>🗄 原始文件</span>
-          <span class="nav-side">
-            <span class="nav-count" id="count-raws"></span>
-            <button class="icon-btn" id="btn-raws-add" title="上传文档到 raw/">＋</button>
-          </span>
-        </div>
-
-        <div class="nav-section wiki-header" id="wiki-header" title="点击在列表区展示 Wiki 索引">
-          <span class="wiki-header-title">📖 LLM Wiki</span>
-          <button class="icon-btn" id="btn-wiki-ingest" title="吸收新来源">＋</button>
-        </div>
-        <div class="nav-submenu">
-          <div class="nav-item nav-sub-item" id="nav-templates">
-            <span>📐 领域模版</span>
+        <div class="nav-section"><span>知识图谱管理</span><span class="nav-count" id="count-graph">0</span></div>
+        <div class="nav-submenu" id="kg-submenu">
+          <div class="nav-item nav-sub-item" data-tab="overview"><span><svg class="ico" width="15" height="15"><use href="#i-overview"/></svg>概览</span></div>
+          <div class="nav-item nav-sub-item" data-tab="entities"><span><svg class="ico" width="15" height="15"><use href="#i-entities"/></svg>实体浏览</span></div>
+          <div class="nav-item nav-sub-item" data-tab="graph"><span><svg class="ico" width="15" height="15"><use href="#i-kg"/></svg>整体图谱</span></div>
+          <div class="nav-item nav-sub-item" data-tab="ontology"><span><svg class="ico" width="15" height="15"><use href="#i-ontology"/></svg>本体定义</span></div>
+          <div class="nav-item nav-sub-item" data-tab="ask"><span><svg class="ico" width="15" height="15"><use href="#i-ask"/></svg>KG 问答</span></div>
+          <!-- 领域模版只在抽取知识图谱时用到，归入知识图谱管理子菜单 -->
+          <div class="nav-item nav-sub-item nav-tpl" id="nav-templates" title="抽取知识图谱时选择领域模版">
+            <span><svg class="ico" width="15" height="15"><use href="#i-template"/></svg>领域模版</span>
             <span class="nav-count" id="count-tpl"></span>
           </div>
         </div>
 
-        <div class="nav-section"><span>知识图谱</span><span class="nav-count" id="count-graph">0</span></div>
-        <div class="nav-submenu" id="kg-submenu">
-          <div class="nav-item nav-sub-item" data-tab="overview"><span>🧭 概览</span></div>
-          <div class="nav-item nav-sub-item" data-tab="entities"><span>📍 实体浏览</span></div>
-          <div class="nav-item nav-sub-item" data-tab="graph"><span>🪐 整体图谱</span></div>
-          <div class="nav-item nav-sub-item" data-tab="ontology"><span>📘 本体定义</span></div>
-          <div class="nav-item nav-sub-item" data-tab="ask"><span>💬 KG 问答</span></div>
-        </div>
-
         <div class="nav-section"><span>作业</span></div>
         <div class="nav-item" id="nav-jobs">
-          <span><svg class="jobs-icon" width="15" height="15" viewBox="0 0 24 24" fill="none"><defs><linearGradient id="jobsIconG" x1="3" y1="3" x2="21" y2="21"><stop stop-color="#5b8cff"/><stop offset="1" stop-color="#3370ff"/></linearGradient></defs><rect x="3" y="3" width="18" height="18" rx="5" fill="url(#jobsIconG)"/><path d="M8 12.5l2.6 2.6L16.2 9.4" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>作业管理</span>
+          <span><svg class="ico" width="15" height="15"><use href="#i-jobs"/></svg>作业管理</span>
           <span class="nav-count" id="count-jobs"></span>
         </div>
 
         <div class="nav-section"><span>提示词</span></div>
         <div class="nav-item" id="nav-prompts">
-          <span>📜 提示词管理</span>
+          <span><svg class="ico" width="15" height="15"><use href="#i-prompts"/></svg>提示词管理</span>
         </div>
       </nav>
       <div class="sidebar-footer">
-        <button class="btn btn-ghost" id="btn-settings">⚙ 设置</button>
-        <button class="btn btn-ghost" id="btn-ai-toggle">✨ AI 问答</button>
+        <button class="btn btn-ghost" id="btn-settings"><svg class="ico" width="14" height="14"><use href="#i-settings"/></svg>设置</button>
+        <button class="btn btn-ghost" id="btn-ai-toggle"><svg class="ico" width="14" height="14"><use href="#i-sparkles"/></svg>AI 问答</button>
       </div>
     </aside>
 
@@ -104,7 +144,7 @@
     <!-- 笔记列表 -->
     <div class="note-list-pane">
       <div class="note-list-header">
-        <span id="note-list-title">全部笔记</span>
+        <span id="note-list-title">笔记</span>
         <span class="note-list-count" id="note-list-count"></span>
         <button class="icon-btn" id="btn-notelist-hide" title="收起笔记列表">«</button>
       </div>
@@ -117,14 +157,14 @@
     <!-- 编辑区 -->
     <main class="editor-pane">
       <div class="editor-empty" id="editor-empty">
-        <div class="empty-icon">🗂️</div>
+        <div class="empty-icon"><svg class="ico" width="44" height="44" style="margin:0"><use href="#i-logo"/></svg></div>
         <p>选择或新建一篇笔记开始记录</p>
       </div>
 
       <!-- 作业管理页 -->
       <div class="jobs-view" id="jobs-view" hidden>
         <div class="jobs-toolbar">
-          <span class="jobs-view-title"><svg class="jobs-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="5" fill="url(#jobsIconG)"/><path d="M8 12.5l2.6 2.6L16.2 9.4" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>作业管理</span>
+          <span class="jobs-view-title"><svg class="ico" width="16" height="16"><use href="#i-jobs"/></svg>作业管理</span>
           <div class="jobs-filter" id="jobs-filter">
             <button data-filter="all" class="active">全部<i class="jf-count"></i></button>
             <button data-filter="active">进行中<i class="jf-count"></i></button>
@@ -132,9 +172,7 @@
             <button data-filter="failed">失败<i class="jf-count"></i></button>
           </div>
           <div class="toolbar-actions">
-            <button class="btn btn-primary" id="btn-jobs-new-lint" title="提交一个新的 Wiki 体检作业">➕ 新建体检</button>
-            <button class="btn btn-ghost" id="btn-jobs-clear" title="清除全部已完成的作业历史">🧹 清空历史</button>
-            <button class="icon-btn" id="btn-jobs-close" title="关闭作业页">✕</button>
+            <button class="icon-btn" id="btn-jobs-close" title="关闭作业页"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
           </div>
         </div>
         <div class="jobs-page-list" id="jobs-page-list"></div>
@@ -143,9 +181,9 @@
       <!-- 知识图谱模块（五子视图） -->
       <div class="graph-view" id="graph-view" hidden>
         <div class="kg-header">
-          <span class="kg-crumb">🕸 知识图谱 / <b id="kg-crumb-sub">概览</b></span>
+          <span class="kg-crumb"><svg class="ico" width="15" height="15"><use href="#i-kg"/></svg>知识图谱 / <b id="kg-crumb-sub">概览</b></span>
           <div class="toolbar-actions">
-            <button class="icon-btn" id="btn-graph-close" title="关闭图谱页">✕</button>
+            <button class="icon-btn" id="btn-graph-close" title="关闭图谱页"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
           </div>
         </div>
         <div class="kg-pane" data-pane="overview">
@@ -158,11 +196,10 @@
             <select id="kg-f-type" title="一级分类"></select>
             <select id="kg-f-src" title="二级分类">
               <option value="">全部来源</option>
-              <option value="wiki">Wiki</option>
               <option value="notes">笔记</option>
             </select>
-            <input type="text" id="kg-f-q" placeholder="🔍 按名称搜索…" />
-            <button class="btn btn-ghost" id="kg-f-refresh">🔄 刷新</button>
+            <input type="text" id="kg-f-q" placeholder="按名称搜索…" />
+            <button class="btn btn-ghost" id="kg-f-refresh"><svg class="ico" width="13" height="13"><use href="#i-refresh"/></svg>刷新</button>
           </div>
           <div class="kg-legend" id="kg-legend"></div>
           <div class="kg-entities">
@@ -172,32 +209,37 @@
         </div>
 
         <div class="kg-pane" data-pane="graph" hidden>
-          <div class="kg-filterbar">
+          <div class="kg-pane-head">
+            <h3><svg class="ico" width="16" height="16"><use href="#i-kg"/></svg>KG 整体图谱</h3>
+            <p>所有实体 + 关系（节点数较大时建议加过滤）</p>
+          </div>
+          <div class="kg-filterbar as-card">
             <button class="btn btn-ghost" id="btn-graph-focus" hidden title="点击退出邻居视图"></button>
-            <label>领域 <select id="kg-g-domain"></select></label>
             <label>类型 <select id="kg-g-type"></select></label>
+            <label>领域 <select id="kg-g-domain"></select></label>
             <label>最多节点 <select id="kg-g-max"><option value="0">全部</option><option>50</option><option selected>100</option><option>200</option><option>500</option></select></label>
             <label>排序 <select id="kg-g-sort"><option value="deg">按边数</option><option value="name">按名称</option></select></label>
-            <button class="btn btn-ghost" id="btn-graph-fit" title="自适应：重置缩放并居中适配画布">⤢ 自适应</button>
-            <button class="btn btn-ghost" id="btn-graph-clear" title="清空图谱">🧹 清空</button>
+            <button class="btn btn-ghost" id="btn-graph-fit" title="自适应：重置缩放并居中适配画布"><svg class="ico" width="13" height="13"><use href="#i-fit"/></svg>自适应</button>
+            <button class="btn btn-ghost" id="btn-graph-reload" title="重载：重新读取图谱数据并重排布局"><svg class="ico" width="13" height="13"><use href="#i-refresh"/></svg>重载</button>
+            <button class="btn btn-ghost" id="btn-graph-clear" title="清空图谱"><svg class="ico" width="13" height="13"><use href="#i-clean"/></svg>清空</button>
             <span class="jobs-stats" id="graph-stats"></span>
           </div>
+          <div class="graph-legend as-card" id="graph-legend"></div>
           <div class="graph-body">
             <canvas id="graph-canvas"></canvas>
             <aside class="graph-detail" id="graph-detail" hidden></aside>
           </div>
-          <div class="graph-legend" id="graph-legend"></div>
         </div>
 
         <div class="kg-pane" data-pane="ontology" hidden>
           <div class="kg-cards" id="kg-onto-cards"></div>
           <div class="onto-bar">
             <div class="kg-tabs" id="kg-onto-tabs">
-              <button data-ot="classes" class="active">🏷 实体类</button>
-              <button data-ot="preds">🔗 谓词</button>
-              <button data-ot="cons">📏 约束</button>
+              <button data-ot="classes" class="active"><svg class="ico" width="13" height="13"><use href="#i-entities"/></svg>实体类</button>
+              <button data-ot="preds"><svg class="ico" width="13" height="13"><use href="#i-mcp"/></svg>谓词</button>
+              <button data-ot="cons"><svg class="ico" width="13" height="13"><use href="#i-table"/></svg>约束</button>
             </div>
-            <button class="btn btn-ghost" id="btn-onto-add">＋ 新增</button>
+            <button class="btn btn-ghost" id="btn-onto-add"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>新增</button>
           </div>
           <div class="kg-onto-body" id="kg-onto-body"></div>
         </div>
@@ -205,7 +247,7 @@
         <div class="kg-pane" data-pane="ask" hidden>
           <p class="modal-tip">用 LLM 解析问题 → 抽取实体 → 查询邻居事实 → 用事实约束 LLM 回答</p>
           <div class="kg-ask-box">
-            <textarea id="kg-ask-input" placeholder="例：LLM Wiki 和 RAG 的关系是什么？"></textarea>
+            <textarea id="kg-ask-input" placeholder="例：知识图谱和 RAG 的关系是什么？"></textarea>
             <div class="kg-ask-opts">
               <label class="checkbox-row"><input type="checkbox" id="kg-ask-facts" checked /> 附事实清单</label>
               <label>跳数 <input type="number" id="kg-ask-hops" min="1" max="5" value="3" /></label>
@@ -222,13 +264,13 @@
       <!-- 原始文件管理页 -->
       <div class="raw-view" id="raw-view" hidden>
         <div class="raw-toolbar">
-          <span class="raw-view-title">🗄 原始文件管理</span>
+          <span class="raw-view-title"><svg class="ico" width="16" height="16"><use href="#i-folder-open"/></svg>原始文件管理</span>
           <span class="jobs-stats" id="raw-stats"></span>
           <div class="toolbar-actions">
-            <button class="btn btn-ghost" id="btn-raw-add-dir" title="浏览本机：可勾选单个/多个文件，也可整目录递归导入">＋ 添加文件/目录</button>
-            <button class="btn btn-ghost" id="btn-raw-add-url" title="拉取网页链接保存为原始来源">🔗 添加链接</button>
-            <button class="btn btn-ghost" id="btn-raw-refresh">🔄 刷新</button>
-            <button class="icon-btn" id="btn-raw-close" title="关闭原始文件页">✕</button>
+            <button class="btn btn-ghost" id="btn-raw-add-dir" title="浏览本机：可勾选单个/多个文件，也可整目录递归导入"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>添加文件/目录</button>
+            <button class="btn btn-ghost" id="btn-raw-add-url" title="拉取网页链接保存为原始来源"><svg class="ico" width="13" height="13"><use href="#i-mcp"/></svg>添加链接</button>
+            <button class="btn btn-ghost" id="btn-raw-refresh"><svg class="ico" width="13" height="13"><use href="#i-refresh"/></svg>刷新</button>
+            <button class="icon-btn" id="btn-raw-close" title="关闭原始文件页"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
           </div>
         </div>
         <div class="raw-list" id="raw-list"></div>
@@ -237,37 +279,98 @@
       <!-- 领域模版管理页 -->
       <div class="tpl-view" id="tpl-view" hidden>
         <div class="tpl-toolbar">
-          <span class="tpl-view-title">📐 领域模版管理</span>
+          <span class="tpl-view-title"><svg class="ico" width="16" height="16"><use href="#i-template"/></svg>领域模版管理</span>
           <div class="toolbar-actions">
-            <button class="btn btn-ghost" id="btn-tpl-suggest" title="分析全部笔记与原始文件，AI 生成候选领域模版">✨ 智能生成</button>
-            <button class="btn btn-ghost" id="btn-tpl-prompt" title="查看吸收时用于判定所属领域的匹配提示词">匹配提示词</button>
-            <button class="btn btn-primary" id="btn-tpl-new">＋ 新建模版</button>
-            <button class="icon-btn" id="btn-tpl-close" title="关闭模版页">✕</button>
+            <button class="btn btn-ghost" id="btn-tpl-suggest" title="分析全部笔记与原始文件，AI 生成候选领域模版"><svg class="ico" width="13" height="13"><use href="#i-sparkles"/></svg>智能生成</button>
+            <button class="btn btn-ghost" id="btn-tpl-prompt" title="查看吸收时用于判定所属领域的匹配提示词">领域匹配提示词</button>
+            <button class="btn btn-primary" id="btn-tpl-new"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>新建领域模版</button>
           </div>
+          <button class="icon-btn" id="btn-tpl-close" title="关闭模版页"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
         </div>
         <div class="tpl-cards" id="tpl-cards"></div>
+      </div>
+
+      <!-- 领域模版新建/编辑页（主框架内，从卡片列表进入） -->
+      <div class="tpl-editor-view" id="tpl-editor-view" hidden>
+        <div class="tpl-toolbar">
+          <span class="tpl-view-title" id="tpl-modal-title">新建领域模版</span>
+          <div class="toolbar-actions">
+            <button class="btn btn-ghost" id="btn-tpl-cancel">取消</button>
+            <button class="btn btn-primary" id="btn-tpl-save">创建</button>
+            <button class="icon-btn" id="btn-tpl-modal-close" title="关闭"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
+          </div>
+        </div>
+        <div class="tpl-modal-body" id="tpl-modal-body">
+        <p class="tpl-editor-intro">领域模版是告诉 AI「在这个领域里该<b>关注什么</b>、<b>忽略什么</b>、<b>产物怎么组织</b>」的规则集。吸收文档时，下面三组规则会作为领域约束注入提示词。</p>
+        <div class="tpl-ai-banner">
+          <div class="tpl-ai-row">
+            <button class="btn" id="btn-tpl-ai"><svg class="ico" width="13" height="13"><use href="#i-sparkles"/></svg>AI 自动生成模版</button>
+            <span>名称和描述都填写后才能生成：自动补全三组规则——领域定位、抽取规则、产物组织（ID、关键词、实体/概念类型、必提/忽略、质量与页面骨架）</span>
+          </div>
+          <div class="tpl-id-row">
+            <label for="tpl-id">模版 ID（英文标识符）</label>
+            <input type="text" id="tpl-id" placeholder="如: ecom_promo" />
+            <span>无需填写：创建时留空自动生成（AI 生成会按领域语义回填）</span>
+          </div>
+          <div class="tpl-gen-status" id="tpl-gen-status" hidden></div>
+          <pre class="tpl-gen-log" id="tpl-gen-log" hidden></pre>
+        </div>
+        <section class="tpl-sec">
+        <div class="tpl-sec-head"><span class="tpl-sec-ico"><svg class="ico" width="15" height="15"><use href="#i-overview"/></svg></span><b>① 领域定位</b><span class="tpl-sec-tip">让 AI 认得这个领域：吸收新文档时先依据描述与关键词判定「属于哪个领域」</span></div>
+        <label>名称 <i class="tpl-req">*</i></label>
+        <input type="text" id="tpl-name" data-req="1" placeholder="如: 电商大促" />
+        <label>描述 <i class="tpl-req">*</i></label>
+        <textarea id="tpl-desc" data-req="1" rows="3" placeholder="该领域的简要描述"></textarea>
+        <label>关键词（逗号分隔）<i class="tpl-req">*</i></label>
+        <input type="text" id="tpl-keywords" data-req="1" placeholder="如: 大促, 满减, 优惠券, 预售" />
+        </section>
+        <section class="tpl-sec">
+        <div class="tpl-sec-head"><span class="tpl-sec-ico"><svg class="ico" width="15" height="15"><use href="#i-search"/></svg></span><b>② 抽取规则</b><span class="tpl-sec-tip">关注什么 / 忽略什么：实体与概念类型决定识别哪些对象，必须提取不得遗漏，忽略内容直接丢弃</span></div>
+        <label>关注的实体类型 <i class="tpl-req">*</i></label>
+        <div class="tpl-rows" id="tpl-entity-rows"></div>
+        <button class="btn btn-ghost tpl-add" id="btn-tpl-add-entity"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>添加实体类型</button>
+        <p class="tpl-warn" id="tpl-entity-warn">请至少添加一个实体类型并填写名称</p>
+        <label>关注的概念类型 <i class="tpl-req">*</i></label>
+        <div class="tpl-rows" id="tpl-concept-rows"></div>
+        <button class="btn btn-ghost tpl-add" id="btn-tpl-add-concept"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>添加概念类型</button>
+        <p class="tpl-warn" id="tpl-concept-warn">请至少添加一个概念类型并填写名称</p>
+        <label>必须提取（逗号分隔，不得遗漏）<i class="tpl-req">*</i></label>
+        <input type="text" id="tpl-must" data-req="1" placeholder="如: 活动名称, 优惠力度, 时间节点" />
+        <label>忽略内容（逗号分隔，不写入页面）<i class="tpl-req">*</i></label>
+        <input type="text" id="tpl-ignore" data-req="1" placeholder="如: 通用客套话, 非业务寒暄" />
+        </section>
+        <section class="tpl-sec">
+        <div class="tpl-sec-head"><span class="tpl-sec-ico"><svg class="ico" width="15" height="15"><use href="#i-book"/></svg></span><b>③ 产物组织</b><span class="tpl-sec-tip">产物怎么组织：页面骨架决定产物的章节结构，质量标准约束内容写法</span></div>
+        <label>核心页面骨架 <i class="tpl-req">*</i></label>
+        <div class="tpl-rows" id="tpl-skel-rows"></div>
+        <button class="btn btn-ghost tpl-add" id="btn-tpl-add-skel"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>添加骨架页面</button>
+        <p class="tpl-warn" id="tpl-skel-warn">请至少添加一个骨架页面并填写标题</p>
+        <label>质量标准 <i class="tpl-req">*</i></label>
+        <textarea id="tpl-quality" data-req="1" rows="3" placeholder="对页面内容的质量要求"></textarea>
+        </section>
+        </div>
       </div>
 
       <!-- 提示词管理页（主区域） -->
       <div class="prompts-view" id="prompts-view" hidden>
         <div class="tpl-toolbar">
-          <span class="tpl-view-title">📜 提示词管理</span>
+          <span class="tpl-view-title"><svg class="ico" width="16" height="16"><use href="#i-prompts"/></svg>提示词管理</span>
           <div class="toolbar-actions">
-            <button class="icon-btn" id="btn-prompts-close" title="关闭提示词页">✕</button>
+            <button class="icon-btn" id="btn-prompts-close" title="关闭提示词页"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
           </div>
         </div>
-        <p class="modal-tip" style="padding: 0 20px;">集中管理各 AI 能力的系统提示词；输入框已预填内置默认，可直接在此基础上修改，保存后立即生效（清空保存则回退内置默认）；点卡片上的「✎ 全屏编辑」可在主框架内舒展地编辑长提示词</p>
+        <p class="modal-tip" style="padding: 0 20px;">集中管理各 AI 能力的系统提示词；输入框已预填内置默认，可直接在此基础上修改，保存后立即生效（清空保存则回退内置默认）；点卡片上的「全屏编辑」可在主框架内舒展地编辑长提示词</p>
         <div class="prompts-cards" id="prompt-cards"></div>
       </div>
 
       <!-- 提示词全屏编辑页（主区域，从提示词管理页进入） -->
       <div class="prompt-editor-view" id="prompt-editor-view" hidden>
         <div class="tpl-toolbar">
-          <span class="tpl-view-title" id="prompt-editor-title">✎ 编辑提示词</span>
+          <span class="tpl-view-title" id="prompt-editor-title"><svg class="ico" width="16" height="16"><use href="#i-edit"/></svg>编辑提示词</span>
           <div class="toolbar-actions">
             <button class="btn btn-ghost" id="btn-prompt-editor-reset">恢复默认</button>
-            <button class="btn btn-primary" id="btn-prompt-editor-save">💾 保存</button>
-            <button class="icon-btn" id="btn-prompt-editor-close" title="返回列表（未保存内容将丢失）">✕</button>
+            <button class="btn btn-primary" id="btn-prompt-editor-save"><svg class="ico" width="13" height="13"><use href="#i-save"/></svg>保存</button>
+            <button class="icon-btn" id="btn-prompt-editor-close" title="返回列表（未保存内容将丢失）"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
           </div>
         </div>
         <p class="prompt-card-desc" id="prompt-editor-desc" style="padding: 0 20px 8px;"></p>
@@ -277,69 +380,94 @@
       <!-- AI 问答主框架页：左侧会话历史 + 中间欢迎/对话 + 大输入框 -->
       <div class="ai-view" id="ai-view" hidden>
         <div class="ai-view-left">
-          <button class="btn btn-primary ai-newtask" id="btn-ai-newtask">＋ 新的任务</button>
+          <button class="btn btn-primary ai-newtask" id="btn-ai-newtask"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>新的任务</button>
+          <button class="btn btn-ghost ai-favbtn" id="btn-ai-favs" title="查看收藏的回答"><svg class="ico" width="13" height="13"><use href="#i-star"/></svg>我的收藏</button>
           <div class="ai-session-list" id="ai-session-list"></div>
         </div>
         <div class="ai-view-main">
-          <div class="ai-view-welcome" id="ai-view-welcome">请输入您要完成的任务</div>
+          <div class="ai-view-welcome" id="ai-view-welcome">
+            <div class="ai-welcome-inner">
+              <div class="ai-welcome-title">请输入您要完成的任务</div>
+              <div class="ai-welcome-sub">勾选下方知识源，AI 会结合您的资料作答；不勾选则用模型自身知识回答</div>
+              <div class="ai-welcome-cards">
+                <div class="ai-welcome-card" id="ai-setup-card">
+                  <div class="t"><span class="ai-card-ico"><svg class="ico" width="15" height="15"><use href="#i-overview"/></svg></span>基础配置<span class="ai-setup-progress" id="ai-setup-progress">0/3</span></div>
+                  <div class="d">完成以下三项可体验完整能力；一开始三项均为未勾选，点「开始配置」跳转对应页面引导完成，配好后复选框显示绿色勾（第 2 项可选，内置解析可兜底）。</div>
+                  <label class="ai-setup-item" id="ai-setup-model"><span class="ai-setup-check"></span><span>1. 配置模型（接口 / 模型名）</span><button type="button" class="ai-setup-go">开始配置</button></label>
+                  <label class="ai-setup-item" id="ai-setup-mineru"><span class="ai-setup-check"></span><span>2. 配置 MinerU 文档解析</span><button type="button" class="ai-setup-go">开始配置</button></label>
+                  <label class="ai-setup-item" id="ai-setup-raw"><span class="ai-setup-check"></span><span>3. 添加第一份原始文档</span><button type="button" class="ai-setup-go">开始配置</button></label>
+                </div>
+                <div class="ai-welcome-card" id="ext-setup-card">
+                  <div class="t"><span class="ai-card-ico"><svg class="ico" width="15" height="15"><use href="#i-mcp"/></svg></span>配置 MCP / 技能<span class="ai-setup-progress" id="ext-setup-progress">0/2</span></div>
+                  <div class="d">为 AI 挂载外部工具与专属流程：MCP 服务器提供联网检索、数据库等工具调用能力；技能以目录形式沉淀可复用的专属流程。点「开始配置」跳转对应页面，添加并启用后显示绿色勾。</div>
+                  <label class="ai-setup-item" id="ext-setup-mcp"><span class="ai-setup-check"></span><span>1. 添加 MCP 服务器</span><button type="button" class="ai-setup-go">开始配置</button></label>
+                  <label class="ai-setup-item" id="ext-setup-skill"><span class="ai-setup-check"></span><span>2. 启用一个技能</span><button type="button" class="ai-setup-go">开始配置</button></label>
+                </div>              </div>
+              <button type="button" class="ai-welcome-docs" id="btn-ai-help"><svg class="ico" width="14" height="14"><use href="#i-book"/></svg>使用手册 · 在应用内查看详细步骤</button>
+            </div>
+          </div>
           <div class="ai-view-messages" id="ai-view-messages" hidden></div>
           <div class="ai-view-status" id="ai-view-status" hidden></div>
           <div class="ai-view-composer">
+            <!-- 知识源直接平铺在输入框上方，点一下就能勾选/取消，不用再开下拉菜单 -->
+            <div class="ai-src-bar" id="ai-src-bar"></div>
             <div class="ai-attach-bar" id="ai-attach-bar" hidden></div>
             <textarea id="ai-view-input" rows="2" placeholder="请输入您的问题"></textarea>
             <div class="ai-composer-bar">
               <div class="ai-composer-left">
                 <div class="ai-ext-picker">
-                  <button class="icon-btn ai-model-btn" id="btn-ai-model" title="选择模型（provider → 具体模型）"><span id="ai-model-label">选择模型</span></button>
+                  <button class="icon-btn ai-model-btn" id="btn-ai-model" title="选择模型（provider → 具体模型）"><svg class="ico" width="14" height="14"><use href="#i-tune"/></svg><span id="ai-model-label">选择模型</span></button>
                   <div class="ai-ext-menu ai-model-menu" id="ai-menu-model" hidden></div>
                 </div>
                 <div class="ai-ext-picker">
-                  <button class="icon-btn" id="btn-ai-src" title="选择知识源（笔记/Wiki/图谱）">📚</button>
-                  <div class="ai-ext-menu" id="ai-menu-src" hidden></div>
-                </div>
-                <div class="ai-ext-picker">
-                  <button class="icon-btn" id="btn-ai-mcp" title="选择 MCP 服务器">🧩</button>
+                  <button class="icon-btn" id="btn-ai-mcp" title="选择 MCP 服务器"><svg class="ico" width="14" height="14"><use href="#i-mcp"/></svg></button>
                   <div class="ai-ext-menu" id="ai-menu-mcp" hidden></div>
                 </div>
                 <div class="ai-ext-picker">
-                  <button class="icon-btn" id="btn-ai-skill" title="选择技能">⚡</button>
+                  <button class="icon-btn" id="btn-ai-skill" title="选择技能"><svg class="ico" width="14" height="14"><use href="#i-skill"/></svg></button>
                   <div class="ai-ext-menu" id="ai-menu-skill" hidden></div>
                 </div>
-                <button class="icon-btn" id="btn-ai-attach" title="上传文件（仅用于本次提问，不写入知识库）">📎</button>
+                <button class="icon-btn" id="btn-ai-attach" title="上传文件（仅用于本次提问，不写入知识库）"><svg class="ico" width="14" height="14"><use href="#i-attach"/></svg></button>
               </div>
               <button class="btn btn-primary" id="btn-ai-view-send">发送</button>
             </div>
           </div>
-          <div class="ai-view-suggest" id="ai-view-suggest">
-            <button data-q="你能做些什么">❓ 你能做些什么</button>
-            <button data-q="写一份研究报告">📄 写一份研究报告</button>
-            <button data-q="总结当前知识库">📚 总结当前知识库</button>
-            <button data-q="检索相关知识">🔍 检索相关知识</button>
+        </div>
+      </div>
+
+      <!-- 使用手册页（应用内查看 docs/ 目录 Markdown） -->
+      <div class="docs-view" id="docs-view" hidden>
+        <div class="tpl-toolbar">
+          <span class="tpl-view-title"><svg class="ico" width="16" height="16"><use href="#i-book"/></svg>使用手册</span>
+          <div class="toolbar-actions">
+            <button class="icon-btn" id="btn-docs-close" title="关闭手册"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
           </div>
         </div>
+        <div class="docs-body markdown-body" id="docs-body"></div>
       </div>
 
       <!-- 设置页（主区域 Tab 分类） -->
       <div class="settings-view" id="settings-view" hidden>
         <div class="settings-view-header">
-          <span class="settings-view-title">⚙ 设置</span>
+          <span class="settings-view-title"><svg class="ico" width="16" height="16"><use href="#i-settings"/></svg>设置</span>
           <div class="settings-tabs" id="settings-tabs">
-            <button data-tab="ai" class="active">🎛️ 模型配置</button>
-            <button data-tab="wiki">📖 存储</button>
-            <button data-tab="jobs"><svg class="jobs-icon set-tab-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><defs><linearGradient id="jobsIconGSet" x1="3" y1="3" x2="21" y2="21"><stop stop-color="#5b8cff"/><stop offset="1" stop-color="#3370ff"/></linearGradient></defs><rect x="3" y="3" width="18" height="18" rx="5" fill="url(#jobsIconGSet)"/><path d="M8 12.5l2.6 2.6L16.2 9.4" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>作业</button>
-            <button data-tab="ask">💬 问答</button>
-            <button data-tab="editor">✏️ 编辑器</button>
-            <button data-tab="mcp">🧩 MCP</button>
-            <button data-tab="skills">⚡ 技能</button>
+            <button data-tab="ai" class="active"><svg class="ico" width="14" height="14"><use href="#i-tune"/></svg>模型配置</button>
+            <button data-tab="storage"><svg class="ico" width="14" height="14"><use href="#i-storage"/></svg>存储</button>
+            <button data-tab="jobs"><svg class="ico" width="14" height="14"><use href="#i-jobs"/></svg>作业</button>
+            <button data-tab="parse"><svg class="ico" width="14" height="14"><use href="#i-parse"/></svg>文档解析</button>
+            <button data-tab="ask"><svg class="ico" width="14" height="14"><use href="#i-ask"/></svg>问答</button>
+            <button data-tab="editor"><svg class="ico" width="14" height="14"><use href="#i-editor"/></svg>编辑器</button>
+            <button data-tab="mcp"><svg class="ico" width="14" height="14"><use href="#i-mcp"/></svg>MCP</button>
+            <button data-tab="skills"><svg class="ico" width="14" height="14"><use href="#i-skill"/></svg>技能</button>
           </div>
           <div class="toolbar-actions">
-            <button class="icon-btn" id="btn-settings-close" title="关闭设置">✕</button>
+            <button class="icon-btn" id="btn-settings-close" title="关闭设置"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
           </div>
         </div>
         <div class="settings-view-body">
           <div class="settings-form">
             <div class="settings-pane" data-pane="ai">
-              <div class="ext-sec-head"><b>模型</b><span style="margin-left:auto"><button class="btn btn-ghost" id="btn-model-add">＋ 添加模型</button></span></div>
+              <div class="ext-sec-head"><b>模型</b><span style="margin-left:auto"><button class="btn btn-ghost" id="btn-model-add"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>添加模型</button></span></div>
               <p class="modal-tip">兼容 OpenAI 接口格式。每个模型一张卡片，默认收起，点标题行展开单独配置；第一张为<b>默认模型</b>，其余可在 AI 问答输入区按 provider 两级选择</p>
               <div id="model-cards"></div>
               <!-- 默认模型的字段（id 被自动保存/获取模型/provider 预设多处引用，不能重建）：
@@ -365,6 +493,10 @@
                     <button class="btn btn-ghost" id="btn-fetch-models">获取模型</button>
                   </div>
                   <p class="modal-tip" id="model-fetch-tip">点「获取模型」拉取可用模型；点输入框右侧 ▾ 下拉选择全部已获取模型</p>
+                  <div class="model-save-row">
+                    <button type="button" class="btn btn-primary" id="btn-save-primary-model">保存修改</button>
+                    <span class="modal-tip">修改上方配置后点「保存修改」写入，保存后立即生效</span>
+                  </div>
                 </div>
               </div>
 
@@ -380,29 +512,28 @@
 
             <div class="settings-pane" data-pane="mcp" hidden>
               <p class="modal-tip">配置 MCP 服务器：stdio 类型填 命令+参数+环境变量；远程类型（sse/http）填 URL。保存后生效，可在 AI 问答中勾选使用</p>
-              <div class="ext-sec-head"><b>MCP 服务器</b><span style="margin-left:auto"><button class="btn btn-ghost" id="btn-mcp-add">＋ 添加</button></span></div>
-              <p class="modal-tip">每个服务器默认收起，点标题行展开可查看其配置（只读 JSON）与连通性测试；改配置点行内「编辑」，新增点右上「＋ 添加」</p>
+              <div class="ext-sec-head"><b>MCP 服务器</b><span style="margin-left:auto"><button class="btn btn-ghost" id="btn-mcp-add"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>添加</button></span></div>
+              <p class="modal-tip">每个服务器默认收起，点标题行展开可查看其配置（只读 JSON）与连通性测试；改配置点行内「编辑」，新增点右上「添加」</p>
               <div id="mcp-list"></div>
             </div>
 
             <div class="settings-pane" data-pane="skills" hidden>
               <div class="skill-mgr-head">
                 <b>技能 Skills</b>
-                <input type="text" id="skill-search" placeholder="🔍 搜索技能" />
-                <button class="btn btn-primary" id="btn-skill-add">＋ 创建技能</button>
+                <input type="text" id="skill-search" placeholder="搜索技能" />
+                <button class="btn btn-ghost" id="btn-skill-install" title="从 GitHub / skills.sh 在线安装技能"><svg class="ico" width="13" height="13"><use href="#i-download"/></svg>安装</button>
+                <button class="btn btn-primary" id="btn-skill-add"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>创建技能</button>
               </div>
-              <p class="modal-tip">以目录方式管理技能（含 SKILL.md）。点击卡片启用/停用，可在 AI 问答中选择使用</p>
+              <p class="modal-tip">以目录方式管理技能（含 SKILL.md）。点击卡片启用/停用，可在 AI 问答中选择使用；支持粘贴 npx skills add 命令 / skills.sh / GitHub 仓库链接在线安装</p>
               <div class="skill-grid" id="skill-grid"></div>
             </div>
-            <div class="settings-pane" data-pane="wiki" hidden>
-              <label>数据根目录（数据库/附件/Wiki 统一存储）</label>
+            <div class="settings-pane" data-pane="storage" hidden>
+              <label>数据根目录（数据库/附件统一存储）</label>
               <div class="setting-row">
                 <input type="text" id="set-dataroot" placeholder="默认 <安装目录>/data" />
                 <button class="btn btn-ghost" id="btn-apply-dataroot">应用</button>
               </div>
               <p class="modal-tip">改动后点「应用」生效（需重启应用）；留空应用则恢复默认根目录。此项不自动保存，避免误改导致数据位置变动</p>
-              <label>Wiki 根目录（LLM Wiki）</label>
-              <input type="text" id="set-wikiroot" placeholder="留空则自动探测" />
               <label>数据文件位置（SQLite）</label>
               <div class="setting-row">
                 <input type="text" id="set-dbpath" placeholder="留空则使用默认位置" />
@@ -414,20 +545,79 @@
               <label>作业历史保留条数</label>
               <input type="number" id="set-maxhistory" min="1" max="500" placeholder="默认 50" />
               <label>失败重试次数（网络/5xx 等瞬时错误自动重试）</label>
-              <input type="number" id="set-retries" min="0" max="5" placeholder="默认 1" />
-              <label>总并发任务数量（同时运行的作业数）</label>
+              <input type="number" id="set-retries" min="0" max="5" placeholder="默认 2" />
+              <label>并发作业数</label>
               <input type="number" id="set-maxconcurrent" min="1" max="8" placeholder="默认 3" />
+              <label>单作业内并发抽取数（图谱 / 提取笔记同时处理来源数）</label>
+              <input type="number" id="set-graphconc" min="1" max="8" placeholder="默认 3" />
               <label>网页拉取超时（秒）</label>
               <input type="number" id="set-urltimeout" min="1" max="600" placeholder="默认 30" />
               <label>来源内容截断阈值（字符，防提示词过长）</label>
               <input type="number" id="set-sourcechars" min="1000" max="1000000" placeholder="默认 60000" />
-              <label>单目录文件数上限（「＋ 添加目录」递归计数）</label>
+              <label>单目录文件数上限（「添加目录」递归计数）</label>
               <input type="number" id="set-rawdirmax" min="10" max="100000" placeholder="默认 500" />
               <p class="modal-tip">目录引用会在每次列表刷新时实时遍历源目录，因此过大的目录会拖慢界面：超过上限的目录将拒绝添加；已存在的超限引用仅列出前 N 个并在列表顶部告警。调高会相应变慢</p>
             </div>
+            <div class="settings-pane" data-pane="parse" hidden>
+              <!-- 文件类型卡片 -->
+              <div class="config-card">
+                <div class="config-card-title">笔记导入文件类型</div>
+                <input type="text" id="set-noteexts" placeholder="默认 pdf, docx, xlsx, xls, pptx, md, markdown, txt, csv, html, htm, png, jpg, jpeg, jp2, webp, gif, bmp, tiff" />
+                <p class="config-tip">名单内类型会被提取为笔记，其余跳过。留空用默认</p>
+              </div>
+
+              <!-- 解析方式卡片 -->
+              <div class="config-card">
+                <div class="config-card-title">文档解析方式</div>
+                <div class="setting-row mineru-mode-row">
+                  <label class="radio-row"><input type="radio" name="set-minerumode" id="set-minerumode-builtin" value="builtin" checked /> 内置解析</label>
+                  <label class="radio-row"><input type="radio" name="set-minerumode" id="set-minerumode-mineru" value="mineru" /> MinerU 解析</label>
+                </div>
+                <p class="config-tip">内置解析：快速，覆盖文本型与常规 PDF/Office；MinerU：质量更高，仅处理 PDF 类二进制文档，失败自动回退</p>
+              </div>
+
+              <!-- MinerU 配置卡片（仅 MinerU 模式显示） -->
+              <div class="config-card" id="mineru-config-card">
+                <div class="config-card-title">MinerU 配置</div>
+                
+                <label class="config-label">视觉模型</label>
+                <div class="setting-row">
+                  <select id="set-mineru-model"></select>
+                  <button class="btn btn-ghost" id="btn-mineru-apply-model" type="button" title="把所选模型的端点与名称写入 MinerU 包装脚本">应用到 MinerU</button>
+                </div>
+                <p class="config-tip">选择模型配置中的模型，本地 Ollama 需先启动，远程模型自动注入 API Key</p>
+
+                <label class="config-label">转换命令</label>
+                <div class="setting-row">
+                  <input type="text" id="set-minerucmd" placeholder="例：/Users/qiang/mineru-ollama.sh -p {input} -o {output}" />
+                  <button class="btn btn-ghost" id="btn-install-mineru" type="button" title="自动创建 MinerU 环境"><svg class="ico" width="13" height="13"><use href="#i-skill"/></svg>一键安装</button>
+                  <button class="btn btn-ghost" id="btn-upload-mineru-pdf" type="button">上传 PDF</button>
+                  <button class="btn btn-ghost" id="btn-test-mineru" type="button">测试</button>
+                </div>
+                <p class="config-tip">占位符 {input}=源文件、{output}=输出目录；不写则按「命令 源文件 输出目录」追加</p>
+
+                <label class="config-label">转换超时（秒）</label>
+                <div class="setting-row">
+                  <input type="number" id="set-minerutimeout" min="10" max="21600" step="10" placeholder="默认 3600" style="max-width: 180px;" />
+                </div>
+                <p class="config-tip">超时即终止并回退内置解析，大文档建议 ≥3600，留空用默认值</p>
+              </div>
+
+              <!-- 测试结果区域 -->
+              <p class="modal-tip" id="mineru-install-tip" hidden></p>
+              <input type="file" id="mineru-test-file" accept=".pdf,application/pdf" hidden />
+              <p class="modal-tip" id="mineru-test-fileinfo" hidden></p>
+              <div class="mineru-result" id="mineru-result" hidden>
+                <p class="mineru-result-line" id="mineru-test-status"></p>
+                <div class="mineru-result-row">
+                  <code class="mineru-result-path" id="mineru-test-outdir" hidden></code>
+                  <button class="btn btn-ghost" id="btn-open-testdir" type="button" title="打开产物目录" hidden><svg class="ico" width="13" height="13"><use href="#i-folder-open"/></svg>打开目录</button>
+                </div>
+                <div class="mineru-result-sample" id="mineru-test-sample" hidden></div>
+              </div>
+              <pre class="mineru-test-log" id="mineru-test-log" hidden></pre>
+            </div>
             <div class="settings-pane" data-pane="ask" hidden>
-              <label>Wiki 问答最大引用页数</label>
-              <input type="number" id="set-askpages" min="1" max="20" placeholder="默认 5" />
               <label>工具调用最大轮数（自动选工具的智能体循环，多步任务需更多轮数）</label>
               <input type="number" id="set-toolrounds" min="1" max="12" placeholder="默认 6" />
               <p class="modal-tip">未在输入区勾选 MCP 时，会自动把全部已启用服务器的工具交给模型，由它自行选择并可多步调用；显式勾选则只用勾选的服务器（并强制搜索一次）</p>
@@ -441,7 +631,7 @@
                 <option value="edit">编辑</option>
                 <option value="preview">预览</option>
               </select>
-              <label>AI 辅助提示词（编辑器 ✨ AI 按钮，留空使用默认润色提示词）</label>
+              <label>AI 辅助提示词（编辑器 AI 按钮，留空使用默认润色提示词）</label>
               <textarea id="set-aiassist" rows="4" placeholder="默认：润色所选/全文，修正错别字与语病、优化表达，保持原意与 Markdown 结构"></textarea>
             </div>
             <div class="settings-view-actions">
@@ -452,48 +642,30 @@
         </div>
       </div>
 
-      <!-- Wiki 页面阅读器 -->
-      <div class="wiki-viewer" id="wiki-viewer" hidden>
-        <div class="wiki-viewer-header">
-          <div class="wiki-head-titles">
-            <h2 id="wiki-title"></h2>
-            <span class="wiki-path" id="wiki-page-path"></span>
-          </div>
-          <div class="toolbar-actions">
-            <button class="icon-btn" id="btn-wiki-source" title="切换源码/渲染视图">≡</button>
-            <button class="icon-btn" id="btn-wiki-close" title="关闭">✕</button>
-          </div>
-        </div>
-        <div class="wiki-fm" id="wiki-fm"></div>
-        <div class="preview markdown-body wiki-body" id="wiki-body"></div>
-        <textarea id="wiki-raw-text" readonly hidden></textarea>
-      </div>
       <div class="editor-content" id="editor-content" hidden>
         <div class="editor-toolbar">
           <input type="text" id="note-title" placeholder="无标题笔记" />
           <div class="toolbar-actions">
             <button class="icon-btn" id="btn-notelist-show" title="展开笔记列表" hidden>»</button>
             <div class="tb-group">
-              <button class="tb-btn tb-ai" id="btn-ai-assist" title="AI 辅助：默认润色所选/全文，提示词可在 设置→编辑器 配置">✨ AI</button>
-              <button class="tb-btn" id="btn-versions" title="历史版本：AI 改动前/后自动各存一版，可查看/恢复">🕘</button>
+              <button class="tb-btn tb-ai" id="btn-ai-assist" title="AI 辅助：默认润色所选/全文，提示词可在 设置→编辑器 配置"><svg class="ico" width="14" height="14"><use href="#i-sparkles"/></svg>AI</button>
+              <button class="tb-btn" id="btn-versions" title="历史版本：AI 改动前/后自动各存一版，可查看/恢复"><svg class="ico" width="14" height="14"><use href="#i-history"/></svg></button>
               <button class="tb-btn" id="btn-format" title="格式：加粗/斜体/标题/列表/引用">格式</button>
-              <button class="tb-btn" id="btn-checklist" title="核对清单">☑</button>
-              <button class="tb-btn" id="btn-table" title="添加表格">⊞</button>
-              <button class="tb-btn" id="btn-attach" title="附加文件 / 照片 / 扫描文稿"><svg class="attach-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><defs><linearGradient id="attachIconG" x1="4" y1="4" x2="20" y2="20"><stop stop-color="#5b8cff"/><stop offset="1" stop-color="#3370ff"/></linearGradient></defs><path d="M19.5 12.6l-7.1 7.1a5.5 5.5 0 01-7.8-7.8l7.1-7.1a3.7 3.7 0 015.2 5.2l-6.6 6.6a1.8 1.8 0 01-2.6-2.6l6.6-6.5" stroke="url(#attachIconG)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="caret">▾</span></button>
+              <button class="tb-btn" id="btn-checklist" title="核对清单"><svg class="ico" width="14" height="14"><use href="#i-checklist"/></svg></button>
+              <button class="tb-btn" id="btn-table" title="添加表格"><svg class="ico" width="14" height="14"><use href="#i-table"/></svg></button>
+              <button class="tb-btn" id="btn-attach" title="附加文件 / 照片 / 扫描文稿"><svg class="ico attach-icon" width="14" height="14"><use href="#i-attach"/></svg><span class="caret">▾</span></button>
             </div>
             <div class="mode-switch">
               <button id="mode-edit" class="active" title="编辑模式">编辑</button>
               <button id="mode-split" title="分屏模式">分屏</button>
               <button id="mode-preview" title="预览模式">预览</button>
             </div>
-            <button class="icon-btn" id="btn-pin" title="置顶">📌</button>
-            <button class="icon-btn" id="btn-export" title="打开笔记所在的文件夹">📂</button>
-            <button class="icon-btn danger" id="btn-delete" title="删除笔记">🗑</button>
+            <button class="icon-btn" id="btn-pin" title="置顶"><svg class="ico" width="14" height="14"><use href="#i-pin"/></svg></button>
+            <button class="icon-btn" id="btn-export" title="打开笔记所在的文件夹"><svg class="ico" width="14" height="14"><use href="#i-folder-open"/></svg></button>
+            <button class="icon-btn danger" id="btn-delete" title="删除笔记"><svg class="ico" width="14" height="14"><use href="#i-delete"/></svg></button>
           </div>
         </div>
         <div class="editor-meta">
-          <select id="note-folder"></select>
-          <input type="text" id="note-tags" placeholder="标签，用逗号分隔，如：工作, 学习" />
           <span class="meta-date" id="note-date"></span>
           <span class="meta-time" id="note-time"></span>
         </div>
@@ -511,23 +683,22 @@
     <aside class="ai-panel" id="ai-panel" hidden>
       <div class="ai-resize" id="ai-resize" title="拖动调整宽度"></div>
       <div class="ai-header">
-        <span>🤖 AI 智能问答</span>
+        <span><svg class="ico" width="15" height="15"><use href="#i-chat"/></svg>AI 智能问答</span>
         <div>
-          <button class="icon-btn" id="btn-ai-clear" title="清空对话">🧹</button>
-          <button class="icon-btn" id="btn-ai-close" title="关闭">✕</button>
+          <button class="icon-btn" id="btn-ai-clear" title="清空对话"><svg class="ico" width="14" height="14"><use href="#i-clean"/></svg></button>
+          <button class="icon-btn" id="btn-ai-close" title="关闭"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
         </div>
       </div>
       <div class="ai-mode-switch ai-sources">
-        <label class="src-cb"><input type="checkbox" id="ai-src-notes" checked /> 📝 笔记</label>
-        <label class="src-cb"><input type="checkbox" id="ai-src-wiki" checked /> 📖 Wiki</label>
-        <label class="src-cb"><input type="checkbox" id="ai-src-graph" checked /> 🕸 知识图谱</label>
-        <label class="src-cb"><input type="checkbox" id="ai-src-raws" checked /> 🗄 原始文件</label>
+        <label class="src-cb"><input type="checkbox" id="ai-src-notes" /><svg class="ico" width="13" height="13"><use href="#i-notes"/></svg>笔记</label>
+        <label class="src-cb"><input type="checkbox" id="ai-src-graph" /><svg class="ico" width="13" height="13"><use href="#i-kg"/></svg>知识图谱</label>
+        <label class="src-cb"><input type="checkbox" id="ai-src-raws" /><svg class="ico" width="13" height="13"><use href="#i-folder-open"/></svg>原始文件</label>
       </div>
       <div class="ai-hint" id="ai-hint">基于你的知识库内容回答问题，发送前会自动检索相关笔记。</div>
       <div class="ai-messages" id="ai-messages"></div>
       <div class="ai-input-row">
         <div class="ai-ext-picker">
-          <button class="icon-btn" id="btn-ai-ext" title="显式选择技能 / MCP 调用">🧩</button>
+          <button class="icon-btn" id="btn-ai-ext" title="显式选择技能 / MCP 调用"><svg class="ico" width="14" height="14"><use href="#i-mcp"/></svg></button>
           <div class="ai-ext-menu" id="ai-ext-menu" hidden></div>
         </div>
         <textarea id="ai-input" rows="2" placeholder="输入问题，Enter 发送，Shift+Enter 换行"></textarea>
@@ -561,7 +732,7 @@
     <button data-act="file">附加文件…</button>
     <button data-act="photo">照片…</button>
     <hr />
-    <button data-act="scan">📄 扫描文稿（AI 识别）</button>
+    <button data-act="scan"><svg class="ico" width="13" height="13"><use href="#i-parse"/></svg>扫描文稿（AI 识别）</button>
   </div>
 
   <!-- 通用输入弹窗（替代 window.prompt） -->
@@ -573,6 +744,19 @@
       <div class="modal-actions">
         <button class="btn btn-ghost" id="btn-prompt-cancel">取消</button>
         <button class="btn btn-primary" id="btn-prompt-ok">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 多字段表单弹窗（添加链接等需要一次填多项的场景） -->
+  <div class="modal-mask" id="form-modal" hidden>
+    <div class="modal" id="form-box" style="width:420px">
+      <h3 id="form-title">请填写</h3>
+      <div class="modal-tip" id="form-tip" hidden></div>
+      <div id="form-fields"></div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="btn-form-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-form-ok">确定</button>
       </div>
     </div>
   </div>
@@ -590,6 +774,23 @@
     </div>
   </div>
 
+  <!-- 提取前领域选择弹窗（知识图谱使用） -->
+  <div class="modal-mask" id="domain-modal" hidden>
+    <div class="modal" style="width:480px">
+      <h3 id="domain-modal-title">选择领域</h3>
+      <p class="modal-tip" id="domain-modal-sub"></p>
+      <label class="radio-row"><input type="radio" name="domain-mode" value="auto" checked /> <svg class="ico" width="14" height="14"><use href="#i-sparkles"/></svg>自动（推荐）<i class="radio-hint">先按内容匹配已有领域；没有合适的就在作业内自动新建一个</i></label>
+      <label class="radio-row"><input type="radio" name="domain-mode" value="pick" /> <svg class="ico" width="14" height="14"><use href="#i-book"/></svg>指定已有领域<i class="radio-hint">不调模型，直接用选定领域的实体/概念类型约束（提交最快）</i></label>
+      <select id="domain-pick-sel" disabled></select>
+      <label class="radio-row"><input type="radio" name="domain-mode" value="create" /> <svg class="ico" width="14" height="14"><use href="#i-sparkles"/></svg>自动创建新领域<i class="radio-hint">跳过匹配，直接按来源内容归纳并新建领域（在作业内执行）</i></label>
+      <label class="radio-row"><input type="radio" name="domain-mode" value="manual" /> <svg class="ico" width="14" height="14"><use href="#i-edit"/></svg>手动新建领域<i class="radio-hint">现在打开「新建领域模版」，可用 AI 生成后再审阅创建</i></label>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="btn-domain-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-domain-ok">开始提取</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 模型配置已改为卡片内联编辑（见设置→模型配置），不再使用弹窗 -->
 
   <!-- 技能编辑弹窗 -->
@@ -599,14 +800,37 @@
       <label>名称</label>
       <input type="text" id="skill-edit-name" />
       <label>目录（含 SKILL.md）</label>
-      <input type="text" id="skill-edit-dir" readonly style="opacity:.7" />
+      <div class="setting-row">
+        <input type="text" id="skill-edit-dir" readonly style="opacity:.7" />
+        <button class="btn btn-ghost" id="btn-skill-edit-opendir" title="在文件管理器中打开该技能目录"><svg class="ico" width="13" height="13"><use href="#i-folder-open"/></svg>打开</button>
+      </div>
       <label>描述（何时使用）</label>
       <input type="text" id="skill-edit-desc" />
       <label>指令正文（覆盖 SKILL.md 主体，可留空）</label>
       <textarea id="skill-edit-instr" rows="8" spellcheck="false" style="width:100%;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px"></textarea>
       <div class="modal-actions">
         <button class="btn btn-ghost" id="btn-skill-edit-cancel">取消</button>
-        <button class="btn btn-primary" id="btn-skill-edit-save">💾 保存</button>
+        <button class="btn btn-primary" id="btn-skill-edit-save"><svg class="ico" width="13" height="13"><use href="#i-save"/></svg>保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 技能在线安装弹窗：兼容 npx skills add / skills.sh / GitHub 仓库 -->
+  <div class="modal-mask" id="skill-install-modal" hidden>
+    <div class="modal" style="width:620px">
+      <h3><svg class="ico" width="15" height="15"><use href="#i-download"/></svg>安装技能</h3>
+      <p class="modal-tip">粘贴以下任意一种来源，自动下载并安装到 数据根/skills/：</p>
+      <ul class="modal-tip" style="margin:0 0 8px 18px;padding:0;list-style:disc;line-height:1.9">
+        <li><code>npx skills add https://github.com/anthropics/skills --skill docx</code></li>
+        <li><code>https://www.skills.sh/anthropics/skills/docx</code>（或仓库页）</li>
+        <li><code>https://github.com/owner/repo</code>（整库安装全部技能）/ 简写 <code>owner/repo</code></li>
+      </ul>
+      <input type="text" id="skill-install-input" value="npx skills add https://github.com/anthropics/skills --skill docx" spellcheck="false" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px" />
+      <pre class="mineru-test-log" id="skill-install-log" hidden></pre>
+      <div class="modal-actions">
+        <span id="skill-install-status" style="color:var(--text-sub);font-size:12px;margin-right:auto"></span>
+        <button class="btn btn-ghost" id="btn-skill-install-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-skill-install-go"><svg class="ico" width="13" height="13"><use href="#i-download"/></svg>安装</button>
       </div>
     </div>
   </div>
@@ -619,7 +843,7 @@
       <div class="modal-actions">
         <span id="mcp-json-err" style="color:var(--danger);font-size:12px"></span>
         <button class="btn btn-ghost" id="btn-mcp-json-cancel">取消</button>
-        <button class="btn btn-primary" id="btn-mcp-json-save">💾 保存</button>
+        <button class="btn btn-primary" id="btn-mcp-json-save"><svg class="ico" width="13" height="13"><use href="#i-save"/></svg>保存</button>
       </div>
     </div>
   </div>
@@ -642,9 +866,9 @@
   <!-- 笔记历史版本：右侧抽屉 -->
   <aside class="versions-drawer" id="versions-drawer" hidden>
     <div class="versions-drawer-head">
-      <span class="versions-drawer-title" id="versions-drawer-title">🕘 历史版本</span>
+      <span class="versions-drawer-title" id="versions-drawer-title"><svg class="ico" width="15" height="15"><use href="#i-history"/></svg>历史版本</span>
       <button class="icon-btn" id="btn-versions-back" title="返回版本列表" hidden>←</button>
-      <button class="icon-btn" id="btn-versions-close" title="关闭">✕</button>
+      <button class="icon-btn" id="btn-versions-close" title="关闭"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
     </div>
     <p class="modal-tip" id="versions-tip">AI 改动前/后自动各存一版（版本号 = 日期+时间精确到秒）；恢复前会自动备份当前内容防丢失</p>
     <div class="version-list" id="version-list"></div>
@@ -657,106 +881,10 @@
   </aside>
 
   <!-- 提示词管理抽屉 -->
-  <!-- 吸收来源弹窗 -->
-  <div class="modal-mask" id="ingest-modal" hidden>
-    <div class="modal" style="width:560px">
-      <h3>吸收新来源（Ingest）</h3>
-      <p class="modal-tip">来源将保存到 raw/（不可变），AI 随后把它编译进 wiki：创建摘要页、更新相关页面与索引</p>
-      <div class="mode-switch" style="margin:8px 0">
-        <button id="ingest-tab-url" class="active">网页 URL</button>
-        <button id="ingest-tab-text">粘贴文本</button>
-        <button id="ingest-tab-files">本地文件</button>
-      </div>
-      <label>标题（可选，留空自动提取）</label>
-      <input type="text" id="ingest-title" placeholder="自动提取" />
-      <div id="ingest-url-panel">
-        <label>URL</label>
-        <input type="text" id="ingest-url" placeholder="https://…" />
-      </div>
-      <div id="ingest-text-panel" hidden>
-        <label>文本内容</label>
-        <textarea id="ingest-text" rows="8" placeholder="粘贴文章或笔记内容…"></textarea>
-      </div>
-      <div id="ingest-files-panel" hidden>
-        <div class="file-drop" id="file-drop">
-          <div class="file-drop-icon">📁</div>
-          <p>拖拽文件到此处，或</p>
-          <button class="btn btn-ghost" id="btn-pick-files">选择文件…（可多选）</button>
-          <p class="file-drop-tip">支持 PDF、DOCX、XLSX/XLS、PPTX、MD、TXT、CSV</p>
-        </div>
-        <div class="file-list" id="file-list"></div>
-      </div>
-      <div class="ingest-status" id="ingest-status"></div>
-      <div class="modal-actions">
-        <button class="btn btn-ghost" id="btn-ingest-cancel">关闭</button>
-        <button class="btn btn-primary" id="btn-ingest-go">开始吸收</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Lint 报告弹窗 -->
-  <div class="modal-mask" id="lint-modal" hidden>
-    <div class="modal" style="width:680px">
-      <h3>🩺 Wiki 体检报告（Lint）</h3>
-      <div class="markdown-body lint-report" id="lint-report"></div>
-      <div class="modal-actions">
-        <button class="btn btn-primary" id="btn-lint-close">关闭</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 领域模版新建/编辑：右侧抽屉 -->
-  <aside class="tpl-drawer" id="tpl-modal" hidden>
-      <div class="tpl-modal-head">
-        <h3 id="tpl-modal-title">新建领域模版</h3>
-        <button class="icon-btn" id="btn-tpl-modal-close" title="关闭">✕</button>
-      </div>
-      <div class="tpl-modal-body" id="tpl-modal-body">
-        <label>模版 ID（英文标识符）<i class="tpl-req">*</i></label>
-        <input type="text" id="tpl-id" data-req="1" placeholder="如: rental_service" />
-        <label>名称 <i class="tpl-req">*</i></label>
-        <input type="text" id="tpl-name" data-req="1" placeholder="如: 租房服务" />
-        <label>描述 <i class="tpl-req">*</i></label>
-        <textarea id="tpl-desc" data-req="1" rows="3" placeholder="该领域的简要描述"></textarea>
-        <div class="tpl-ai-banner">
-          <div class="tpl-ai-row">
-            <button class="btn" id="btn-tpl-ai">✨ AI 自动生成模版</button>
-            <span>只需填写名称即可生成（描述可选）：自动补全模版 ID、关键词、实体/概念类型与提取规则</span>
-          </div>
-          <div class="tpl-gen-status" id="tpl-gen-status" hidden></div>
-          <pre class="tpl-gen-log" id="tpl-gen-log" hidden></pre>
-        </div>
-        <label>关键词（逗号分隔）<i class="tpl-req">*</i></label>
-        <input type="text" id="tpl-keywords" data-req="1" placeholder="如: 租房, 楼盘, 租金, 保租房" />
-        <label>实体类型 <i class="tpl-req">*</i></label>
-        <div class="tpl-rows" id="tpl-entity-rows"></div>
-        <button class="btn btn-ghost tpl-add" id="btn-tpl-add-entity">＋ 添加实体类型</button>
-        <p class="tpl-warn" id="tpl-entity-warn">⚠️ 请至少添加一个实体类型并填写名称</p>
-        <label>概念类型 <i class="tpl-req">*</i></label>
-        <div class="tpl-rows" id="tpl-concept-rows"></div>
-        <button class="btn btn-ghost tpl-add" id="btn-tpl-add-concept">＋ 添加概念类型</button>
-        <p class="tpl-warn" id="tpl-concept-warn">⚠️ 请至少添加一个概念类型并填写名称</p>
-        <label>提取规则 — 必须提取（逗号分隔）<i class="tpl-req">*</i></label>
-        <input type="text" id="tpl-must" data-req="1" placeholder="如: 楼盘名称, 价格信息, 时间节点" />
-        <label>提取规则 — 忽略内容（逗号分隔）<i class="tpl-req">*</i></label>
-        <input type="text" id="tpl-ignore" data-req="1" placeholder="如: 通用客套话, 非业务寒暄" />
-        <label>质量标准 <i class="tpl-req">*</i></label>
-        <textarea id="tpl-quality" data-req="1" rows="3" placeholder="对页面内容的质量要求"></textarea>
-        <label>核心页面骨架 <i class="tpl-req">*</i></label>
-        <div class="tpl-rows" id="tpl-skel-rows"></div>
-        <button class="btn btn-ghost tpl-add" id="btn-tpl-add-skel">＋ 添加骨架页面</button>
-        <p class="tpl-warn" id="tpl-skel-warn">⚠️ 请至少添加一个骨架页面并填写标题</p>
-      </div>
-      <div class="modal-actions">
-        <button class="btn btn-ghost" id="btn-tpl-cancel">取消</button>
-        <button class="btn btn-primary" id="btn-tpl-save">创建</button>
-      </div>
-  </aside>
-
   <!-- 领域匹配提示词预览弹窗 -->
   <div class="modal-mask" id="tpl-prompt-modal" hidden>
     <div class="modal" style="width:640px">
-      <h3>匹配提示词</h3>
+      <h3>领域匹配提示词</h3>
       <p class="modal-tip">吸收新来源时，AI 依据该提示词判定内容所属的领域模版；{{SOURCE_EXCERPT}} 会替换为来源内容摘录</p>
       <pre class="tpl-prompt-pre" id="tpl-prompt-pre"></pre>
       <div class="modal-actions">
@@ -769,10 +897,10 @@
   <div class="modal-mask" id="tpl-suggest-modal" hidden>
     <div class="modal tpl-modal">
       <div class="tpl-modal-head">
-        <h3>✨ 候选领域模版</h3>
-        <button class="icon-btn" id="btn-tpl-suggest-close" title="关闭">✕</button>
+        <h3><svg class="ico" width="15" height="15"><use href="#i-sparkles"/></svg>AI 推荐领域模版</h3>
+        <button class="icon-btn" id="btn-tpl-suggest-close" title="关闭"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
       </div>
-      <p class="modal-tip">基于全部笔记与管理的原始文件由 AI 归纳；点击「采纳并编辑」可在抽屉中调整后保存</p>
+      <p class="modal-tip">基于全部笔记与管理的原始文件由 AI 归纳；点击「采纳并编辑」可在主框架中调整后保存</p>
       <div class="tpl-modal-body" id="tpl-suggest-list"></div>
       <div class="modal-actions">
         <button class="btn" id="btn-tpl-suggest-done">关闭</button>
@@ -813,13 +941,13 @@
   <!-- Markdown 安全与代码高亮：marked 解析 → DOMPurify 消毒 → hljs 高亮（均为 UMD 单文件，无构建链） -->
   <script src="lib/purify.min.js"></script>
   <script src="lib/highlight.min.js"></script>
-  <!-- 渲染进程按模块分文件加载：公共 → 笔记 → Wiki → 问答 → 作业 → 图谱 → 入口 -->
-  <script src="renderer/common.js"></script>
-  <script src="renderer/notes.js"></script>
-  <script src="renderer/wiki.js"></script>
-  <script src="renderer/chat.js"></script>
-  <script src="renderer/jobs.js"></script>
-  <script src="renderer/graph.js"></script>
-  <script src="renderer/app.js"></script>
+  <!-- 渲染进程按模块分文件加载：公共 → 笔记/原始文件/模版 → 问答 → 作业 → 图谱 → 入口 -->
+  <script src="renderer/common.js?v=20260829b"></script>
+  <script src="renderer/notes.js?v=20260828h"></script>
+  <script src="renderer/raws.js?v=20260828h"></script>
+  <script src="renderer/chat.js?v=20260828h"></script>
+  <script src="renderer/jobs.js?v=20260828h"></script>
+  <script src="renderer/graph.js?v=20260828h"></script>
+  <script src="renderer/app.js?v=20260828h"></script>
 </body>
 </html>

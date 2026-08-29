@@ -1,0 +1,11 @@
+const fs = require('fs');
+const html = fs.readFileSync('src/index.html', 'utf8');
+const fffd = (html.match(/\uFFFD/g) || []).length;
+const open = (html.match(/<div\b/g) || []).length;
+const close = (html.match(/<\/div>/g) || []).length;
+console.log('length:', html.length, '| U+FFFD:', fffd, '| div open:', open, '| div close:', close);
+console.log('has i-logo symbol:', html.includes('id="i-logo"'));
+const m = html.match(/editor-empty[\s\S]{0,260}/);
+console.log('editor-empty snippet:\n', m ? m[0] : 'NOT FOUND');
+const ver = html.match(/\?v=([0-9a-z]+)/g);
+console.log('cache versions:', [...new Set(ver || [])].join(', '));

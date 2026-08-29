@@ -3,20 +3,24 @@ const path = require('path');
 const fs = require('fs');
 const db = require('../common/db');
 const { num } = require('../common/config');
-const { wikiRoot, safeJoin } = require('./wiki');
-const { FILE_EXTENSIONS, readRawText } = require('./files');
+const { rawsRoot, safeJoin } = require('./root');
+const { FILE_EXTENSIONS, readRawTextForScan, fetchUrlTitleRich, isPlaceholderTitle } = require('./files');
 
 // 本机引用（kv 存储，不复制文件）：
 //  raw_refs 单文件引用；raw_dir_refs 目录引用（实时遍历，随源变化）；raw_excluded 目录引用下被用户移除的路径
 const REFS_KEY = 'raw_refs';
 const DIRS_KEY = 'raw_dir_refs';
 const EXCL_KEY = 'raw_excluded';
+const URLS_KEY = 'raw_url_refs';
 function getRefs() { try { return JSON.parse(db.getKv(REFS_KEY) || '[]'); } catch (_) { return []; } }
 function saveRefs(list) { db.setKv(REFS_KEY, JSON.stringify(list)); db.flush(); }
 function getDirRefs() { try { return JSON.parse(db.getKv(DIRS_KEY) || '[]'); } catch (_) { return []; } }
 function saveDirRefs(list) { db.setKv(DIRS_KEY, JSON.stringify(list)); db.flush(); }
 function getExcl() { try { return JSON.parse(db.getKv(EXCL_KEY) || '[]'); } catch (_) { return []; } }
 function saveExcl(list) { db.setKv(EXCL_KEY, JSON.stringify(list)); db.flush(); }
+// 网页链接引用（不下载、不转存，仅保存链接信息）：读取时再按需拉取
+function getUrlRefs() { try { return JSON.parse(db.getKv(URLS_KEY) || '[]'); } catch (_) { return []; } }
+function saveUrlRefs(list) { db.setKv(URLS_KEY, JSON.stringify(list)); db.flush(); }
 
 // 吸收状态追踪（kv 存储，防重复吸收）：key=来源路径（raw/… 或 local:…）→ {at, mtime, jobId}
 const ING_KEY = 'raw_ingested';
@@ -72,7 +76,7 @@ function ingestInfo(ingMap, key, mtime) {
 
 // 递归列举 raw/ 下全部来源（按修改时间倒序）
 function listRaws(settings) {
-  const rawDir = path.join(wikiRoot(settings), 'raw');
+  const rawDir = path.join(rawsRoot(settings), 'raw');
   const ingMap = getIngested();
   const list = [];
   const walk = (dir) => {
@@ -83,7 +87,7 @@ function listRaws(settings) {
     for (const entry of entries) {
       const p = path.join(dir, entry.name);
       if (entry.isDirectory()) { if (entry.name !== '_auto') walk(p); }
-      else if (!entry.name.startsWith('.')) {
+      else if (!entry.name.startsWith('.') && !isNoiseFile(entry.name)) {
         let st;
         try { st = fs.statSync(p); } catch (_) { continue; }
         list.push({
@@ -99,9 +103,9 @@ function listRaws(settings) {
   };
   walk(rawDir);
   const excl = new Set(getExcl());
-  // 单文件引用（存在且未被排除）
+  // 单文件引用（存在、未被排除、且不是噪声）；早年已录入的噪声引用也在此隐去，无需手工清理
   for (const r of getRefs()) {
-    if (!fs.existsSync(r.path) || excl.has(r.path)) continue;
+    if (!fs.existsSync(r.path) || excl.has(r.path) || isNoiseFile(r.name || path.basename(r.path))) continue;
     list.push({ path: 'local:' + r.path, name: r.name, ext: r.ext, size: r.size, mtime: r.mtime, root: r.root || '', rel: r.rel || '', ingested: ingestInfo(ingMap, 'local:' + r.path, r.mtime) });
   }
   // 目录引用：实时遍历源目录，源目录增删文件时本列表同步变化。
@@ -122,7 +126,7 @@ function listRaws(settings) {
         if (n >= limit) { cut = true; return; }
         const p = path.join(d, entry.name);
         if (entry.isDirectory()) { if (!SKIP_DIRS.has(entry.name)) walkDir(p); }
-        else if (!excl.has(p)) {
+        else if (!excl.has(p) && !isNoiseFile(entry.name)) {
           let st; try { st = fs.statSync(p); } catch (_) { continue; }
           n++;
           list.push({ path: 'local:' + p, name: entry.name, ext: path.extname(entry.name).slice(1).toLowerCase(), size: st.size, mtime: st.mtimeMs, root: dr.dir, rel: path.relative(dr.dir, p), ingested: ingestInfo(ingMap, 'local:' + p, st.mtimeMs) });
@@ -133,13 +137,25 @@ function listRaws(settings) {
     // 被截断时再数一次实际规模（封顶 limit*20），让告警能说出到底有多少
     if (cut) truncated.push({ dir: dr.dir, shown: n, total: countDirFiles(dr.dir, limit * 20) });
   }
+  // 网页链接引用（仅保存链接信息，读取时再拉取）：优先展示网页标题，其次 URL 简名；
+  // 已落库的占位标题（历史数据里的 loading 之类）也当作无标题，不需手工清理
+  for (const u of getUrlRefs()) {
+    const shown = isPlaceholderTitle(u.title) ? urlDisplayName(u.url) : u.title;
+    list.push({ path: 'url:' + u.url, name: shown, ext: 'url', size: 0, mtime: u.addedAt || 0, ingested: ingestInfo(ingMap, 'url:' + u.url, 0) });
+  }
   list.sort((a, b) => b.mtime - a.mtime);
   if (truncated.length) list.truncated = truncated;
   return list;
 }
 
-// 删除：local: 单文件引用移除清单；目录引用下的文件加入排除集（均不删本机文件）；raw/ 下才真正删除
+// 删除：local:/url: 引用移除清单（不删本机文件/不删网页）；raw/ 下才真正删除
 function removeRaw(settings, relPath) {
+  if (String(relPath).startsWith('url:')) {
+    const url = String(relPath).slice('url:'.length);
+    const refs = getUrlRefs();
+    if (refs.some((r) => r.url === url)) saveUrlRefs(refs.filter((r) => r.url !== url));
+    return { removed: relPath };
+  }
   if (String(relPath).startsWith('local:')) {
     const abs = String(relPath).slice('local:'.length);
     const refs = getRefs();
@@ -152,7 +168,7 @@ function removeRaw(settings, relPath) {
     return { removed: relPath };
   }
   if (!String(relPath).startsWith('raw/')) throw new Error('仅可删除 raw/ 下的原始来源');
-  fs.rmSync(safeJoin(wikiRoot(settings), relPath));
+  fs.rmSync(safeJoin(rawsRoot(settings), relPath));
   return { removed: relPath };
 }
 
@@ -176,12 +192,15 @@ function removeRawDir(settings, dir) {
 async function addFiles(settings, paths, baseDir) {
   const added = [];
   const failed = [];
+  const skippedNoise = [];
   const refs = getRefs();
   const exist = new Set(refs.map((r) => r.path));
   for (const p of paths || []) {
     try {
       const abs = path.resolve(p);
       if (!fs.existsSync(abs)) throw new Error('文件不存在：' + p);
+      // 噪声文件静默跳过（不计失败）：拖拽整目录时常会带进来，报错只是噪音
+      if (isNoiseFile(path.basename(abs))) { skippedNoise.push(path.basename(abs)); continue; }
       const ext = path.extname(abs).slice(1).toLowerCase();
       if (exist.has(abs)) { failed.push({ path: p, error: '已添加' }); continue; }
       const st = fs.statSync(abs);
@@ -193,18 +212,75 @@ async function addFiles(settings, paths, baseDir) {
     }
   }
   saveRefs(refs);
-  return { added, failed };
+  return { added, failed, skippedNoise };
+}
+
+// 添加网页链接：不下载正文、不转存为本地 md，只保存链接信息；
+// 展示名获取三级回退：匿名元数据 → 隐藏窗真实渲染 → 应用内登录（weblogin 模块）；
+// 全部失败留空、展示时回退到 URL 简名，渲染层再给补填/改名兜底
+// credentials 可选 { username, password }：需登录站点弹出登录窗时自动填充
+async function addUrl(settings, url, title, credentials) {
+  const clean = String(url || '').trim();
+  if (!/^https?:\/\//i.test(clean)) throw new Error('链接需以 http:// 或 https:// 开头');
+  const refs = getUrlRefs();
+  if (refs.some((r) => r.url === clean)) throw new Error('该链接已添加');
+  let name = (title || '').trim();
+  let login = false;
+  if (!name) {
+    const rich = await fetchUrlTitleRich(clean, num(settings, 'urlFetchTimeout', 30, 1, 600), credentials);
+    name = rich.title || '';
+    login = !!rich.login;
+  }
+  refs.push({ url: clean, title: name, addedAt: Date.now() });
+  saveUrlRefs(refs);
+  return { relPath: 'url:' + clean, title: name || urlDisplayName(clean), login };
+}
+
+// 无标题时的兜底展示名：域名 + 末段路径，比几百字符的完整 URL（带一堆 query）可读得多
+function urlDisplayName(url) {
+  try {
+    const u = new URL(url);
+    const seg = u.pathname.split('/').filter(Boolean).pop() || '';
+    return decodeURIComponent(seg ? `${u.hostname}/${seg}` : u.hostname);
+  } catch (_) {
+    return url;
+  }
+}
+
+// 重命名链接展示名：需登录的页面（语雀/飞书等）服务端拿不到真标题，给个手改的口子；
+// title 传空则清除自定义名，下次展示回退到 URL 简名
+function renameUrl(settings, url, title) {
+  const clean = String(url || '').replace(/^url:/, '').trim();
+  const refs = getUrlRefs();
+  const hit = refs.find((r) => r.url === clean);
+  if (!hit) throw new Error('链接不存在：' + clean);
+  hit.title = String(title || '').trim().slice(0, 120);
+  saveUrlRefs(refs);
+  return { relPath: 'url:' + clean, title: hit.title || urlDisplayName(clean) };
 }
 
 // 跳过依赖/隐藏/构建产物目录，保留用户内容目录（原样引用多级结构）
 const SKIP_DIRS = new Set(['.venv', 'node_modules', '.git', '.idea', '.vscode', '.qoder', '__pycache__', '.DS_Store', 'dist', 'build', 'target']);
+
+// 噪声文件：系统元数据与办公软件临时文件。它们无可提取内容，
+// 却会占满目录引用的文件数上限、在作业里刷出一堆“不支持的文件格式”失败项，因此扫描阶段就滤掉
+const SKIP_FILES = new Set(['.DS_Store', '.localized', 'Thumbs.db', 'thumbs.db', 'ehthumbs.db', 'desktop.ini', 'Icon\r', '.gitkeep', '.gitignore']);
+function isNoiseFile(name) {
+  const n = String(name || '');
+  if (!n || SKIP_FILES.has(n)) return true;
+  if (n.startsWith('~$')) return true;          // Office 打开文档时的锁文件（~$xxx.docx）
+  if (n.startsWith('._')) return true;          // macOS AppleDouble 副本
+  if (/\.(tmp|temp|crdownload|part|swp|swo|bak)$/i.test(n)) return true;
+  if (/^\.~lock\./.test(n)) return true;         // LibreOffice 锁文件
+  return false;
+}
 
 // 单个目录引用的文件数上限（递归计数，settings.rawDirMaxFiles 可调）：
 // 目录引用会被实时遍历，过大的目录会拖慢列表与后续吸收，故在添加时就拒绝
 const DEFAULT_MAX_DIR_FILES = 500;
 const dirMaxFiles = (settings) => num(settings, 'rawDirMaxFiles', DEFAULT_MAX_DIR_FILES, 10, 100000);
 
-// 递归统计目录下文件数；达到 limit 即提前停止（大目录不用走完）
+// 递归统计目录下文件数（不计噪声文件，与列表/吸收口径一致）；达到 limit 即提前停止
 function countDirFiles(dir, limit) {
   let count = 0;
   const walk = (d) => {
@@ -214,7 +290,8 @@ function countDirFiles(dir, limit) {
     for (const entry of entries) {
       if (limit && count > limit) return;
       const p = path.join(d, entry.name);
-      if (entry.isDirectory()) { if (!SKIP_DIRS.has(entry.name)) walk(p); } else count++;
+      if (entry.isDirectory()) { if (!SKIP_DIRS.has(entry.name)) walk(p); }
+      else if (!isNoiseFile(entry.name)) count++;
     }
   };
   walk(dir);
@@ -252,7 +329,7 @@ function migrateFileRefsToDirs() {
 // 一次性迁移：把 raw/ 顶层的存量 md（均为吸收自动生成）移入 raw/_auto/，
 // 使「原始文件」只管理用户从本机添加的文件/目录；用户自建子目录不受影响。
 function migrateAutoRaws(settings) {
-  const rawDir = path.join(wikiRoot(settings), 'raw');
+  const rawDir = path.join(rawsRoot(settings), 'raw');
   const marker = path.join(rawDir, '.migrated-auto');
   if (!fs.existsSync(rawDir) || fs.existsSync(marker)) return;
   const autoDir = path.join(rawDir, '_auto');
@@ -327,27 +404,6 @@ function searchTokens(question) {
   return [...set].filter((t) => t.length >= 2);
 }
 
-// 按字节读取文件头部（避免整个大日志载入内存）；含 NUL 字节则当二进制跳过
-function readTextHead(abs, maxBytes) {
-  let fd;
-  try {
-    fd = fs.openSync(abs, 'r');
-    const buf = Buffer.alloc(maxBytes);
-    const n = fs.readSync(fd, buf, 0, maxBytes, 0);
-    const slice = buf.slice(0, n);
-    if (slice.includes(0)) return '';
-    return slice.toString('utf-8');
-  } catch (_) {
-    return '';
-  } finally {
-    if (fd !== undefined) { try { fs.closeSync(fd); } catch (_) {} }
-  }
-}
-
-const absOfRaw = (settings, relPath) => (String(relPath).startsWith('local:')
-  ? String(relPath).slice('local:'.length)
-  : path.join(wikiRoot(settings), String(relPath).replace(/^\//, '')));
-
 // 在单份文本里打分并取命中片段；证据不足返回 null
 function matchInText(text, tokens, snippetChars) {
   const low = text.toLowerCase();
@@ -402,28 +458,68 @@ async function searchRaws(settings, question, opts = {}) {
 
   const cheap = [];
   const rich = [];
+  const urls = [];
   for (const it of listRaws(settings)) {
     const ext = String(it.ext || '').toLowerCase();
     if (TEXT_EXTS.has(ext)) cheap.push(it);
     else if (RICH_EXTS.has(ext)) rich.push(it);
+    else if (ext === 'url') urls.push(it); // 链接引用：读取时实时拉取正文，同样参与检索
   }
-  const candidates = [...cheap, ...rich];
+  // 名称命中问题关键词的来源优先扫描：用户问「山东高速迁移上云方案」而原始文件里
+  // 恰好有同名链接/文件时，必须第一时间读到它。否则链接排在队列末尾、又每个都要一次
+  // 网络请求，时间预算常被本地文件耗尽，导致「明明有这条来源却没用上」。
+  // 链接类更甚：它是用户亲手添加的指向性来源，名称命中时置顶于一切本地文件之前。
+  const lowQ = String(question || '').toLowerCase();
+  const nameHit = (it) => {
+    const n = String(it.name || '').toLowerCase();
+    if (!n) return false;
+    return tokens.some((t) => n.includes(t));
+  };
+  const prio = [...urls.filter(nameHit), ...cheap.filter(nameHit), ...rich.filter(nameHit)];
+  const rest = [...cheap, ...rich, ...urls].filter((it) => !prio.includes(it));
+  const candidates = [...prio, ...rest];
   const t0 = Date.now();
   let scanned = 0;
   let timedOut = false;
   const hits = [];
-  for (const it of candidates) {
-    if (Date.now() - t0 > budgetMs) { timedOut = true; break; }
+  const urlFails = [];
+  const scanOne = async (it) => {
+    const isUrl = String(it.ext || '').toLowerCase() === 'url';
+    // 进度回调：让 UI 实时看到扫描/链接读取进展（链接类单次读取可能耗时数十秒）
+    if (typeof opts.onScan === 'function') {
+      try { opts.onScan({ idx: scanned, total: candidates.length, kind: isUrl ? 'url' : 'file', name: it.name || it.path }); } catch (_) { /* 忽略 */ }
+    }
     scanned++;
     let text = '';
+    let readErr = '';
     try {
-      if (TEXT_EXTS.has(String(it.ext || '').toLowerCase())) text = readTextHead(absOfRaw(settings, it.path), maxBytes);
-      else text = String((await readRawText(settings, it.path)) || '').slice(0, maxBytes);
-    } catch (_) { continue; }
-    if (!text) continue;
+      // 纯文本读头部、富文本优先磁盘缓存（未命中才整篇提取并落缓存），url 实时拉取
+      text = String((await readRawTextForScan(settings, it.path, maxBytes)) || '');
+      if (!isUrl) text = text.slice(0, maxBytes);
+    } catch (err) { readErr = err.message || String(err); }
+    if (isUrl && (!text || readErr)) {
+      // 链接读取失败（登录态缺失/超时/429 等）必须可见，否则用户只看到「没使用」却不知原因
+      urlFails.push({ name: it.name || it.path, error: readErr || '正文为空' });
+      return;
+    }
+    if (!text) return;
     const m = matchInText(text, tokens, snippetChars);
-    if (!m) continue;
+    if (!m) return;
     hits.push({ path: it.path, name: it.name, ext: it.ext, root: it.root || '', rel: it.rel || '', score: m.score, matched: m.matched, snippets: m.snippets });
+  };
+  // 优先队列串行：名称命中的链接逐条读、进度清晰；独立预算不受普通截断
+  for (const it of prio) {
+    if (Date.now() - t0 > Math.max(budgetMs, 60000)) { timedOut = true; break; }
+    await scanOne(it);
+  }
+  // 普通队列并发 4：首次提取富文本（内置解析）不再串行排队；命中缓存后更是毫秒级。
+  // 预算按批检查：缓存命中时整批毫秒完成，实际扫描量远大于旧串行版
+  if (!timedOut) {
+    const CONC = 4;
+    for (let i = 0; i < rest.length; i += CONC) {
+      if (Date.now() - t0 > budgetMs) { timedOut = true; break; }
+      await Promise.all(rest.slice(i, i + CONC).map((it) => scanOne(it)));
+    }
   }
   hits.sort((a, b) => b.score - a.score);
   // strong：命中具体长词（如 renovation/flask）或多词密集命中，置信度较高；
@@ -432,7 +528,7 @@ async function searchRaws(settings, question, opts = {}) {
     ...h,
     strong: h.matched.some((t) => t.length >= 4) || h.matched.length >= 3 || h.score >= 8,
   }));
-  return { hits: out, scanned, candidates: candidates.length, timedOut };
+  return { hits: out, scanned, candidates: candidates.length, timedOut, urlFails };
 }
 
-module.exports = { listRaws, removeRaw, removeRawDir, addFiles, addDir, addPaths, migrateAutoRaws, migrateFileRefsToDirs, SKIP_DIRS, DEFAULT_MAX_DIR_FILES, dirMaxFiles, countDirFiles, searchRaws, markIngested, isIngestedFresh, backfillIngested };
+module.exports = { listRaws, removeRaw, removeRawDir, addFiles, addDir, addPaths, addUrl, renameUrl, urlDisplayName, migrateAutoRaws, migrateFileRefsToDirs, SKIP_DIRS, isNoiseFile, DEFAULT_MAX_DIR_FILES, dirMaxFiles, countDirFiles, searchRaws, markIngested, isIngestedFresh, backfillIngested };

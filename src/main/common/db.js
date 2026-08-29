@@ -11,6 +11,8 @@ const paths = require('./paths');
 let SQL = null;
 let db = null;
 let dbFilePath = null; // 当前数据库文件路径（init 时按指针文件解析，运行期可切换）
+let dbMtime = 0; // 加载时数据库文件 mtime：检测「别的进程写过盘」以触发重载
+let inTx = false; // 事务进行中标记：期间禁止换 db 实例（BEGIN/COMMIT 必须落在同一实例）
 
 // 默认库位置：统一数据根目录下（<安装目录>/data/knowledge.db，可配置）
 function defaultDbFile() {
@@ -127,6 +129,7 @@ async function init() {
   notesStore.migrateDbNotesToFiles();
   if (rw) notesStore.rewriteNoteFiles(rw.from, rw.to);
   notesStore.migrateAssetsToNoteDirs(); // 旧 assets/<标题>/ 附件 → 笔记自身目录
+  notesStore.migrateEncodedNoteTitles(); // URL 编码乱码标题 → 解码为可读标题（幂等）
   // 遗留 notes 表：内容已全部落文件后移除，收缩库体积
   try {
     if (all("SELECT name FROM sqlite_master WHERE type='table' AND name='notes'").length) {
@@ -138,6 +141,7 @@ async function init() {
       }
     }
   } catch (_) {}
+  try { dbMtime = fs.statSync(dbFilePath).mtimeMs; } catch (_) { dbMtime = 0; }
 }
 
 // 将笔记内容中 kb-asset://file<旧附件目录> 前缀替换为新目录（路径在正文中为 encodeURI 编码形式）
@@ -256,6 +260,7 @@ function flush() {
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, Buffer.from(data));
   fs.renameSync(tmp, file);
+  try { dbMtime = fs.statSync(file).mtimeMs; } catch (_) { /* 忽略 */ }
 }
 
 // ---------- 统一数据库操作（引擎无关接口：未来换 PG 仅需替换本文件内实现） ----------
@@ -285,24 +290,46 @@ function all(sql, params = []) {
 }
 
 // 事务包装：失败自动回滚
+// 重载只允许发生在 BEGIN 之前：事务内 setKv 等若触发跨进程重载换掉 db 实例，
+// COMMIT/ROLLBACK 会打到没有活动事务的新实例上（cannot rollback - no transaction is active）
 function transaction(fn) {
-  db.run('BEGIN');
+  reloadIfStale();
+  inTx = true;
   try {
+    db.run('BEGIN');
     fn();
     db.run('COMMIT');
   } catch (err) {
-    db.run('ROLLBACK');
+    try { db.run('ROLLBACK'); } catch (_) { /* 无活动事务时不掩盖原错误 */ }
     throw err;
+  } finally {
+    inTx = false;
   }
+}
+
+// 跨进程同步：sql.js 是内存库，桌面应用与 Web 服务各持一份快照。别的进程 flush 落盘后
+// （典型场景：桌面端登录窗写入 Cookie 时 Web 服务已在运行），本进程快照就过期了。
+// 读写 KV 前比较数据库文件 mtime，比加载时新则整库重载（个人知识库数据量小，开销可忽略）。
+// 写方一律「导出后 rename」，mtime 必变，检测可靠；写前重载也避免旧快照覆盖别进程的新数据。
+function reloadIfStale() {
+  if (!SQL || !db || !dbFilePath || inTx) return;
+  try {
+    const st = fs.statSync(dbFilePath);
+    if (st.mtimeMs <= dbMtime) return;
+    db = new SQL.Database(new Uint8Array(fs.readFileSync(dbFilePath)));
+    dbMtime = st.mtimeMs;
+  } catch (_) { /* 重载失败沿用旧库，不影响主流程 */ }
 }
 
 // KV 通用存储（图谱/模版/设置等跨引擎可移植的简单结构）
 function getKv(key) {
+  reloadIfStale();
   const rows = all('SELECT value FROM kv WHERE key = ?', [key]);
   return rows.length ? rows[0].value : null;
 }
 
 function setKv(key, value) {
+  reloadIfStale();
   run('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [key, value]);
 }
 

@@ -69,10 +69,14 @@ function persistTemplates(list) {
 // 新建/更新模版（按 id upsert），字段全部归一化后落库
 function saveTemplate(input) {
   const tpl = input || {};
-  const id = trimStr(tpl.id, 60);
-  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(id)) throw new Error('模版 ID 须为英文标识符（字母开头，仅字母/数字/下划线）');
+  let id = trimStr(tpl.id, 60);
   if (!trimStr(tpl.name, 100)) throw new Error('名称不能为空');
   const list = listTemplates();
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(id)) {
+    // 新建时 ID 无需用户填写：空/非法则自动生成英文标识符（避让已有 ID）
+    id = 'tpl_' + Date.now().toString(36);
+    while (list.some((t) => t.id === id)) id += Math.floor(Math.random() * 36).toString(36);
+  }
   const old = list.find((t) => t.id === id);
   const next = {
     id,
@@ -137,7 +141,10 @@ function matchByKeywords(list, text) {
 }
 
 // 吸收时的领域匹配：LLM 判定优先，失败或结果非法时回退关键词匹配
-async function matchTemplate(settings, raws) {
+// opts.timeoutMs：LLM 判定的硬超时（提交前预匹配用，避免模型长时间无响应把调用方卡死）
+// opts.retries：LLM 判定的重试次数（预匹配传 0，作业内匹配沿用设置项默认值）
+// opts.onDegrade：LLM 判定失败、改用关键词兜底时回调，供调用方提示用户
+async function matchTemplate(settings, raws, opts = {}) {
   const list = listTemplates();
   const text = (raws || []).map((r) => r.content).join('\n').slice(0, 3000);
   if (list.length <= 1) return list[0] || null;
@@ -146,22 +153,30 @@ async function matchTemplate(settings, raws) {
     const answer = await chatOnce(settings, [
       { role: 'system', content: getPrompt(settings, 'matchPrompt') },
       { role: 'user', content: prompt },
-    ]);
+    ], opts.retries, undefined, opts.timeoutMs ? AbortSignal.timeout(opts.timeoutMs) : undefined);
     const picked = list.find((t) => t.id === extractJson(answer).template);
     if (picked) return picked;
-  } catch (_) { /* LLM 匹配失败走关键词兜底 */ }
+  } catch (err) {
+    // LLM 匹配失败（含超时）走关键词兜底，绝不阻断调用方的后续提交
+    if (opts.onDegrade) opts.onDegrade(err);
+  }
   return matchByKeywords(list, text);
 }
 
 // 吸收前的领域预匹配：返回命中的特定领域模版；未命中（含 LLM/关键词均判定为 general）返回 null，
 // 由渲染层据此询问用户“新建领域模版还是用通用模版”
-async function preMatchTemplate(settings, raws) {
+// degraded=true 表示 LLM 判定失败/超时、结果来自关键词兜底
+async function preMatchTemplate(settings, raws, opts = {}) {
   const list = listTemplates();
   const hasSpecific = list.some((t) => t.id !== 'general');
   if (!hasSpecific) return { matched: null, hasSpecific, total: list.length };
-  const tpl = await matchTemplate(settings, raws);
+  let degradeErr = null;
+  const tpl = await matchTemplate(settings, raws, { ...opts, onDegrade: (err) => { degradeErr = err; } });
   const matched = tpl && tpl.id !== 'general' ? { id: tpl.id, name: tpl.name } : null;
-  return { matched, hasSpecific, total: list.length };
+  // 超时中断在 llm 层报为“已停止回答”，对预检查场景改写成用户能看懂的超时描述
+  const degradeMsg = !degradeErr ? ''
+    : (degradeErr.name === 'AbortError' && opts.timeoutMs ? `模型未在 ${Math.round(opts.timeoutMs / 1000)} 秒内响应` : degradeErr.message);
+  return { matched, hasSpecific, total: list.length, degraded: !!degradeErr, degradeError: degradeMsg };
 }
 
 // 模版 → 吸收提示词中的领域约束块
@@ -252,10 +267,10 @@ async function suggestTemplateName(settings, raws) {
 
 // 智能生成：分析全部笔记 + 管理的原始文件，产出候选领域模版（数组）
 async function suggestTemplates(settings) {
-  // 延迟 require 避免与 wiki/notes 的循环依赖
+  // 延迟 require 避免与 notes 的循环依赖
   const notesStore = require('../notes/store');
-  const raws = require('./raws');
-  const { readPage } = require('./wiki');
+  const raws = require('../raws/raws');
+  const { readRawText } = require('../raws/files');
   const parts = [];
   for (const n of notesStore.getNotes()) {
     if ((n.content || '').trim() || (n.title || '').trim()) {
@@ -264,7 +279,7 @@ async function suggestTemplates(settings) {
   }
   for (const r of raws.listRaws(settings)) {
     let txt = '';
-    try { txt = readPage(settings, r.path) || ''; } catch (_) {}
+    try { txt = (await readRawText(settings, r.path)) || ''; } catch (_) {}
     parts.push(`原始·${r.name}\n${String(txt).slice(0, 300)}`);
   }
   if (!parts.length) throw new Error('暂无笔记或原始文件，无法生成候选模版');

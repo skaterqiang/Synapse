@@ -1,6 +1,9 @@
 // 渲染进程·作业模块：作业管理页与作业事件刷新
 // 任务输出折叠状态（会话内）：key = jobId:taskNo
 const taskCollapsed = {};
+// 作业实时解析日志（会话级缓存）：主进程经 jobs:log 逐行推送（MinerU 子进程输出等），
+// key = jobId，value = 行数组；\r 进度行在主进程侧已按“覆盖上一行”语义合并
+const jobLiveLogs = {};
 
 // 复制任务完整输出到剪贴板
 async function copyTaskOutput(text) {
@@ -34,15 +37,15 @@ function jobStatusMeta(status) {
   return { queued: ['排队中', ''], running: ['执行中', 'running'], success: ['成功', 'success'], failed: ['失败', 'failed'] }[status] || [status, ''];
 }
 
-// 作业类型图标：按类型定制的渐变 SVG（与作业管理页标题图标同风格）
-// ingest=蓝·汇入箭头，graph=青·网状节点，lint=绿·对勾体检
+// 作业类型图标：统一使用 index.html 顶部 SVG sprite 中的线性图标
 const JOB_TYPE_ICONS = {
-  ingest: '<svg class="job-type-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><defs><linearGradient id="jobIconIngest" x1="3" y1="3" x2="21" y2="21"><stop stop-color="#5b8cff"/><stop offset="1" stop-color="#3370ff"/></linearGradient></defs><rect x="3" y="3" width="18" height="18" rx="5" fill="url(#jobIconIngest)"/><path d="M12 6.8v6.4m0 0l-2.7-2.7M12 13.2l2.7-2.7" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M7.6 16.8h8.8" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>',
-  graph: '<svg class="job-type-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><defs><linearGradient id="jobIconGraph" x1="3" y1="3" x2="21" y2="21"><stop stop-color="#3fd6d0"/><stop offset="1" stop-color="#0da6a0"/></linearGradient></defs><rect x="3" y="3" width="18" height="18" rx="5" fill="url(#jobIconGraph)"/><circle cx="9.2" cy="9.4" r="1.7" fill="#fff"/><circle cx="15.2" cy="9.4" r="1.7" fill="#fff"/><circle cx="12.2" cy="15" r="1.7" fill="#fff"/><path d="M10.1 10.9l1.3 2.5M14.3 10.9l-1.3 2.5M10.9 9.4h2.6" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/></svg>',
-  lint: '<svg class="job-type-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"><defs><linearGradient id="jobIconLint" x1="3" y1="3" x2="21" y2="21"><stop stop-color="#5ad184"/><stop offset="1" stop-color="#16a34a"/></linearGradient></defs><rect x="3" y="3" width="18" height="18" rx="5" fill="url(#jobIconLint)"/><path d="M7.6 12.4l3 3 5.8-6.2" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  'extract-note': 'notes',
+  ingest: 'download',
+  graph: 'kg',
+  lint: 'checklist',
 };
 function jobTypeIcon(type) {
-  return JOB_TYPE_ICONS[type] || JOB_TYPE_ICONS.ingest;
+  return icoSvg(JOB_TYPE_ICONS[type] || 'jobs', 15);
 }
 
 function fmtDuration(ms) {
@@ -69,7 +72,23 @@ function filteredJobs() {
   return state.jobs;
 }
 
+// 打开作业视图时为运行中作业补拉主进程内存日志缓存（页面刷新后日志不丢）
+function hydrateJobLogs() {
+  if (!window.kb.jobsLogs) return;
+  for (const j of state.jobs) {
+    if (j.status !== 'running') continue;
+    if ((jobLiveLogs[j.id] || []).length) continue;
+    window.kb.jobsLogs(j.id).then((lines) => {
+      if (Array.isArray(lines) && lines.length && !(jobLiveLogs[j.id] || []).length) {
+        jobLiveLogs[j.id] = lines;
+        renderJobs();
+      }
+    }).catch(() => {});
+  }
+}
+
 function renderJobsView() {
+  hydrateJobLogs();
   const c = { queued: 0, running: 0, success: 0, failed: 0 };
   state.jobs.forEach((j) => { if (c[j.status] !== undefined) c[j.status]++; });
   // 计数徽章直接挂在筛选按钮上：进行中 = 运行 + 排队
@@ -110,6 +129,14 @@ function buildJobCard(job) {
   const doneCount = stages.filter((s) => normStage(s) === 'success').length;
   // 抽取的来源/文件数（图谱作业 result.sourceCount），体现“抽了多少个具体文件”
   const srcCount = job.result && Number.isFinite(job.result.sourceCount) ? job.result.sourceCount : null;
+  // 本次抽取所用领域（图谱作业）：命中特定领域模版时节点按该模版的实体/概念类型组织
+  const dom = job.source && job.source.domain;
+  const domTypes = dom ? ((dom.entity || []).length + (dom.concept || []).length) : 0;
+  const domTitle = dom
+    ? (domTypes
+      ? `按领域模版「${dom.label}」抽取：实体类型〔${(dom.entity || []).join('、')}〕；概念类型〔${(dom.concept || []).join('、')}〕`
+      : `按「${dom.label}」抽取：未附加实体/概念类型约束`)
+    : '';
   let dur = '';
   if (job.finishedAt && job.startedAt) dur = fmtDuration(job.finishedAt - job.startedAt);
   else if (job.status === 'running' && job.startedAt) dur = fmtDuration(Date.now() - job.startedAt) + '（进行中）';
@@ -120,7 +147,8 @@ function buildJobCard(job) {
     <span class="job-chevron">${expanded ? '▾' : '▸'}</span>
     <span class="job-icon">${icon}</span>
     <span class="job-title" title="${escapeHtml(job.title)}">${escapeHtml(job.title)}</span>
-    ${srcCount != null ? `<span class="job-src-count" title="抽取的来源/文件数">📄 ${srcCount}</span>` : ''}
+    ${dom ? `<span class="job-domain" title="${escapeHtml(domTitle)}">领域：${escapeHtml(dom.label)}${domTypes ? ` · ${domTypes} 类型` : ''}</span>` : ''}
+    ${srcCount != null ? `<span class="job-src-count" title="抽取的来源/文件数">${icoSvg('notes', 12)} ${srcCount}</span>` : ''}
     <span class="job-progress" title="阶段进度：已完成 ${doneCount}/${stages.length} 个阶段">${doneCount}/${stages.length}</span>
     <span class="job-status ${statusCls}">${statusText}</span>
     <span class="job-time">${formatDate(job.createdAt)}</span>
@@ -128,17 +156,18 @@ function buildJobCard(job) {
 
   const actions = document.createElement('span');
   actions.className = 'job-actions';
-  if (job.type === 'lint' && job.status === 'success' && job.result && job.result.report) {
-    actions.appendChild(jobActionBtn('📄 报告', '', () => {
-      $('lint-report').innerHTML = renderMarkdown(job.result.report);
-      $('lint-modal').hidden = false;
-    }, '查看体检报告'));
+  // 失败可重试：lint / 图谱（payload 带来源即可重跑）/ 已保存来源的吸收作业
+  const hasRaw = (job.rawPaths && job.rawPaths.length) || (job.payload && job.payload.rawPaths && job.payload.rawPaths.length);
+  if (job.status === 'failed' && (job.type === 'lint' || job.type === 'graph' || job.type === 'extract-note' || hasRaw)) {
+    actions.appendChild(jobActionBtn(icoSvg('refresh', 12) + ' 重试', '', () => retryJob(job), '重新提交该作业'));
   }
-  if (job.status === 'failed' && (job.type === 'lint' || (job.rawPaths && job.rawPaths.length))) {
-    actions.appendChild(jobActionBtn('🔄 重试', '', () => retryJob(job), '重新提交该作业'));
+  // MinerU 失败回退内置：提供「用 MinerU 重跑」，强制 MinerU 解析（不回退），原地更新笔记产物
+  const fbList = job.result && Array.isArray(job.result.fallbacks) ? job.result.fallbacks : [];
+  if (job.type === 'extract-note' && fbList.length && (job.status === 'success' || job.status === 'failed')) {
+    actions.appendChild(jobActionBtn(icoSvg('refresh', 12) + ' 用 MinerU 重跑', 'warn', () => rerunWithMineru(job), '对回退的来源强制 MinerU 解析（失败直接报错，不回退内置），原地更新已有笔记'));
   }
   if (job.status === 'success' || job.status === 'failed') {
-    actions.appendChild(jobActionBtn('🗑', 'danger', () => removeJob(job), '删除该条作业'));
+    actions.appendChild(jobActionBtn(icoSvg('delete', 12), 'danger', () => removeJob(job), '删除该条作业'));
   }
   head.appendChild(actions);
   head.addEventListener('click', (e) => {
@@ -164,6 +193,21 @@ function buildJobDetail(job) {
     ${job.finishedAt && job.startedAt ? `<span>总耗时 ${fmtDuration(job.finishedAt - job.startedAt)}</span>` : ''}`;
   detail.appendChild(tl);
 
+  // MinerU 回退警示：有来源因 MinerU 失败回退内置时明确提示（产物质量低于 MinerU 解析），
+  // 与「设置→MinerU 测试」产物不一致的根因即在此；提供强制 MinerU 重跑入口
+  const fbList = job.result && Array.isArray(job.result.fallbacks) ? job.result.fallbacks : [];
+  if (job.type === 'extract-note' && fbList.length) {
+    const fb = document.createElement('div');
+    fb.className = 'job-fallback-warn';
+    const items = fbList.slice(0, 10).map((f) =>
+      `<div class="fb-item">${icoSvg('notes', 12)} ${escapeHtml(f.name || f.path)}：${escapeHtml(f.reason || 'MinerU 转换失败')}${f.note ? ` → 已按内置解析写入 ${escapeHtml(f.note)}` : ''}</div>`).join('');
+    const more = fbList.length > 10 ? `<div class="fb-item">… 共 ${fbList.length} 个</div>` : '';
+    fb.innerHTML = `<div class="fb-head">⚠ ${fbList.length} 个来源 MinerU 解析失败，已回退内置解析</div>
+      <div class="fb-body">回退产物的质量低于 MinerU 解析（与「设置 → MinerU 测试」的结果不一致）。可点击右上「用 MinerU 重跑」强制使用 MinerU 解析并原地更新笔记；失败将直接报错，不再回退。</div>
+      ${items}${more}`;
+    detail.appendChild(fb);
+  }
+
   // 作业来源 + 产物信息：来源列表（submit 的 source.items 或抽取返回的 result.sourceLabels）+ 图谱产物（节点/关系）
   const srcItems = (job.source && Array.isArray(job.source.items) && job.source.items.length)
     ? job.source.items
@@ -180,8 +224,24 @@ function buildJobDetail(job) {
     src.innerHTML =
       `<div class="job-source-head"><span class="job-source-kind">${escapeHtml(kind)}</span><span class="job-source-label">${escapeHtml(label)}</span></div>` +
       (srcItems.length ? `<div class="job-source-items">${shown}${more}</div>` : '') +
-      (hasArtifact ? `<div class="job-artifact">🕸 产物：${job.result.nodeCount} 节点 / ${job.result.edgeCount} 关系，已持久化到 SQLite</div>` : '');
+      (hasArtifact ? `<div class="job-artifact">产物：${job.result.nodeCount} 节点 / ${job.result.edgeCount} 关系，已持久化到 SQLite</div>` : '');
     detail.appendChild(src);
+  }
+
+  // 领域信息：本次抽取所用领域模版及其实体/概念类型约束（通用模版时明确告知无类型约束）
+  const dom = job.source && job.source.domain;
+  if (dom) {
+    const ent = dom.entity || [];
+    const con = dom.concept || [];
+    const box = document.createElement('div');
+    box.className = 'job-source job-domain-detail';
+    box.innerHTML =
+      `<div class="job-source-head"><span class="job-source-kind">领域</span><span class="job-source-label">${escapeHtml(dom.label)}${dom.id ? `（${escapeHtml(dom.id)}）` : ''}</span></div>` +
+      (ent.length || con.length
+        ? `<div class="job-source-items">${[...ent.map((t) => ['实体', t]), ...con.map((t) => ['概念', t])]
+          .map(([k, t]) => `<span class="job-source-item">${k}·${escapeHtml(t)}</span>`).join('')}</div>`
+        : '<div class="job-artifact">未命中特定领域模版，本次未附加实体/概念类型约束（节点类型由模型自由归纳）</div>');
+    detail.appendChild(box);
   }
 
   // 任务列表：每个来源一个独立 task，展示处理状态（点击任务行可收起/展开输出）
@@ -226,6 +286,23 @@ function buildJobDetail(job) {
     detail.appendChild(box);
   }
 
+  // 实时解析过程（MinerU 子进程输出）：主进程逐行推送、会话内缓存；执行中自动滚到尾部。
+  // 主进程在作业终态后清空其内存缓存，但前端会话缓存保留，历史作业仍可查看本次解析输出
+  const logs = jobLiveLogs[job.id];
+  if (Array.isArray(logs) && logs.length) {
+    const lg = document.createElement('div');
+    lg.className = 'job-source job-parselog';
+    lg.innerHTML = `<div class="job-source-head"><span class="job-source-kind">解析过程</span><span class="job-source-label">MinerU 子进程实时输出</span></div>`;
+    const pre = document.createElement('pre');
+    pre.className = 'job-live parse-log';
+    pre.textContent = logs.join('\n');
+    lg.appendChild(pre);
+    detail.appendChild(lg);
+    if (job.status === 'running' || job.status === 'queued') {
+      requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });
+    }
+  }
+
   const stages = document.createElement('div');
   stages.className = 'job-stages';
   for (const st of job.stages || []) {
@@ -266,19 +343,42 @@ function buildJobDetail(job) {
   return detail;
 }
 
-function jobActionBtn(text, cls, onclick, title) {
+function jobActionBtn(html, cls, onclick, title) {
   const b = document.createElement('button');
   b.className = 'btn btn-ghost job-act-btn' + (cls ? ' ' + cls : '');
-  b.textContent = text;
+  b.innerHTML = html;
   if (title) b.title = title;
   b.addEventListener('click', (e) => { e.stopPropagation(); onclick(); });
   return b;
+}
+
+// 绑定作业实时解析日志通道：jobs:log 逐行追加到会话缓存并触发重渲染（进度行覆盖上一行）
+function bindJobsLog() {
+  if (!window.kb.onJobsLog) return;
+  window.kb.onJobsLog((d) => {
+    if (!d || !d.id || !d.line) return;
+    const arr = jobLiveLogs[d.id] || (jobLiveLogs[d.id] = []);
+    if (d.replace) arr[arr.length - 1] = d.line; else arr.push(d.line);
+    if (arr.length > 300) arr.splice(0, arr.length - 300);
+    renderJobs();
+  });
 }
 
 async function retryJob(job) {
     const res = await window.kb.jobsRetry({ id: job.id, settings: state.settings });
   if (res.ok) { toast('已在原作业上重试'); return; }
   toast('重试失败：' + res.error, 4000);
+}
+
+// 用 MinerU 重跑：对回退的来源提交新的强制 MinerU 提取作业（不回退内置），原地更新笔记产物
+async function rerunWithMineru(job) {
+  const fbList = (job.result && Array.isArray(job.result.fallbacks)) ? job.result.fallbacks : [];
+  const paths = fbList.map((f) => f.path).filter(Boolean);
+  if (!paths.length) { toast('没有可重跑的回退来源', 3000); return; }
+  if (!confirm(`将对 ${paths.length} 个回退来源强制使用 MinerU 解析（失败直接报错，不回退内置），并原地更新已有笔记。继续吗？`)) return;
+  const res = await window.kb.jobsSubmit({ type: 'extract-note', payload: { settings: state.settings, rawPaths: paths, forceMineru: true } });
+  if (!res.ok) { toast('提交失败：' + (res.error || '未知错误'), 4000); return; }
+  toast('已提交「用 MinerU 重跑」作业');
 }
 
 async function removeJob(job) {
@@ -294,17 +394,20 @@ async function clearJobsHistory() {
   await window.kb.jobsClear();
 }
 
-// 作业列表实时更新：渲染 + 吸收成功后刷新 Wiki 树
+// 作业列表实时更新：渲染 + 原始来源刷新
 let prevJobStatuses = {};
 function handleJobsUpdate(list) {
   const prev = prevJobStatuses;
   prevJobStatuses = {};
-  let needWikiRefresh = false;
   for (const j of list) {
     prevJobStatuses[j.id] = j.status;
-    if (j.type === 'ingest' && j.status === 'success' && prev[j.id] && prev[j.id] !== 'success') {
-      needWikiRefresh = true;
-      loadRaws(); // 吸收会新增 raw/ 来源，同步计数与列表
+    if (j.type === 'extract-note' && j.status === 'success' && prev[j.id] && prev[j.id] !== 'success') {
+      window.kb.loadData().then((data) => {
+        state.folders = data.folders || [];
+        state.notes = data.notes || [];
+        renderAll();
+      });
+      toast('笔记提取完成');
     }
     if (j.type === 'graph' && j.status === 'success' && prev[j.id] && prev[j.id] !== 'success') {
       loadGraph();
@@ -313,6 +416,5 @@ function handleJobsUpdate(list) {
   }
   state.jobs = list;
   renderJobs();
-  if (needWikiRefresh) loadWiki();
 }
 

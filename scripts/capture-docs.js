@@ -23,30 +23,24 @@ const clickByText = (selector, text) => `(() => {
 })()`;
 
 // 截图任务：name 输出文件名；steps 为依次执行的 JS 片段
+const clickFirst = (selector) => `(() => {
+  const els = [...document.querySelectorAll(${JSON.stringify(selector)})];
+  if (els[0]) { els[0].click(); return true; }
+  return false;
+})()`;
+
 const SHOTS = [
   {
     name: 'notes-editor',
-    steps: [clickByText('.note-card, .note-item', '欢迎使用')],
-  },
-  {
-    name: 'ai-chat',
-    steps: [clickByText('#btn-ai-toggle', 'AI')],
-    after: [clickByText('#btn-ai-toggle', 'AI')], // 截完关闭，避免影响后续视图
-  },
-  {
-    // Wiki 阅读：进入索引 → 展开领域分组（默认折叠）→ 打开第一个页面
-    name: 'wiki-reader',
     steps: [
-      clickByText('#wiki-header, .wiki-header', 'LLM Wiki'),
-      clickByText('.wiki-group-toggle', '通用'),
-      `(() => { const e = document.querySelector('.wiki-tree-item'); if (e) { e.click(); return true; } return false; })()`,
+      // 优先点「欢迎使用」笔记，找不到则点第一张笔记卡
+      `(() => {
+        const els = [...document.querySelectorAll('.note-card')];
+        const el = els.find((e) => (e.textContent || '').includes('欢迎使用')) || els[0];
+        if (el) { el.click(); return true; }
+        return false;
+      })()`,
     ],
-  },
-  {
-    // 吸收弹窗：侧边栏 LLM Wiki 右侧 ＋ 按钮
-    name: 'wiki-ingest-dialog',
-    steps: [`(() => { const b = document.getElementById('btn-wiki-ingest'); if (b) { b.click(); return true; } return false; })()`],
-    after: [`(() => { const m = document.getElementById('ingest-modal'); if (m) m.hidden = true; return true; })()`],
   },
   { name: 'domain-templates', steps: [clickByText('#nav-templates', '领域模版')] },
   { name: 'raw-files', steps: [clickByText('#nav-raws', '原始文件')] },
@@ -58,6 +52,35 @@ const SHOTS = [
   { name: 'jobs-manager', steps: [clickByText('#nav-jobs', '作业管理')] },
   { name: 'prompts-manager', steps: [clickByText('#nav-prompts', '提示词管理')] },
   { name: 'settings-ai', steps: [clickByText('#btn-settings', '设置')] },
+  { name: 'settings-mcp', steps: [clickByText('button[data-tab]', 'MCP')] },
+  { name: 'ai-chat', steps: [clickByText('#btn-ai-toggle', 'AI 问答')], wait: 1000 }, // 欢迎页（引导卡 + 知识源条 + 输入区）
+  {
+    name: 'ai-session',
+    // 真实库无历史会话：注入纯内存演示会话（不写库），渲染列表后点开首条，展示会话视图
+    steps: [
+      `(() => {
+        const now = Date.now();
+        const day = new Date(now).toISOString().slice(0, 10);
+        state.favView = false;
+        state.aiSessions = [
+          { id: 'demo-s1', title: '什么是知识图谱？如何构建？', date: day, updatedAt: now,
+            messages: [
+              { role: 'user', content: '什么是知识图谱？如何构建？' },
+              { role: 'assistant', ms: 3200,
+                steps: [ { kind: 'thought', text: '正在检索相关笔记与图谱上下文…' } ],
+                content: '**知识图谱**是一种以「实体—关系—实体」三元组组织知识的语义网络，让机器能理解实体之间的关联。\\n\\n**核心构成**\\n- **实体（节点）**：现实世界的对象，如人、系统、概念\\n- **关系（边）**：实体之间的语义关联，如「依赖」「属于」\\n- **属性**：实体或关系的键值描述\\n\\n**构建流程**\\n1. **本体设计**：定义实体类型与关系模式\\n2. **实体识别**：从文档中抽取实体\\n3. **关系抽取**：识别实体间关系\\n4. **图谱问答**：基于图谱做检索增强问答' }
+            ] },
+          { id: 'demo-s2', title: '如何配置 MCP 服务器', date: day, updatedAt: now - 86400000, messages: [] },
+          { id: 'demo-s3', title: '系统迁移方案要点总结', date: day, updatedAt: now - 172800000, messages: [] }
+        ];
+        state.activeSessionId = null;
+        try { renderAiSessionList(); } catch (_) {}
+        return true;
+      })()`,
+      clickFirst('.ai-session-item'),
+    ],
+    wait: 1400,
+  }, // 会话视图（历史会话 + 对话区）
 ];
 
 app.whenReady().then(async () => {

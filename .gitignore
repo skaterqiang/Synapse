@@ -21,7 +21,12 @@ data/
 root-path.json
 
 # ========================
-# 环境与密钥（防止 API Key / AK 泄露）
+# 插件（本机安装的运行时环境，如 MinerU venv，不入库）
+# ========================
+plugin/
+
+# ========================
+# 环境与密钥（防止 API Key / SK / AK 泄露）
 # ========================
 .env
 .env.*
@@ -29,6 +34,20 @@ root-path.json
 .env.production
 *.pem
 *.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.ak
+*.sk
+*secret*
+*credential*
+*api_key*
+*apikey*
+*access_key*
+*token.json
+keys.json
+config.local.json
 
 # ========================
 # 数据库文件（包含 API Key 等敏感设置）

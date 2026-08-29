@@ -1,8 +1,9 @@
-// 知识图谱领域层：本体层定义、从 LLM Wiki / 笔记自动抽取、持久化与问答上下文注入
+// 知识图谱领域层：本体层定义、从笔记/原始文件自动抽取、持久化与问答上下文注入
 // 存储：整图 JSON 存于 SQLite kv 表（key='graph'），个人知识库图谱规模小，整体读写开销可忽略
 const db = require('../common/db');
 const notesStore = require('../notes/store');
 const { chatOnce, extractJson, streamChat } = require('../ai/llm');
+const { num } = require('../common/config');
 const { buildTasks } = require('../jobs/tasks');
 const { getPrompt } = require('../ai/prompts');
 
@@ -103,42 +104,21 @@ function nodeKey(name) {
 }
 
 // ---------- 语料收集 ----------
-// scope: 'wiki' | 'notes' | 'all'；wiki 复用 wiki.js 的页面遍历，notes 读全量 store
-// domain: 可选，指定领域时仅收集该领域的 Wiki 页面（用于模版卡片「生成图谱」）
-function collectSources(scope, wikiBundle, domain) {
+// 集合范围：读全量笔记 store（原始来源/内联来源由 extractGraph 另走专用分支）
+function collectSources() {
   const sources = [];
-  if (domain) {
-    if (wikiBundle) {
-      const { listPages, readPageContent } = wikiBundle;
-      for (const p of listPages()) {
-        if (p.rel.endsWith('index.md') || p.rel.endsWith('log.md')) continue;
-        if ((p.domain || 'general') !== domain) continue;
-        const text = String(readPageContent(p.rel) || '').slice(0, SOURCE_CHARS);
-        if (text.trim()) sources.push({ label: 'Wiki·' + (p.title || p.rel), text, domain });
-      }
-    }
-    return sources;
-  }
-  if (scope !== 'notes' && wikiBundle) {
-    const { listPages, readPageContent } = wikiBundle;
-    for (const p of listPages()) {
-      if (p.rel.endsWith('index.md') || p.rel.endsWith('log.md')) continue;
-      const text = String(readPageContent(p.rel) || '').slice(0, SOURCE_CHARS);
-      if (text.trim()) sources.push({ label: 'Wiki·' + (p.title || p.rel), text, domain: p.domain || '' });
-    }
-  }
-  if (scope !== 'wiki') {
-    for (const n of notesStore.getNotes()) {
-      const text = `# ${n.title}\n${n.content || ''}`.slice(0, SOURCE_CHARS);
-      if (text.trim()) sources.push({ label: '笔记·' + (n.title || n.id), text });
-    }
+  for (const n of notesStore.getNotes()) {
+    const text = `# ${n.title}\n${n.content || ''}`.slice(0, SOURCE_CHARS);
+    if (text.trim()) sources.push({ label: '笔记·' + (n.title || n.id), text });
   }
   return sources;
 }
 
 // ---------- 本体抽取 ----------
 // 逐批调用模型抽取节点/边，合并去重后持久化；onStage 回调用于作业阶段进度展示
-async function extractGraph(settings, { scope, wikiBundle, rawPaths, readRaw, domain, inlineSources, typeHints, domainLabel }, onStage, onProgress, onTasks) {
+// resolveDomain(raws)：未命中特定领域时由作业层决定最终领域（可新建/复用领域模版），
+// 返回 { domainId, domainLabel, typeHints }；graph 层不直接依赖 templates
+async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain }, onStage, onProgress, onTasks) {
   let sources;
   if (Array.isArray(inlineSources) && inlineSources.length) {
     // 内联语料：直接从传入文本抽取（笔记「生成图谱」按钮）
@@ -155,10 +135,30 @@ async function extractGraph(settings, { scope, wikiBundle, rawPaths, readRaw, do
     }
     if (!sources.length) throw new Error('原始来源内容为空或不存在');
   } else {
-    sources = collectSources(scope, wikiBundle, domain);
+    sources = collectSources();
   }
-  if (!sources.length) throw new Error(domain ? `领域「${domain}」下没有可抽取的 Wiki 页面` : '选定范围内没有可抽取的内容（Wiki 与笔记均为空）');
-  if (onStage) onStage('collect', `共 ${sources.length} 个来源，开始分批抽取…`);
+  if (!sources.length) throw new Error('选定范围内没有可抽取的内容（笔记为空）');
+  // 领域归属：命中特定领域则直接用；否则交由作业层自动建域/复用已有领域，抽取出的节点随之挂到该领域下
+  let hints = typeHints;
+  let domLabel = domainLabel;
+  let domainTag = domainId && domainId !== 'general' ? domainId : (domain && domain !== 'general' ? domain : '');
+  if (resolveDomain) {
+    const r = await resolveDomain(sources.map((s) => ({ rawPath: s.label, content: s.text })));
+    if (r) {
+      if (r.typeHints) hints = r.typeHints;
+      if (r.domainLabel) domLabel = r.domainLabel;
+      if (r.domainId && r.domainId !== 'general') domainTag = r.domainId;
+    }
+  }
+  // 收集阶段同时报出本次抽取所用领域与类型约束（与吸收作业「使用领域模版：X」的信息量对齐）
+  if (onStage) {
+    const ent = (hints && hints.entity) || [];
+    const con = (hints && hints.concept) || [];
+    const domText = ent.length || con.length
+      ? `领域「${domLabel || domainTag}」（实体〔${ent.join('、')}〕；概念〔${con.join('、')}〕）`
+      : `领域「${domLabel || domainTag || '通用'}」（未附加实体/概念类型约束）`;
+    onStage('collect', `共 ${sources.length} 个来源，${domText}，开始分批抽取…`);
+  }
 
   // 分批：每个来源独立一批（一个任务），便于逐任务展示当前进度与独立输出
   const batches = sources.map((s) => [s]);
@@ -184,7 +184,9 @@ async function extractGraph(settings, { scope, wikiBundle, rawPaths, readRaw, do
     return node;
   };
 
-  for (let i = 0; i < batches.length; i++) {
+  // 并发池：默认同时执行 3 个抽取任务（settings.graphConcurrency 可调，1–8）
+  const CONC = num(settings, 'graphConcurrency', 3, 1, 8);
+  const runBatch = async (i) => {
     const curTask = tasks[batches[i][0]._i];
     const taskHead = curTask ? `任务 ${curTask.no}/${tasks.length}「${curTask.label}」` : `批次 ${i + 1}/${batches.length}`;
     if (onStage) onStage('extract', `AI 本体抽取（${taskHead}）…`);
@@ -222,8 +224,8 @@ async function extractGraph(settings, { scope, wikiBundle, rawPaths, readRaw, do
           `节点类型只能从：${Object.entries(typesMap).map(([k, v]) => `${k}(${v})`).join('、')} 中选择。\n` +
           `关系只能从：${rels.join('、')} 中选择。\n` +
           (existing ? `已有节点（可为其建立关系，避免重复创建）：${existing}。\n` : '') +
-          (typeHints && ((typeHints.entity || []).length || (typeHints.concept || []).length)
-            ? `本次为领域「${domainLabel || domain || ''}」抽取，请围绕该领域模版的类别组织节点：entity 节点对应实体类型〔${(typeHints.entity || []).join('、')}〕；concept 节点对应概念类型〔${(typeHints.concept || []).join('、')}〕。\n`
+          (hints && ((hints.entity || []).length || (hints.concept || []).length)
+            ? `本次为领域「${domLabel || domainTag || ''}」抽取，请围绕该领域模版的类别组织节点：entity 节点对应实体类型〔${(hints.entity || []).join('、')}〕；concept 节点对应概念类型〔${(hints.concept || []).join('、')}〕。\n`
             : '') +
           `节点名使用规范简短名词；同一事物只输出一个节点；关系须有明确依据，最多 30 个节点、50 条边。\n` +
           `输出 JSON：{"nodes":[{"name":"","type":"","desc":""}],"edges":[{"from":"","to":"","rel":""}]}\n\n` +
@@ -237,7 +239,7 @@ async function extractGraph(settings, { scope, wikiBundle, rawPaths, readRaw, do
     try {
       parsed = extractJson(answer);
     } catch (_) {
-      continue; // 单批解析失败跳过，不中断整体抽取
+      return; // 单批解析失败跳过，不中断整体抽取
     }
     for (const n of parsed.nodes || []) ensureNode(n.name, n.type, n.desc, null);
     for (const e of parsed.edges || []) {
@@ -248,17 +250,29 @@ async function extractGraph(settings, { scope, wikiBundle, rawPaths, readRaw, do
       const key = `${from.id}|${to.id}|${rel}`;
       if (!edges.has(key)) edges.set(key, { from: from.id, to: to.id, rel });
     }
-    // 来源标签挂到批次内被提及的节点（按名称包含粗匹配），同时继承来源的领域归属
+    // 来源标签挂到批次内被提及的节点（按名称包含粗匹配），同时继承本次解析出的领域归属
     for (const s of batches[i]) {
       const label = s.label;
+      const sDomain = s.domain || domainTag;
       for (const node of nodes.values()) {
         if (s.text.includes(node.name)) {
           if (!node.sources.includes(label) && node.sources.length < 5) node.sources.push(label);
-          if (s.domain && !node.domain) node.domain = s.domain;
+          if (sDomain && !node.domain) node.domain = sDomain;
         }
       }
     }
-  }
+  };
+
+  // 启动 N 个 worker 并发消费批次（单线程内 await 切换，Map 变更同步无竞态）
+  let nextIdx = 0;
+  const workers = Array.from({ length: Math.min(CONC, batches.length) }, async () => {
+    for (;;) {
+      const i = nextIdx++;
+      if (i >= batches.length) break;
+      await runBatch(i);
+    }
+  });
+  await Promise.all(workers);
 
   if (!nodes.size) throw new Error('模型未抽取到任何节点，请检查 API 配置或缩小范围重试');
   saveGraph([...nodes.values()], [...edges.values()]);
@@ -401,7 +415,7 @@ function removeOntologyItem(kind, keyOrIndex) {
 }
 
 // ---------- KG 自然语言问答 ----------
-// 管线：LLM 抽取实体 → 匹配本体节点（多层兜底）→ BFS 邻居事实 → 沿节点 sources 回溯 Wiki/笔记原文 → 事实+材料约束流式回答，并下发引用清单
+// 管线：LLM 抽取实体 → 匹配本体节点（多层兑底）→ BFS 邻居事实 → 沿节点 sources 回溯笔记原文 → 事实+材料约束流式回答，并下发引用清单
 async function kgAsk(event, { settings, question, hops, withFacts }) {
   try {
     const g = getGraph();
@@ -419,6 +433,9 @@ async function kgAsk(event, { settings, question, hops, withFacts }) {
       ]);
       names = extractJson(ans).names || [];
     } catch (_) {}
+    event.sender.send('kg:stage', names.length
+      ? `实体抽取完成：${names.slice(0, 6).join('、')}${names.length > 6 ? '…' : ''}（${names.length} 个）`
+      : 'LLM 未抽到实体，回退关键词/分词评分召回…');
     const norm = (s) => String(s || '').toLowerCase();
     let seeds = g.nodes.filter((n) => names.some((s) => {
       const t = norm(s);
@@ -450,6 +467,9 @@ async function kgAsk(event, { settings, question, hops, withFacts }) {
         .slice(0, 3)
         .map((x) => x.n);
     }
+    event.sender.send('kg:stage', seeds.length
+      ? `命中图谱节点：${seeds.map((n) => n.name).slice(0, 6).join('、')}${seeds.length > 6 ? '…' : ''}（${seeds.length} 个）`
+      : '未命中任何图谱节点，将仅靠全局材料作答');
     const byId = new Map(g.nodes.map((n) => [n.id, n]));
     // BFS 收集 hops 跳内事实三元组
     const facts = [];
@@ -469,11 +489,15 @@ async function kgAsk(event, { settings, question, hops, withFacts }) {
       frontier = next;
     }
     const uniqFacts = [...new Set(facts)].slice(0, 80);
+    event.sender.send('kg:stage', `邻居事实扩展完成（${maxHops} 跳内）：共 ${uniqFacts.length} 条事实`);
 
-    // 沿本体节点的 sources 回溯 Wiki 页面 / 笔记原文，作为回答材料与引用明细
-    event.sender.send('kg:stage', '沿本体层回溯 Wiki/笔记原文…');
+    // 沿本体节点的 sources 回溯笔记原文，作为回答材料与引用明细
+    event.sender.send('kg:stage', '沿本体层回溯笔记原文…');
     const visited = [...seen].map((id) => byId.get(id)).filter(Boolean);
     const refs = collectRefs(settings, visited);
+    event.sender.send('kg:stage', refs.length
+      ? `原文回溯完成：命中 ${refs.length} 份材料（${refs.map((r) => r.label).slice(0, 3).join('、')}${refs.length > 3 ? '…' : ''}）`
+      : '原文回溯完成：无可回溯材料');
 
     event.sender.send('kg:facts', {
       matched: seeds.map((n) => n.name),
@@ -483,7 +507,7 @@ async function kgAsk(event, { settings, question, hops, withFacts }) {
     event.sender.send('kg:stage', '基于事实与原文生成回答…');
     const factBlock = withFacts && uniqFacts.length ? `【知识图谱事实】\n${uniqFacts.join('\n')}` : '';
     const matBlock = refs.length
-      ? `【原文材料】\n${refs.map((r, i) => `材料${i + 1}（${r.kind === 'wiki' ? 'Wiki' : '笔记'}·${r.label}，路径 ${r.path}）：\n${r.content}`).join('\n\n')}`
+      ? `【原文材料】\n${refs.map((r, i) => `材料${i + 1}（笔记·${r.label}，路径 ${r.path}）：\n${r.content}`).join('\n\n')}`
       : '';
     const messages = [
       {
@@ -498,30 +522,16 @@ async function kgAsk(event, { settings, question, hops, withFacts }) {
   }
 }
 
-// 节点 sources（'Wiki·标题/路径'、'笔记·标题'）→ 原文内容；延迟 require wiki 避免与 wiki.js 的加载期循环依赖
+// 节点 sources（'笔记·标题'）→ 原文内容；历史存量 'Wiki·' 标签不再回溯（Wiki 功能已移除）
 function collectRefs(settings, nodes, maxRefs = 4) {
-  const wiki = require('../wiki/wiki');
   const refs = [];
   const seen = new Set();
-  let desc = null;
   let notes = null;
   for (const n of nodes) {
     for (const label of n.sources || []) {
       if (refs.length >= maxRefs) break;
       try {
-        if (label.startsWith('Wiki·')) {
-          if (!desc) {
-            desc = wiki.describeWiki(settings);
-            desc.byTitle = new Map((desc.pages || []).map((p) => [(p.title || '').toLowerCase(), p.path]));
-            desc.byRel = new Map((desc.pages || []).map((p) => [p.path.toLowerCase(), p.path]));
-          }
-          if (!desc.exists) continue;
-          const key = label.slice(5).trim().toLowerCase();
-          const rel = desc.byTitle.get(key) || desc.byRel.get(key);
-          if (!rel || seen.has('w:' + rel)) continue;
-          seen.add('w:' + rel);
-          refs.push({ kind: 'wiki', label: label.slice(5), path: rel, content: String(wiki.readPage(settings, rel) || '').slice(0, 3000) });
-        } else if (label.startsWith('笔记·')) {
+        if (label.startsWith('笔记·')) {
           if (!notes) notes = notesStore.getNotes();
           const note = notes.find((x) => (x.title || '') === label.slice(3));
           if (!note || seen.has('n:' + note.id)) continue;
@@ -534,4 +544,33 @@ function collectRefs(settings, nodes, maxRefs = 4) {
   return refs;
 }
 
-module.exports = { getGraph, saveGraph, clearGraph, extractGraph, contextFor, recallFor, getOntology, saveOntologyItem, removeOntologyItem, kgAsk };
+// 节点来源标签（'笔记·…'/'原始·…'）→ 可打开的目标（kind + 路径/ID），供详情面板点击跳转；
+// 历史存量 'Wiki·' 标签已无对应页面，统一归为 missing
+function resolveSources(settings, labels) {
+  const out = [];
+  let notes = null;
+  let raws = null;
+  for (const label of labels || []) {
+    const s = String(label || '');
+    try {
+      if (s.startsWith('笔记·')) {
+        if (!notes) notes = notesStore.getNotes();
+        const name = s.slice(3).trim();
+        const note = (notes || []).find((x) => (x.title || '') === name);
+        out.push(note ? { label: s, kind: 'note', id: note.id, title: note.title } : { label: s, kind: 'missing' });
+      } else if (s.startsWith('原始·')) {
+        if (!raws) raws = require('../raws/raws').listRaws(settings) || [];
+        const rel = s.slice(3).trim();
+        const raw = (raws || []).find((r) => r.path === rel || r.path === 'raw/' + rel.replace(/^raw\//, ''));
+        out.push(raw ? { label: s, kind: 'raw', path: raw.path, title: raw.name || rel } : { label: s, kind: 'missing' });
+      } else {
+        out.push({ label: s, kind: 'missing' });
+      }
+    } catch (_) {
+      out.push({ label: s, kind: 'missing' });
+    }
+  }
+  return out;
+}
+
+module.exports = { getGraph, saveGraph, clearGraph, extractGraph, contextFor, recallFor, getOntology, saveOntologyItem, removeOntologyItem, kgAsk, resolveSources };

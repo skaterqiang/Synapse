@@ -1,6 +1,10 @@
-// 渲染进程·问答模块：AI 面板、笔记检索、Wiki 问答与回填
+// 渲染进程·问答模块：AI 面板、笔记/原始文件/图谱检索与回填
 let aiHistory = []; // {role, content}
 let aiListeners = [];
+// 回答中的活 DOM（步骤组/气泡/用户消息）：切走再切回时原位恢复，进行中的过程不丢
+let liveView = null;
+// 当前交互请求的“立即停止”回调（渲染端先拆解 UI，不依赖主进程是否及时响应）
+let stopCurrentAi = null;
 
 // 会话历史持久化（SQLite kv）：跨会话上下文记忆
 function saveAiHistory() { try { window.kb.chatSaveHistory(aiHistory.slice(-60)); } catch (_) {} }
@@ -49,7 +53,7 @@ function renderAttachBar() {
   aiAttachments.forEach((a, i) => {
     const chip = document.createElement('span');
     chip.className = 'ai-attach-chip';
-    chip.innerHTML = '📄 <span class="n">' + escapeHtml(a.name) + '</span>'
+    chip.innerHTML = icoSvg('notes', 12) + ' <span class="n">' + escapeHtml(a.name) + '</span>'
       + '<button type="button" class="x" title="移除">✕</button>';
     chip.title = a.path;
     chip.querySelector('.x').addEventListener('click', () => {
@@ -65,7 +69,7 @@ function renderAttachBar() {
 }
 
 async function pickAiAttachments() {
-  const res = await window.kb.wikiPickFiles();
+  const res = await window.kb.rawPickFiles();
   if (!res || !res.ok || !res.paths || !res.paths.length) return;
   const exist = new Set(aiAttachments.map((a) => a.path));
   let skipped = 0;
@@ -83,7 +87,7 @@ async function pickAiAttachments() {
 async function buildAttachContext(group) {
   if (!aiAttachments.length) return { context: '', names: [] };
   group.addStep({ kind: 'thought', text: `正在读取 ${aiAttachments.length} 个上传文件…` });
-  const r = await window.kb.readAttachments({ paths: aiAttachments.map((a) => a.path) })
+  const r = await window.kb.readAttachments({ settings: state.settings, paths: aiAttachments.map((a) => a.path) })
     .catch((err) => ({ ok: false, error: (err && err.message) || String(err) }));
   if (!r || !r.ok) {
     group.addStep({ kind: 'thought', text: '附件读取失败：' + ((r && r.error) || '未知错误') });
@@ -108,20 +112,83 @@ function renderMsgAttachments(msgEl, names) {
   if (!box) return;
   const row = document.createElement('div');
   row.className = 'ai-msg-attach';
-  row.textContent = '📎 ' + names.join('、');
+  row.innerHTML = icoSvg('attach', 12) + escapeHtml(names.join('、'));
   box.appendChild(row);
 }
 
 // ================= AI 主框架页（会话历史 + 欢迎 + 大输入框） =================
-function addViewMessage(role, html) {
+function addViewMessage(role, html, opts) {
   const box = $('ai-view-messages');
   const div = document.createElement('div');
   div.className = `ai-msg ${role}`;
   const roleName = role === 'user' ? '我' : role === 'error' ? '提示' : 'AI 助手';
   div.innerHTML = `<div class="role">${roleName}</div><div class="bubble">${html}</div>`;
+  // 用户消息支持「更改内容再次发送」：悬停显示 ✎，进入内联编辑
+  if (role === 'user' && opts && opts.raw !== undefined) {
+    div.__raw = opts.raw;
+    div.__rec = opts.rec || null;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ai-msg-edit';
+    btn.title = '编辑内容并重新发送';
+    btn.innerHTML = icoSvg('edit', 13);
+    btn.addEventListener('click', (e) => { e.stopPropagation(); editViewUserMessage(div); });
+    div.appendChild(btn);
+  }
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
   return div;
+}
+// 编辑已发送的问题：气泡换成输入框；「重新发送」会截断该问题之后的对话再以新内容提问
+function editViewUserMessage(el) {
+  if (el.querySelector('.ai-msg-editor-input')) return; // 已在编辑
+  const bubble = el.querySelector('.bubble');
+  const raw0 = el.__raw !== undefined ? el.__raw : bubble.textContent;
+  el.classList.add('editing');
+  bubble.innerHTML = '';
+  const ta = document.createElement('textarea');
+  ta.className = 'ai-msg-editor-input';
+  ta.value = raw0;
+  ta.rows = Math.min(10, Math.max(2, raw0.split('\n').length));
+  const bar = document.createElement('div');
+  bar.className = 'ai-msg-editor-bar';
+  const send = document.createElement('button');
+  send.type = 'button';
+  send.className = 'btn btn-primary';
+  send.textContent = '重新发送';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'btn btn-ghost';
+  cancel.textContent = '取消';
+  bar.appendChild(send);
+  bar.appendChild(cancel);
+  bubble.appendChild(ta);
+  bubble.appendChild(bar);
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  cancel.addEventListener('click', (e) => {
+    e.stopPropagation();
+    el.classList.remove('editing');
+    bubble.innerHTML = escapeHtml(raw0);
+  });
+  send.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const text = ta.value.trim();
+    if (!text) { toast('内容不能为空', 2000); return; }
+    if (state.aiBusy) { toast('正在回答中，请先停止再重新发送', 2500); return; }
+    const s = (state.aiSessions || []).find((x) => x.id === state.activeSessionId);
+    if (!s) return;
+    // 定位该问题在会话中的位置：优先用记录引用，兜底按原文匹配
+    let idx = el.__rec ? s.messages.indexOf(el.__rec) : -1;
+    if (idx < 0) idx = s.messages.findIndex((m) => m.role === 'user' && (m.content || '') === raw0);
+    if (idx < 0) return;
+    s.messages.splice(idx); // 该问题及其后的问答全部作废，以新内容重问
+    if (idx === 0) s.title = text.slice(0, 30);
+    s.updatedAt = Date.now();
+    saveAiSessions();
+    openAiSession(s.id); // 重建视图（清掉编辑器与该问题之后的旧消息）
+    sendAiViewQuestion(text);
+  });
 }
 async function loadAiSessions() {
   try { state.aiSessions = (await window.kb.chatGetSessions()) || []; } catch (_) { state.aiSessions = []; }
@@ -145,6 +212,8 @@ function sessionStamp(s) {
   return day;
 }
 function renderAiSessionList() {
+  updateFavBtn();
+  if (state.favView) { renderFavorites(); return; } // 收藏视图：左列表展示收藏清单
   const box = $('ai-session-list'); if (!box) return;
   box.innerHTML = '';
   // 按最近活动倒序：在旧会话里追问时它也会浮到顶部，不会埋在列表中间
@@ -172,49 +241,143 @@ function renderAiSessionList() {
     }
   }
 }
+// ---------- 基础配置引导清单 ----------
+// 三项完成度实时判定：模型（接口地址+模型名）/ MinerU（命令或 mineru 模式）/ 首份原始文档
+function refreshSetupChecklist() {
+  const s = state.settings || {};
+  const items = [
+    ['ai-setup-model', !!((s.apiBaseUrl || '').trim() && (s.model || '').trim())],
+    ['ai-setup-mineru', !!((s.mineruConvertCmd || '').trim() || s.mineruMode === 'mineru')],
+    ['ai-setup-raw', (state.raws || []).some((r) => r && r.path)],
+  ];
+  let done = 0;
+  items.forEach(([id, ok]) => {
+    const el = $(id);
+    if (!el) return;
+    el.classList.toggle('done', ok);
+    if (ok) done++;
+  });
+  const pg = $('ai-setup-progress');
+  if (pg) pg.textContent = `${done}/3`;
+  const card = $('ai-setup-card');
+  if (card) card.classList.toggle('all-done', done === 3);
+  refreshExtChecklist();
+}
+// 扩展能力引导：MCP 服务器（已启用≥1）/ 技能（已启用≥1）实时判定，配好同显绿色勾
+function refreshExtChecklist() {
+  const s = state.settings || {};
+  const items = [
+    ['ext-setup-mcp', (s.mcpServers || []).some((m) => m && m.enabled !== false)],
+    ['ext-setup-skill', (s.skills || []).some((k) => k && k.enabled)],
+  ];
+  let done = 0;
+  items.forEach(([id, ok]) => {
+    const el = $(id);
+    if (!el) return;
+    el.classList.toggle('done', ok);
+    if (ok) done++;
+  });
+  const pg = $('ext-setup-progress');
+  if (pg) pg.textContent = `${done}/2`;
+  const card = $('ext-setup-card');
+  if (card) card.classList.toggle('all-done', done === 2);
+}
+// 「开始配置」跳转：模型→设置·模型配置；MinerU→设置·文档解析；原始文档→原始文件页
+function bindSetupChecklist() {
+  const go = {
+    'ai-setup-model': () => { showSettingsView(); switchSettingsTab('ai'); },
+    'ai-setup-mineru': () => { showSettingsView(); switchSettingsTab('parse'); },
+    'ai-setup-raw': () => showRawView(),
+    'ext-setup-mcp': () => { showSettingsView(); switchSettingsTab('mcp'); },
+    'ext-setup-skill': () => { showSettingsView(); switchSettingsTab('skills'); },
+  };
+  Object.entries(go).forEach(([id, fn]) => {
+    const el = $(id);
+    if (!el) return;
+    el.querySelector('.ai-setup-go').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); fn(); });
+  });
+}
+
 function showAiView() {
   hideMainViews();
   setAiPanelVisible(false);
   $('ai-view').hidden = false;
   loadAiSessions();
   refreshAiExtTitles();
-  if (state.activeSessionId) openAiSession(state.activeSessionId); else aiNewTask();
+  // 回答中切回 AI 页：保留活 DOM（步骤组+流式气泡），不重建，否则进行中的过程会消失
+  if (!state.aiBusy) {
+    if (state.activeSessionId) openAiSession(state.activeSessionId); else aiNewTask();
+  }
+  refreshSetupChecklist();
   renderEditor();
   renderSidebar();
 }
 function aiNewTask() {
   state.activeSessionId = null;
+  state.favView = false; // 新任务回到会话列表视图
+  updateFavBtn();
   $('ai-view-welcome').hidden = false;
   const box = $('ai-view-messages'); box.hidden = true; box.innerHTML = '';
   $('ai-view-input').value = '';
   aiAttachments = [];
   renderAttachBar();
   renderAiSessionList();
+  refreshSetupChecklist();
 }
-function openAiSession(id) {
+function openAiSession(id, highlightRec) {
   const s = (state.aiSessions || []).find((x) => x.id === id);
   if (!s) return;
+  // 正在回答的会话不重建：活 DOM 里的步骤组/流式气泡尚未存盘，重建即丢失；
+  // 切走再切回时把活 DOM 原位恢复，保证进行中的过程与已生成内容可见
+  if (state.aiBusy && id === state.aiBusySessionId) {
+    state.activeSessionId = id;
+    $('ai-view-welcome').hidden = true;
+    const box = $('ai-view-messages');
+    box.hidden = false;
+    box.innerHTML = '';
+    if (liveView && liveView.sessionId === id) {
+      // 按原始顺序恢复：用户问题 → 步骤组 → 流式气泡
+      if (liveView.userEl) box.appendChild(liveView.userEl);
+      box.appendChild(liveView.groupEl);
+      box.appendChild(liveView.msgEl);
+      box.scrollTop = box.scrollHeight;
+    }
+    renderAiSessionList();
+    return;
+  }
   state.activeSessionId = id;
   $('ai-view-welcome').hidden = true;
   const box = $('ai-view-messages'); box.hidden = false; box.innerHTML = '';
+  let lastUserQ = ''; // 记录最近一条用户消息，供回答的「添加到笔记」使用
   (s.messages || []).forEach((m) => {
+    if (m.role === 'user') lastUserQ = m.content || '';
     if (m.role === 'assistant' && Array.isArray(m.steps) && m.steps.length) {
       const g = createStepsGroup();
       m.steps.forEach((x) => g.addStep(x));
       g.finish();
       if (g.el.parentNode !== box) box.appendChild(g.el);
     }
-    const el = addViewMessage(m.role, m.role === 'user' ? escapeHtml(m.content || '') : renderMarkdown(m.content || ''));
+    const el = addViewMessage(m.role, m.role === 'user' ? escapeHtml(m.content || '') : renderMarkdown(m.content || ''),
+      m.role === 'user' ? { raw: m.content || '', rec: m } : undefined);
     if (m.role === 'user') renderMsgAttachments(el, m.attachments);
     if (m.role === 'assistant') {
+      appendImagePreview(el.querySelector('.bubble'), m.content || '');
       renderArtifacts(el, m.artifacts || collectArtifacts(m.steps));
-      renderCitations(el, m.citations || { pages: [], notes: [], hits: [], sources: collectSources(m.steps) });
-      addAnswerMeta(el, { answer: m.content || '', ms: m.ms, record: m });
+      renderCitations(el, m.citations || { notes: [], hits: [], sources: collectSources(m.steps) });
+      addAnswerMeta(el, { answer: m.content || '', ms: m.ms, record: m, question: lastUserQ });
+      // 从收藏列表进入：定位到该回答并短暂高亮
+      if (m === highlightRec) {
+        el.classList.add('ai-fav-flash');
+        el.scrollIntoView({ block: 'center' });
+      }
     }
   });
   renderAiSessionList();
 }
 async function sendAiViewQuestion(presetText) {
+  // 按钮 click 事件会把 MouseEvent 当作 presetText 传进来，仅字符串预设有意义；
+  // 不规整的话 .trim() 直接抛错，表现为「停止/发送」按钮点不动
+  if (typeof presetText !== 'string') presetText = undefined;
   const q = (presetText !== undefined ? presetText : $('ai-view-input').value).trim();
   // 回答中再点发送 = 停止当前回答（避免按钮锁死无法发新问题）
   if (state.aiBusy) { stopAiRequest(); return; }
@@ -231,7 +394,7 @@ async function sendAiViewQuestion(presetText) {
   if (presetText === undefined) $('ai-view-input').value = '';
   const userMsg = { role: 'user', content: q };
   s.messages.push(userMsg);
-  const userEl = addViewMessage('user', escapeHtml(q));
+  const userEl = addViewMessage('user', escapeHtml(q), { raw: q, rec: userMsg });
   // 记活动时间与“正在回答”归属，让该会话在列表里浮顶并打上回答中标识
   s.updatedAt = Date.now();
   state.aiBusySessionId = s.id;
@@ -245,24 +408,29 @@ async function sendAiViewQuestion(presetText) {
   $('ai-view-messages').appendChild(group.el);
   // 与问题格式直接匹配的技能在过程里点名，避免“凭空生效”
   const autoHit = autoSkillNames(q);
-  if (autoHit.length) group.addStep({ kind: 'thought', text: '⚡ 与问题格式匹配的技能：' + autoHit.join('、') });
+  if (autoHit.length) group.addStep({ kind: 'thought', text: '与问题格式匹配的技能：' + autoHit.join('、') });
   const msgEl = addViewMessage('assistant', loadingHtml('思考中'));
   const bubble = msgEl.querySelector('.bubble');
+  // 气泡创建后再记录活 DOM 引用：回答中切走再切回时按 问题→过程→答案 顺序恢复
+  liveView = { sessionId: s.id, groupEl: group.el, msgEl, userEl };
   const status = startStatusbar();
   let answer = '';
   let thinkText = '';
-  let wikiCites = null;
+  let aiCites = null;
   let noteCites = [];
   let rawCites = [];
   cleanupAiListeners();
   const offChunk = window.kb.onAiChunk((c) => { answer += c; bubble.innerHTML = renderMarkdown(answer); status.set('生成回答'); $('ai-view-messages').scrollTop = 9e9; });
-  // Wiki 选页/图谱命中事件：收集引用，结束随答案一并展示
+  // 引用事件（一次下发全部知识源的命中）：收集后随答案一并展示
   let offRefs = () => {};
   try {
-    offRefs = window.kb.onWikiRefs((refs) => {
-      const pages = Array.isArray(refs) ? refs : (refs && refs.pages) || [];
-      const graphHits = (!Array.isArray(refs) && refs && refs.graph) || [];
-      if (pages.length || graphHits.length) wikiCites = { pages, hits: graphHits };
+    offRefs = window.kb.onAiRefs((refs) => {
+      const graphHits = (refs && refs.graph) || [];
+      if (graphHits.length) aiCites = { hits: graphHits };
+      if (refs) {
+        if (Array.isArray(refs.notes)) noteCites = refs.notes;
+        if (Array.isArray(refs.raws)) rawCites = refs.raws;
+      }
     });
   } catch (e) { console.warn('引用事件注册失败：', e); }
   // 桥接层缺陷不应中断问答：注册失败时降级为不展示步骤
@@ -275,7 +443,7 @@ async function sendAiViewQuestion(presetText) {
       if (step.kind === 'thinking') {
         thinkText += step.text || '';
         if (!answer) {
-          bubble.innerHTML = '<div class="ai-think-live">💭 思考中（实时输出）</div>' +
+          bubble.innerHTML = '<div class="ai-think-live">思考中（实时输出）</div>' +
             '<pre class="ai-think-live-body">' + escapeHtml(thinkText) + '</pre>';
           const tb = bubble.querySelector('.ai-think-live-body');
           if (tb) tb.scrollTop = tb.scrollHeight;
@@ -284,17 +452,34 @@ async function sendAiViewQuestion(presetText) {
       // 状态条直接用阶段文案（如“正在筛选…”），比统一的“思考”更能看出进展
       if (step.kind === 'tool') status.set('调用工具：' + step.name);
       else if (step.kind === 'tool-result') status.set('工具返回');
-      else if (step.kind === 'thought' && step.text) {
-        status.set(String(step.text).slice(0, 28));
+      else if ((step.kind === 'thought' || step.kind === 'progress') && step.text) {
+        // ⚠️/ 类提示（如 MCP 装载失败）必须完整展示：状态条不截断、也不覆盖已显示内容
+        const warn = /^[⚠❌]/.test(step.text);
+        status.set(warn ? step.text : String(step.text).slice(0, 28));
         // 正文/思考还未开始时，气泡占位也跟着显示当前阶段，不再写死“思考中”
-        if (!answer && !thinkText) bubble.innerHTML = loadingHtml(String(step.text).slice(0, 40));
+        if (!answer && !thinkText && !warn) bubble.innerHTML = loadingHtml(String(step.text).slice(0, 40));
       } else status.set('思考');
     });
   } catch (e) { console.warn('步骤事件注册失败：', e); }
   const offDone = window.kb.onAiDone(() => finishView(true));
   const offError = window.kb.onAiError((msg) => { bubble.innerHTML = renderMarkdown((answer ? answer + '\n\n' : '') + `> ⚠ ${msg}`); finishView(false); });
   aiListeners = [offChunk, offStep, offRefs, offDone, offError];
+  // 「停止」的渲染端拆解：不等待主进程，立即恢复可发送并收起过程区
+  stopCurrentAi = () => {
+    cleanupAiListeners();
+    state.aiBusy = false;
+    state.aiBusySessionId = null;
+    status.stop();
+    if (answer) s.messages.push({ role: 'assistant', content: answer, steps: group.steps, ms: Date.now() - t0 });
+    saveAiSessions();
+    bubble.innerHTML = renderMarkdown((answer ? answer + '\n\n' : '') + '> ⚠ 已停止。');
+    group.finish();
+    setAiSendBusy(false);
+    renderAiSessionList();
+    liveView = null;
+  };
   function finishView(ok) {
+    stopCurrentAi = null;
     state.aiBusy = false;
     state.aiBusySessionId = null;
     setAiSendBusy(false);
@@ -314,45 +499,27 @@ async function sendAiViewQuestion(presetText) {
         });
       } else {
         const cites = {
-          pages: (wikiCites && wikiCites.pages) || [],
           notes: noteCites,
           raws: rawCites,
-          hits: (wikiCites && wikiCites.hits) || [],
+          hits: (aiCites && aiCites.hits) || [],
           sources: collectSources(group.steps),
         };
         const rec = { role: 'assistant', content: answer, steps: group.steps, ms: Date.now() - t0, rating: 0, citations: cites, artifacts: collectArtifacts(group.steps) };
         s.messages.push(rec);
         bubble.innerHTML = renderMarkdown(answer);
+        appendImagePreview(bubble, answer);
         renderArtifacts(msgEl, rec.artifacts);
         renderCitations(msgEl, cites);
         if (answer.length > 800) addFileAnswerButton(msgEl, q, answer);
-        addAnswerMeta(msgEl, { answer, ms: rec.ms, record: rec });
+        addAnswerMeta(msgEl, { answer, ms: rec.ms, record: rec, question: q });
       }
     }
     saveAiSessions();
     renderAiSessionList();
+    liveView = null;
   }
-  // 笔记知识源（受知识源开关控制）
-  const { context, refs } = state.aiSources.notes ? buildNotesContext(q) : { context: '', refs: [] };
-  // 笔记检索命中作为引用展示（仅保留跳转所需的 id/标题）
-  noteCites = (refs || []).map((n) => ({ id: n.id, title: n.title || '无标题笔记' }));
-  // 原始文件知识源：grep 式关键字检索（主进程纯 Node 实现，跳 Windows/macOS 差异）
-  let rawsContext = '';
-  if (state.aiSources.raws) {
-    group.addStep({ kind: 'thought', text: '正在关键字检索已引入的原始文件…' });
-    const rs = await window.kb.rawSearch({ settings: state.settings, question: q, topN: 5 })
-      .catch(() => ({ ok: false, hits: [] }));
-    const hits = (rs && rs.hits) || [];
-    if (hits.length) {
-      rawsContext = hits
-        .map((h, i) => `【文件${i + 1}】${h.name}（命中：${(h.matched || []).slice(0, 6).join('、')}）\n${(h.snippets || []).join('\n…\n')}`)
-        .join('\n\n');
-      rawCites = hits.map((h) => ({ path: h.path, name: h.name, strong: !!h.strong, matched: h.matched || [] }));
-      group.addStep({ kind: 'thought', text: `原始文件命中 ${hits.length} 个（已扫 ${rs.scanned || 0}/${rs.candidates || 0}）：${hits.map((h) => h.name).join('、')}` });
-    } else {
-      group.addStep({ kind: 'thought', text: `原始文件无关键字命中（已扫 ${(rs && rs.scanned) || 0}/${(rs && rs.candidates) || 0}）` });
-    }
-  }
+  // 知识检索全部交由主进程的知识访问层：前端只传“哪些源被勾选”，
+  // 各源的检索、上下文拼装、引用归一都在 knowledge 层完成（新增源无需改此处）
   // 上传附件：本次提问的主要依据，读完即清空，不累积到下一轮
   const attach = await buildAttachContext(group);
   if (attach.names.length) {
@@ -361,7 +528,17 @@ async function sendAiViewQuestion(presetText) {
   }
   aiAttachments = [];
   renderAttachBar();
-  await window.kb.wikiAsk({ settings: aiSettings(), question: q, notesContext: context, rawsContext, attachContext: attach.context, includeGraph: state.aiSources.graph, extHint: extHint(q), history: s.messages.slice(-8), extMcp: selectedMcpCfgs() });
+  const messages = [
+    { role: 'system', content: attach.context ? `请优先依据以下附件内容回答：\n\n${attach.context}` : '你是个人知识库助手，请简洁、准确地回答问题。' },
+    ...s.messages.slice(-8),
+  ];
+  try {
+    await window.kb.askAI(buildAskPayload(messages, q));
+  } catch (err) {
+    // 兜底：发送链路抛异常也必须解除 busy，否则整个问答会被锁死
+    try { bubble.innerHTML = renderMarkdown((answer ? answer + '\n\n' : '') + '> ⚠ 发送失败：' + ((err && err.message) || err)); } catch (_) {}
+    try { finishView(false); } catch (_) { state.aiBusy = false; state.aiBusySessionId = null; setAiSendBusy(false); liveView = null; }
+  }
 }
 // ================= AI 问答 =================
 // 简单检索：对问题分词（英文单词 + 中文二元组），给笔记打分取 Top
@@ -428,7 +605,7 @@ function addAiMessage(role, contentHtml, sources) {
   if (sources && sources.length) {
     const src = document.createElement('div');
     src.className = 'sources';
-    src.textContent = '📎 参考笔记：' + sources.map((n) => n.title || '无标题').join('、');
+    src.textContent = '参考笔记：' + sources.map((n) => n.title || '无标题').join('、');
     div.appendChild(src);
   }
   box.appendChild(div);
@@ -453,6 +630,8 @@ function setAiSendBusy(busy) {
   });
 }
 function stopAiRequest() {
+  // 渲染端立即拆解（恢复可发送/清状态/收起步骤），再通知主进程中断 fetch
+  if (stopCurrentAi) { const f = stopCurrentAi; stopCurrentAi = null; try { f(); } catch (_) {} }
   if (window.kb.aiStop) window.kb.aiStop();
 }
 
@@ -466,32 +645,15 @@ async function sendAiQuestion() {
 
   addAiMessage('user', escapeHtml(question));
 
-  // Wiki 问答路径：勾选了 Wiki 且 Wiki 存在时走 wikiAsk（可附带笔记/图谱上下文）
-  const src = state.aiSources;
-  if (src.wiki && state.wiki.exists) {
-    const nc = src.notes ? buildNotesContext(question) : { context: '', refs: [] };
-    await sendWikiQuestion(question, { notesContext: nc.context, noteRefs: nc.refs, includeGraph: src.graph });
-    return;
-  }
-
-  const refs = src.notes ? retrieveNotes(question) : [];
-  const context = refs
-    .map((n, i) => `【笔记${i + 1}】标题：${n.title || '无标题'}\n${(n.content || '').slice(0, 1500)}`)
-    .join('\n\n');
-
-  const ext = extHint(question);
-  let systemPrompt = refs.length
-    ? `你是个人知识库助手。以下是用户知识库中与问题相关的笔记内容：\n\n${context}\n\n请主要依据上述笔记内容回答用户问题。回答使用 Markdown 格式；如笔记中没有相关内容，请如实说明。`
-    : `你是个人知识库助手。用户知识库中没有检索到与问题直接相关的内容。请用你自己的知识简要回答，并提示用户知识库中暂无相关笔记。回答使用 Markdown 格式。`;
-  if (ext) systemPrompt += '\n\n' + ext;
-
+  // 笔记/图谱/原始文件检索统一由主进程 knowledge 层完成（随勾选开关），
+  // 这里不再本地重复检索；参考引用经 ai:refs 事件回传展示
   const messages = [
-    { role: 'system', content: systemPrompt },
+    { role: 'system', content: '你是个人知识库助手，请简洁、准确地回答问题。' },
     ...aiHistory.slice(-8),
     { role: 'user', content: question },
   ];
 
-  const msgEl = addAiMessage('assistant', 'loading', refs);
+  const msgEl = addAiMessage('assistant', 'loading');
   const bubble = msgEl.querySelector('.bubble');
 
   state.aiBusy = true;
@@ -517,8 +679,16 @@ async function sendAiQuestion() {
     finish(false);
   });
   aiListeners = [offChunk, offDone, offError];
+  stopCurrentAi = () => {
+    cleanupAiListeners();
+    state.aiBusy = false;
+    bubble.classList.remove('is-loading');
+    bubble.innerHTML = renderMarkdown((answer ? answer + '\n\n' : '') + '> ⚠ 已停止。');
+    setAiSendBusy(false);
+  };
 
   function finish(ok) {
+    stopCurrentAi = null;
     state.aiBusy = false;
     setAiSendBusy(false);
     cleanupAiListeners();
@@ -532,23 +702,7 @@ async function sendAiQuestion() {
     }
   }
 
-  await window.kb.askAI({ settings: aiSettings(), messages, useGraph: state.aiSources.graph, extMcp: selectedMcpCfgs() });
-}
-
-// ---------- Wiki 问答与回填 ----------
-function setAiMode(mode) {
-  // 兼容旧调用：切换为勾选对应数据源
-  if (mode === 'wiki') state.aiSources.wiki = true;
-  if (mode === 'notes') state.aiSources.notes = true;
-  localStorage.setItem('kb.aiSources', JSON.stringify(state.aiSources));
-  applyAiSources();
-}
-
-// 笔记检索上下文（供 Wiki 问答路径附带使用）：返回拼好的上下文与引用笔记列表
-function buildNotesContext(question) {
-  const refs = retrieveNotes(question);
-  const context = refs.map((n, i) => `【笔记${i + 1}】标题：${n.title || '无标题'}\n${(n.content || '').slice(0, 1500)}`).join('\n\n');
-  return { context, refs };
+  await window.kb.askAI(buildAskPayload(messages, question));
 }
 
 // AI 问答数据源多选：加载/应用/绑定
@@ -556,30 +710,79 @@ function loadAiSources() {
   try {
     const s = JSON.parse(localStorage.getItem('kb.aiSources') || 'null');
     if (s && typeof s === 'object') {
-      // raws 为后加数据源：旧偏好里没有该键时默认开启，与其余三项一致
-      state.aiSources = { notes: !!s.notes, wiki: !!s.wiki, graph: !!s.graph, raws: s.raws !== false };
+      // 知识源默认都不选择：仅当用户明确勾选过（存为 true）才开启，未存过的源保持关闭
+      const next = {};
+      AI_SOURCE_DEFS.forEach(([k]) => { next[k] = s[k] === true; });
+      state.aiSources = next;
     }
   } catch (_) {}
 }
 
+// 知识源定义（key/图标/名称）：以主进程 knowledge 层的注册表为准，
+// 这里的内置值仅作为 IPC 还未返回前的兜底（新增知识源只需在主进程 register）
+// 图标列统一为 SVG sprite 的 symbol 名（渲染时用 icoSvg 展开）
+const AI_SRC_ICON_MAP = { notes: 'notes', graph: 'kg', raws: 'folder-open' };
+let AI_SOURCE_DEFS = [
+  ['notes', 'notes', '笔记'],
+  ['graph', 'kg', '知识图谱'],
+  ['raws', 'folder-open', '原始文件'],
+];
+
+// 从主进程拉取知识源清单，并为新源补默认开关（启动时调一次）
+async function loadKnowledgeSourceDefs() {
+  try {
+    const list = await window.kb.knowledgeSources();
+    if (Array.isArray(list) && list.length) {
+      AI_SOURCE_DEFS = list.map((s) => [s.key, AI_SRC_ICON_MAP[s.key] || 'book', s.label || s.key]);
+      // 新接入的知识源默认不勾选，与「默认都不选择」的初始状态一致
+      AI_SOURCE_DEFS.forEach(([k]) => { if (state.aiSources[k] === undefined) state.aiSources[k] = false; });
+      applyAiSources();
+    }
+  } catch (e) { console.warn('知识源清单获取失败，暂用内置默认：', e); }
+}
+
+// 知识源选择条（输入框上方平铺）：点一下即勾选/取消，与侧边面板的复选框共用 state.aiSources
+function renderAiSrcBar() {
+  const bar = $('ai-src-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  const head = document.createElement('span');
+  head.className = 'ai-src-head';
+  head.textContent = '知识源';
+  bar.appendChild(head);
+  AI_SOURCE_DEFS.forEach(([k, icon, label]) => {
+    const on = !!(state.aiSources && state.aiSources[k]);
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'ai-src-chip' + (on ? ' on' : '');
+    chip.title = on ? `已启用「${label}」作为知识源，点击取消` : `点击启用「${label}」作为知识源`;
+    chip.innerHTML = `<span class="chip-box">${on ? '✓' : ''}</span>${icoSvg(icon, 13)} ${escapeHtml(label)}`;
+    chip.addEventListener('click', () => {
+      state.aiSources[k] = !state.aiSources[k];
+      localStorage.setItem('kb.aiSources', JSON.stringify(state.aiSources));
+      applyAiSources();
+    });
+    bar.appendChild(chip);
+  });
+}
+
 function applyAiSources() {
-  $('ai-src-notes').checked = state.aiSources.notes;
-  $('ai-src-wiki').checked = state.aiSources.wiki;
-  $('ai-src-graph').checked = state.aiSources.graph;
+  if ($('ai-src-notes')) $('ai-src-notes').checked = state.aiSources.notes;
+  if ($('ai-src-graph')) $('ai-src-graph').checked = state.aiSources.graph;
   if ($('ai-src-raws')) $('ai-src-raws').checked = state.aiSources.raws;
+  renderAiSrcBar();
   const names = [];
   if (state.aiSources.notes) names.push('笔记');
-  if (state.aiSources.wiki) names.push('LLM Wiki');
   if (state.aiSources.graph) names.push('知识图谱');
   if (state.aiSources.raws) names.push('原始文件');
   $('ai-hint').textContent = names.length
-    ? `基于所选数据源回答：${names.join(' + ')}；Wiki 路径先查索引选页，图谱作为本体层上下文注入。`
+    ? `基于所选数据源回答：${names.join(' + ')}。`
     : '未选择数据源，模型将用自身知识回答。';
   renderAiExt();
 }
 
 function bindAiSources() {
-  ['notes', 'wiki', 'graph'].forEach((k) => {
+  ['notes', 'graph', 'raws'].forEach((k) => {
     $('ai-src-' + k).addEventListener('change', (e) => {
       state.aiSources[k] = e.target.checked;
       localStorage.setItem('kb.aiSources', JSON.stringify(state.aiSources));
@@ -641,16 +844,29 @@ function renderAiExt() {
     });
     box.appendChild(lab);
   };
-  mcps.forEach((m) => mk('mcp', '🧩', m));
-  skills.forEach((k) => mk('skill', '⚡', k));
+  mcps.forEach((m) => mk('mcp', icoSvg('mcp', 12), m));
+  skills.forEach((k) => mk('skill', icoSvg('skill', 12), k));
 }
 // 本次问答生效的 MCP 服务器配置（供后端列出/调用工具）；全部被去除时为空数组
 function selectedMcpCfgs() {
   return effectiveMcps();
 }
 
+// 统一构造 ai:ask 请求载荷：数据源勾选、生效技能、MCP 名单、扩展提示一次带齐。
+// 检索/引用/工具装载全部由主进程 knowledge 层与 MCP 层完成，渲染层只表达「本次选了什么」
+function buildAskPayload(messages, question) {
+  return {
+    settings: aiSettings(),
+    messages,
+    sources: { ...(state.aiSources || {}) },
+    skillNames: effectiveSkills().map((k) => k.name),
+    extHint: extHint(question),
+    extMcp: selectedMcpCfgs(),
+  };
+}
+
 // ---------- 模型选择（两级：provider → 具体模型；默认主模型） ----------
-// 选中项仅作用于 AI 问答 / Wiki 问答请求：按条目自带的 baseUrl / apiKey / model 覆盖 settings；
+// 选中项仅作用于 AI 问答请求：按条目自带的 baseUrl / apiKey / model 覆盖 settings；
 // 其余流程（作业、模版生成等）仍用设置页的默认主模型
 function loadAiModel() {
   try { state.aiModelId = localStorage.getItem('kb.aiModelId') || '__primary__'; }
@@ -731,7 +947,7 @@ function renderAiModelMenu(menuEl) {
   const tip = document.createElement('div');
   tip.className = 'ext-item';
   tip.style.opacity = '.55';
-  tip.textContent = '➕ 到 设置→模型配置 添加更多模型';
+  tip.textContent = '到 设置→模型配置 添加更多模型';
   menu.appendChild(tip);
 }
 
@@ -760,11 +976,11 @@ function renderAiExtMenu(menuEl, groups) {
   // 知识源三类（checkbox 选定）
   if (want('sources')) {
     const sg = document.createElement('div'); sg.className = 'ext-group'; sg.textContent = '知识源'; menu.appendChild(sg);
-    [['notes', '📝', '笔记'], ['wiki', '📖', 'Wiki'], ['graph', '🕸', '知识图谱'], ['raws', '🗄', '原始文件']].forEach(([k, icon, label]) => {
+    AI_SOURCE_DEFS.forEach(([k, icon, label]) => {
       const on = !!(state.aiSources && state.aiSources[k]);
       const d = document.createElement('div');
       d.className = 'ext-item';
-      d.innerHTML = `<span>${icon} ${label}</span>${on ? '<span class="chk">✓</span>' : ''}`;
+      d.innerHTML = `<span>${icoSvg(icon, 12)} ${label}</span>${on ? '<span class="chk">✓</span>' : ''}`;
       d.addEventListener('click', (e) => {
         e.stopPropagation();
         state.aiSources[k] = !state.aiSources[k];
@@ -793,11 +1009,11 @@ function renderAiExtMenu(menuEl, groups) {
   };
   if (want('skills')) {
     const g = document.createElement('div'); g.className = 'ext-group'; g.textContent = '技能'; menu.appendChild(g);
-    if (skills.length) skills.forEach((k) => item('skill', '⚡', k.name));
-    else { const h = document.createElement('div'); h.className = 'ext-item'; h.style.opacity = '.55'; h.textContent = '⚡ 到 设置→技能 添加'; menu.appendChild(h); }
+    if (skills.length) skills.forEach((k) => item('skill', icoSvg('skill', 12), k.name));
+    else { const h = document.createElement('div'); h.className = 'ext-item'; h.style.opacity = '.55'; h.textContent = '到 设置→技能 添加'; menu.appendChild(h); }
   }
   if (want('mcp')) {
-    if (mcps.length) { const g = document.createElement('div'); g.className = 'ext-group'; g.textContent = 'MCP'; menu.appendChild(g); mcps.forEach((m) => item('mcp', '🧩', m.name)); }
+    if (mcps.length) { const g = document.createElement('div'); g.className = 'ext-group'; g.textContent = 'MCP'; menu.appendChild(g); mcps.forEach((m) => item('mcp', icoSvg('mcp', 12), m.name)); }
   }
 }
 // 输入区 🧩/⚡ 按钮的悬停提示：以「参与数/总数」体现当前状态。
@@ -817,7 +1033,7 @@ function createStepsGroup() {
   const wrap = document.createElement('div');
   wrap.className = 'ai-steps';
   wrap.innerHTML =
-    '<button type="button" class="ai-steps-head"><span class="ai-steps-ico">👁</span>' +
+    '<button type="button" class="ai-steps-head"><span class="ai-steps-ico">' + icoSvg('search', 12) + '</span>' +
     '<span class="ai-steps-label">准备中…</span><span class="ai-steps-caret">▾</span></button>' +
     '<div class="ai-steps-body"></div>';
   const head = wrap.querySelector('.ai-steps-head');
@@ -839,6 +1055,8 @@ function createStepsGroup() {
           // 主进程从完整返回提取的参考链接（result 已被截断，不可再解析）
           if (Array.isArray(s.links) && s.links.length) lastToolRec.links = s.links;
           if (lastToolRec.detailEl) lastToolRec.detailEl.textContent = (lastToolRec.args || '') + '\n—— 返回 ——\n' + (s.text || '');
+          // 生图/文件类工具：把返回里的图片链接渲染成可点击预览
+          if (lastToolRec.detailEl) appendImagePreview(lastToolRec.detailEl.parentElement, s.text, '工具返回的图片');
         }
         return;
       }
@@ -856,7 +1074,7 @@ function createStepsGroup() {
           const d = document.createElement('details');
           d.className = 'ai-step-item thought';
           d.open = true;
-          d.innerHTML = '<summary>💭 思考过程（实时输出，点击可收起）</summary><div class="ai-step-detail"></div>';
+          d.innerHTML = '<summary>思考过程（实时输出，点击可收起）</summary><div class="ai-step-detail"></div>';
           rec.detailEl = d.querySelector('.ai-step-detail');
           rec.detailEl.textContent = rec.text;
           body.appendChild(d);
@@ -870,7 +1088,7 @@ function createStepsGroup() {
       steps.push(rec);
       const d = document.createElement('details');
       d.className = 'ai-step-item ' + (s.kind === 'tool' ? 'tool' : 'thought');
-      const lab = s.kind === 'tool' ? '🖥 调用工具：' + (s.name || '') : '💭 ' + String(s.text || '').slice(0, 60);
+      const lab = s.kind === 'tool' ? '调用工具：' + (s.name || '') : String(s.text || '').slice(0, 60);
       d.innerHTML = '<summary>' + escapeHtml(lab) + '</summary><div class="ai-step-detail"></div>';
       rec.detailEl = d.querySelector('.ai-step-detail');
       rec.detailEl.textContent = s.kind === 'tool' ? (s.args || '') : (s.text || '');
@@ -910,7 +1128,10 @@ function startStatusbar() {
   el.hidden = false;
   const t0 = Date.now();
   let text = '思考';
-  const tick = () => { el.textContent = `● ${text}中… ${((Date.now() - t0) / 1000).toFixed(1)}s`; };
+  const tick = () => {
+    const sec = ((Date.now() - t0) / 1000).toFixed(1);
+    el.textContent = /[…。！]$/.test(text) ? `● ${text} ${sec}s` : `● ${text}中… ${sec}s`;
+  };
   tick();
   const timer = setInterval(tick, 100);
   return {
@@ -992,9 +1213,8 @@ function bindAiExtPicker(btnId, menuId, groups) {
   });
   document.addEventListener('click', (e) => { if (!menu.hidden && !menu.contains(e.target) && e.target !== btn) menu.hidden = true; });
 }
-// 刷新三个分类菜单（知识源/MCP/技能）
+// 刷新两个分类菜单（MCP/技能）；知识源已改为输入框上方平铺选择，不再走菜单
 function refreshAllExtMenus() {
-  renderAiExtMenu($('ai-menu-src'), ['sources']);
   renderAiExtMenu($('ai-menu-mcp'), ['mcp']);
   renderAiExtMenu($('ai-menu-skill'), ['skills']);
 }
@@ -1027,87 +1247,6 @@ function autoSkillNames(question) {
     if (q.includes(n)) return true;
     return (aliases[n] || []).some((a) => q.includes(a));
   }).map((k) => k.name);
-}
-
-async function sendWikiQuestion(question, opts = {}) {
-  const { notesContext = '', noteRefs = [], includeGraph = false } = opts;
-  // 参考笔记随消息展示，让用户看到笔记数据源确实被查询
-  const msgEl = addAiMessage('assistant', '', noteRefs);
-  msgEl.querySelector('.bubble').classList.add('is-loading');
-  msgEl.querySelector('.bubble').innerHTML = loadingHtml('正在查阅 Wiki');
-  const bubble = msgEl.querySelector('.bubble');
-
-  state.aiBusy = true;
-  setAiSendBusy(true);
-  cleanupAiListeners();
-
-  let answer = '';
-  const offRefs = window.kb.onWikiRefs((refs) => {
-    // 兼容新旧结构：旧版为页面路径数组，新版为 { pages, graph }
-    const pages = Array.isArray(refs) ? refs : (refs && refs.pages) || [];
-    const graphHits = (!Array.isArray(refs) && refs && refs.graph) || [];
-    if (!pages.length && !graphHits.length) return;
-    const box = document.createElement('div');
-    box.className = 'ai-refs';
-    const addLabel = (text) => {
-      const label = document.createElement('span');
-      label.style.cssText = 'font-size:11px;color:var(--text-sub)';
-      label.textContent = text;
-      box.appendChild(label);
-    };
-    if (pages.length) {
-      addLabel('📖 引用页面：');
-      pages.forEach((p) => {
-        const chip = document.createElement('span');
-        chip.className = 'ai-ref-chip';
-        chip.textContent = p;
-        chip.onclick = () => openWikiPage(p);
-        box.appendChild(chip);
-      });
-    }
-    if (graphHits.length) {
-      addLabel('🕸 图谱实体：');
-      graphHits.forEach((name) => {
-        const chip = document.createElement('span');
-        chip.className = 'ai-ref-chip';
-        chip.textContent = name;
-        box.appendChild(chip);
-      });
-    }
-    msgEl.appendChild(box);
-    $('ai-messages').scrollTop = $('ai-messages').scrollHeight;
-  });
-  const offChunk = window.kb.onAiChunk((chunk) => {
-    answer += chunk;
-    bubble.innerHTML = renderMarkdown(answer);
-    $('ai-messages').scrollTop = $('ai-messages').scrollHeight;
-  });
-  const offDone = window.kb.onAiDone(() => finish(true));
-  const offError = window.kb.onAiError((message) => {
-    if (!answer) {
-      msgEl.remove();
-      addAiMessage('error', escapeHtml(message));
-    } else {
-      bubble.innerHTML = renderMarkdown(answer + `\n\n> ⚠ ${message}`);
-    }
-    finish(false);
-  });
-  aiListeners = [offRefs, offChunk, offDone, offError];
-
-  function finish(ok) {
-    state.aiBusy = false;
-    setAiSendBusy(false);
-    cleanupAiListeners();
-    if (answer) {
-      aiHistory.push({ role: 'user', content: question });
-      aiHistory.push({ role: 'assistant', content: answer });
-      saveAiHistory();
-      bubble.innerHTML = renderMarkdown(answer);
-      if (ok) addFileAnswerButton(msgEl, question, answer);
-    }
-  }
-
-  await window.kb.wikiAsk({ settings: state.settings, question, notesContext, includeGraph, extHint: extHint(question), history: aiHistory.slice(-8), extMcp: selectedMcpCfgs() });
 }
 
 // ---------- 答案附属展示：来源条 / 操作行 / 产物卡片 ----------
@@ -1163,11 +1302,11 @@ function renderArtifacts(msgEl, artifacts) {
     const card = document.createElement('div');
     card.className = 'ai-artifact done';   // done 表示可点开（与归档卡区分）
     card.innerHTML =
-      '<span class="ai-artifact-ico">📄</span>' +
+      '<span class="ai-artifact-ico">' + icoSvg('notes', 14) + '</span>' +
       '<div class="ai-artifact-info"><div class="t"></div><div class="p"></div></div>' +
       '<button type="button" class="btn btn-ghost ai-artifact-btn" data-open>打开</button>' +
-      '<button type="button" class="btn btn-ghost ai-artifact-btn" data-reveal title="在文件夹中定位">📂 所在文件夹</button>' +
-      '<button type="button" class="btn btn-ghost ai-artifact-btn" data-copy title="复制完整路径">⏘ 路径</button>';
+      '<button type="button" class="btn btn-ghost ai-artifact-btn" data-reveal title="在文件夹中定位">' + icoSvg('folder-open', 12) + '所在文件夹</button>' +
+      '<button type="button" class="btn btn-ghost ai-artifact-btn" data-copy title="复制完整路径">路径</button>';
     card.querySelector('.t').textContent = a.name || a.path;
     // 存储位置直接显示出来（之前只在 tooltip 里，看不到文件到底存哪了）；
     // 行内只显所在目录（文件名上一行已有），完整路径放 tooltip 与「路径」按钮
@@ -1207,20 +1346,19 @@ function renderArtifacts(msgEl, artifacts) {
     msgEl.appendChild(card);
   });
 }
-// 统一引用展示：Wiki 页面 + 笔记 + 图谱实体 + 外部来源（竖排 bullet 列表）
-// 点击各自跳转对应主展示框架：Wiki 阅读器 / 笔记编辑器 / 知识图谱实体浏览
+// 统一引用展示：笔记 + 图谱实体 + 原始文件 + 外部来源（竖排 bullet 列表）
+// 点击各自跳转对应主展示框架：笔记编辑器 / 知识图谱实体浏览 / 原始文件
 function renderCitations(msgEl, cit) {
-  const pages = (cit && cit.pages) || [];
   const notes = (cit && cit.notes) || [];
   const hits = (cit && cit.hits) || [];
   const sources = (cit && cit.sources) || [];
   const raws = (cit && cit.raws) || [];
-  if (!pages.length && !notes.length && !hits.length && !sources.length && !raws.length) return;
+  if (!notes.length && !hits.length && !sources.length && !raws.length) return;
   const box = document.createElement('div');
   box.className = 'ai-refs';
   const label = document.createElement('span');
   label.className = 'ai-refs-label';
-  label.textContent = '🔗 引用';
+  label.textContent = '引用';
   box.appendChild(label);
   const addRow = (node) => {
     const row = document.createElement('div');
@@ -1228,21 +1366,12 @@ function renderCitations(msgEl, cit) {
     row.appendChild(node);
     box.appendChild(row);
   };
-  // Wiki 知识源 → Wiki 阅读器
-  pages.forEach((p) => {
-    const a = document.createElement('a');
-    a.className = 'ai-ref-chip';
-    a.href = '/' + String(p).replace(/^\//, '');
-    a.textContent = '📖 ' + String(p).split('/').pop().replace(/\.md$/, '');
-    a.title = p;
-    addRow(a);
-  });
   // 笔记知识源 → 笔记编辑器
   notes.forEach((n) => {
     const a = document.createElement('a');
     a.className = 'ai-ref-chip';
     a.href = '#note';
-    a.textContent = '📝 ' + (n.title || '无标题笔记');
+    a.innerHTML = icoSvg('notes', 12) + escapeHtml(n.title || '无标题笔记');
     a.title = '笔记：' + (n.title || '');
     a.addEventListener('click', (e) => {
       e.preventDefault(); e.stopPropagation();
@@ -1256,7 +1385,9 @@ function renderCitations(msgEl, cit) {
     const a = document.createElement('a');
     a.className = 'ai-ref-chip' + (r.strong ? '' : ' weak');
     a.href = '#raw';
-    a.textContent = '🗄 ' + (r.name || r.path);
+    // 网页链接引用用链接图标（与原始文件页一致），与本地文件/目录区分
+    const isUrlRef = String(r.path).startsWith('url:');
+    a.innerHTML = icoSvg(isUrlRef ? 'mcp' : 'folder-open', 12) + escapeHtml(r.name || r.path);
     a.title = `原始文件关键字命中${r.strong ? '' : '（弱命中，可能不相关）'}：${(r.matched || []).join('、')}\n${String(r.path).replace(/^local:/, '')}`;
     a.addEventListener('click', (e) => {
       e.preventDefault(); e.stopPropagation();
@@ -1269,7 +1400,7 @@ function renderCitations(msgEl, cit) {
     const a = document.createElement('a');
     a.className = 'ai-ref-chip';
     a.href = '#graph';
-    a.textContent = '🕸 ' + name;
+    a.innerHTML = icoSvg('kg', 12) + escapeHtml(name);
     a.title = '知识图谱实体：' + name;
     a.addEventListener('click', (e) => {
       e.preventDefault(); e.stopPropagation();
@@ -1324,7 +1455,7 @@ function ensureSrcPop() {
   srcPop.innerHTML =
     '<div class="ai-src-pop-t"></div><div class="ai-src-pop-d"></div>' +
     '<div class="ai-src-pop-f"><span class="ai-src-pop-domain"></span>' +
-    '<button type="button" class="ai-src-pop-copy">🔗 复制链接</button></div>';
+    '<button type="button" class="ai-src-pop-copy">复制链接</button></div>';
   srcPop.addEventListener('mouseenter', () => clearTimeout(srcPopTimer));
   srcPop.addEventListener('mouseleave', hideSrcPop);
   srcPop.querySelector('.ai-src-pop-copy').addEventListener('click', async (e) => {
@@ -1366,54 +1497,241 @@ function bindSrcPop(chip, src) {
   });
   chip.addEventListener('mouseleave', hideSrcPop);
 }
-// 答案操作行：复制 / 有帮助 / 待改进 / 耗时（评级随会话持久化）
+// 答案操作行：复制 / 收藏 / 添加到笔记 / 耗时（收藏状态随会话持久化）
 function addAnswerMeta(msgEl, opts) {
-  const { answer = '', ms, record = null } = opts || {};
+  const { answer = '', ms, record = null, question = '' } = opts || {};
   const bar = document.createElement('div');
   bar.className = 'ai-meta';
   bar.innerHTML =
-    '<button type="button" class="ai-meta-btn" data-act="copy" title="复制回答">📋</button>' +
-    '<button type="button" class="ai-meta-btn" data-act="up" title="有帮助">👍</button>' +
-    '<button type="button" class="ai-meta-btn" data-act="down" title="待改进">👎</button>' +
+    '<button type="button" class="ai-meta-btn" data-act="copy" title="复制回答">' + icoSvg('save', 12) + '</button>' +
+    '<button type="button" class="ai-meta-btn" data-act="fav" title="收藏">' + icoSvg('star', 12) + '</button>' +
+    '<button type="button" class="ai-meta-btn" data-act="note" title="添加到笔记">' + icoSvg('notes', 12) + '</button>' +
     (ms ? `<span class="ai-meta-time">${fmtElapsed(ms)}</span>` : '');
   const apply = () => {
-    bar.querySelector('[data-act="up"]').classList.toggle('on', !!(record && record.rating === 1));
-    bar.querySelector('[data-act="down"]').classList.toggle('on', !!(record && record.rating === -1));
+    const b = bar.querySelector('[data-act="fav"]');
+    const on = !!(record && record.fav);
+    b.classList.toggle('on', on);
+    b.title = on ? '取消收藏' : '收藏';
   };
   bar.querySelector('[data-act="copy"]').addEventListener('click', async (e) => {
     e.stopPropagation();
     try { await navigator.clipboard.writeText(answer); toast('已复制回答'); }
     catch (_) { toast('复制失败', 2500); }
   });
-  const rate = (v) => { if (record) { record.rating = record.rating === v ? 0 : v; saveAiSessions(); } apply(); };
-  bar.querySelector('[data-act="up"]').addEventListener('click', (e) => { e.stopPropagation(); rate(1); });
-  bar.querySelector('[data-act="down"]').addEventListener('click', (e) => { e.stopPropagation(); rate(-1); });
+  bar.querySelector('[data-act="fav"]').addEventListener('click', (e) => { e.stopPropagation(); toggleFavorite(record); apply(); });
+  // 添加到笔记：与回填卡片共用 saveAnswerToNote；成功后再点直接跳转到该笔记
+  const noteBtn = bar.querySelector('[data-act="note"]');
+  noteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (record && record.savedNoteId) { selectNote(record.savedNoteId); return; }
+    const res = saveAnswerToNote(question, answer);
+    if (res.ok && record) record.savedNoteId = res.noteId;
+    saveAiSessions();
+  });
   apply();
   msgEl.appendChild(bar);
 }
-// 产物卡片：把长回答归档为 Wiki 页（参考产品产物文件卡片样式）
+
+// ---------- 收藏 ----------
+// 收藏标记直接写在消息记录上（fav/favAt），随会话一起经 chat:saveSessions 存入 kv.aiSessions，无需改主进程
+function toggleFavorite(record) {
+  if (!record) return;
+  record.fav = !record.fav;
+  record.favAt = record.fav ? Date.now() : 0;
+  saveAiSessions();
+  toast(record.fav ? '已收藏' : '已取消收藏', 1500);
+  renderAiSessionList(); // 收藏视图下即刷新收藏列表，同时更新按钮计数
+}
+// 收集全部会话中被收藏的回答，按收藏时间倒序
+function collectFavorites() {
+  const out = [];
+  (state.aiSessions || []).forEach((s) => {
+    (s.messages || []).forEach((m) => {
+      if (m.role === 'assistant' && m.fav) out.push({ s, m });
+    });
+  });
+  out.sort((a, b) => (b.m.favAt || 0) - (a.m.favAt || 0));
+  return out;
+}
+function updateFavBtn() {
+  const b = $('btn-ai-favs'); if (!b) return;
+  const n = collectFavorites().length;
+  b.innerHTML = icoSvg('star', 13) + (n ? `我的收藏（${n}）` : '我的收藏');
+  b.classList.toggle('active', !!state.favView);
+}
+// 「我的收藏」按钮：把左侧列表切换为收藏视图（再点切回会话列表）
+function showFavorites() {
+  state.favView = !state.favView;
+  renderAiSessionList();
+}
+function renderFavorites() {
+  const box = $('ai-session-list'); if (!box) return;
+  box.innerHTML = '';
+  const favs = collectFavorites();
+  if (!favs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'ai-fav-empty';
+    empty.innerHTML = '暂无收藏<br>点击回答下方的收藏按钮即可收藏';
+    box.appendChild(empty);
+    return;
+  }
+  favs.forEach(({ s, m }) => {
+    const d = document.createElement('div');
+    d.className = 'ai-session-item fav';
+    const first = (m.content || '').replace(/[#>*`\-\n]+/g, ' ').trim().slice(0, 26) || '收藏';
+    d.innerHTML = `<div class="t">${icoSvg('star', 12)} ${escapeHtml(first)}</div>`
+      + `<div class="d">${escapeHtml(s.title || '新任务')}</div>`;
+    d.title = '点击定位到原对话';
+    d.addEventListener('click', () => { state.favView = false; openAiSession(s.id, m); });
+    box.appendChild(d);
+  });
+}
+
+// ================= 使用手册（应用内查看 docs/ 目录 Markdown） =================
+const DOCS_INDEX = 'README.md';
+// GitHub 风格标题锚点：小写、去标点、空格换连字符（与文档内 #anchor 链接一致）
+function docAnchorSlug(text) {
+  return String(text || '').toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s+/g, '-');
+}
+async function openDocs(file, anchor) {
+  const res = await window.kb.readDoc({ file: file || DOCS_INDEX });
+  if (!res || !res.ok) { toast('手册加载失败：' + ((res && res.error) || '未知错误'), 3000); return; }
+  hideMainViews();
+  setAiPanelVisible(false);
+  $('docs-view').hidden = false;
+  syncNoteListVisibility();
+  renderDoc(res.text, res.root || '', file || DOCS_INDEX, anchor);
+}
+// 手册相对资源（图片等）路由：Web 走 /docs/，桌面走 kb-doc 协议（主进程限定 docs 目录）
+function docAssetUrl(rel, root) {
+  return window.__KB_WEB__ ? '/docs/' + rel : 'kb-doc://file' + (root + '/' + rel).replace(/\\/g, '/');
+}
+const DOC_ASSET_IMG_RE = /\.(png|jpe?g|gif|svg|webp|bmp)$/i;
+// 应用内大图预览弹层：点击任意处关闭；加载失败给提示并可新窗口打开，避免黑屏空白
+function showDocImageOverlay(url, label) {
+  const ov = document.createElement('div');
+  ov.className = 'doc-asset-overlay';
+  ov.title = '点击任意处关闭';
+  let failed = false;
+  const img = document.createElement('img');
+  img.src = url;
+  img.alt = label || url;
+  img.addEventListener('error', () => {
+    failed = true;
+    img.remove();
+    const tip = document.createElement('div');
+    tip.className = 'doc-asset-tip';
+    tip.textContent = '预览加载失败，点击在新窗口打开';
+    ov.appendChild(tip);
+  });
+  ov.addEventListener('click', () => {
+    ov.remove();
+    if (failed && window.__KB_WEB__) window.open(url, '_blank');
+  });
+  ov.appendChild(img);
+  document.body.appendChild(ov);
+}
+// 点击手册内相对资源链接：图片应用内大图预览，其它文件新标签/本机打开，避免直接导航相对路径导致空白
+function openDocAsset(rel, root) {
+  const url = docAssetUrl(rel, root);
+  if (!DOC_ASSET_IMG_RE.test(rel)) {
+    if (window.__KB_WEB__) { window.open(url, '_blank'); return; }
+    if (window.kb.openPath) window.kb.openPath({ path: (root + '/' + rel).replace(/\\/g, '/') });
+    return;
+  }
+  showDocImageOverlay(url, rel);
+}
+function renderDoc(text, root, file, anchor) {
+  const body = $('docs-body');
+  body.innerHTML = renderMarkdown(text);
+  // 相对图片改写为手册资源路由：Web 走 /docs/，桌面走 kb-doc 协议（主进程限定 docs 目录）
+  body.querySelectorAll('img[src]').forEach((img) => {
+    const src = img.getAttribute('src') || '';
+    if (!/^(https?:|kb-asset:|kb-doc:|\/)/i.test(src)) img.src = docAssetUrl(src, root);
+    // 内嵌图点击放大预览（用已解析的 img.src，兼容相对/绝对路径）
+    img.classList.add('doc-img-zoom');
+    img.addEventListener('click', () => showDocImageOverlay(img.src, src));
+  });
+  // 文档内链接应用内跳转：.md(#anchor) 走手册导航，外链走系统浏览器
+  body.querySelectorAll('a[href]').forEach((a) => {
+    const href = a.getAttribute('href') || '';
+    if (/^https?:/i.test(href)) {
+      a.addEventListener('click', (e) => { e.preventDefault(); if (window.kb.openExternal) window.kb.openExternal(href); });
+      return;
+    }
+    if (/\.md($|#)/i.test(href)) {
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        const [f, anc] = href.split('#');
+        // marked 会把中文文件名 URL 编码（01-%E5%BF%AB…md），readDoc 按真实文件名查找，需解码
+        let name = f || file;
+        try { name = decodeURIComponent(name); } catch (_) { /* 非法编码保留原样 */ }
+        openDocs(name, anc);
+      });
+      return;
+    }
+    // 其余相对链接（截图等附件）：拦截点击，应用内预览/打开，避免导航到相对路径出现空白页
+    if (href && !/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith('#')) {
+      a.addEventListener('click', (e) => { e.preventDefault(); openDocAsset(href, root); });
+    }
+  });
+  if (anchor) {
+    const target = Array.from(body.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+      .find((h) => docAnchorSlug(h.textContent) === anchor.toLowerCase());
+    if (target) setTimeout(() => target.scrollIntoView({ block: 'start' }), 30);
+  } else {
+    body.scrollTop = 0;
+  }
+}
+// 把一次问答存为新笔记（操作行「添加到笔记」与回填卡片共用）
+function saveAnswerToNote(question, answer) {
+  try {
+    const title = uniqueNoteTitle((question || 'AI 问答').slice(0, 40), null);
+    const note = {
+      id: uid(),
+      title,
+      content: `# 问题\n\n${question || ''}\n\n# 回答\n\n${answer}\n\n> 来源：AI 问答 · ${new Date().toLocaleString()}`,
+      tags: ['AI问答'],
+      folderId: null,
+      pinned: false,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    state.notes.unshift(note);
+    persist();
+    renderNoteList();
+    renderSidebar();
+    toast('回答已存入笔记：' + title);
+    return { ok: true, noteId: note.id, title };
+  } catch (err) {
+    toast('存入笔记失败：' + err.message, 4000);
+    return { ok: false, error: err.message };
+  }
+}
+// 产物卡片：把长回答回填为笔记（参考产品产物文件卡片样式）
+// 成功后按钮移除、卡片变 done，点击卡片跳转到该笔记
 function addFileAnswerButton(msgEl, question, answer) {
   const card = document.createElement('div');
   card.className = 'ai-artifact';
   card.innerHTML =
-    '<span class="ai-artifact-ico">📄</span>' +
-    '<div class="ai-artifact-info"><div class="t">将回答归档为 Wiki 页面</div><div class="d">Markdown · 存入 LLM Wiki</div></div>' +
-    '<button type="button" class="btn btn-ghost ai-artifact-btn">↩ 回填</button>';
+    '<span class="ai-artifact-ico">' + icoSvg('notes', 14) + '</span>' +
+    '<div class="ai-artifact-info"><div class="t">将回答回填到笔记</div><div class="d">Markdown · 存入笔记</div></div>' +
+    '<button type="button" class="btn btn-ghost ai-artifact-btn">回填</button>';
+  let openFn = null; // 成功回填后的跳转目标
+  card.addEventListener('click', () => { if (openFn) openFn(); });
   const btn = card.querySelector('button');
-  btn.addEventListener('click', async () => {
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
     btn.disabled = true;
-    btn.textContent = '归档中…';
-    const res = await window.kb.wikiFileAnswer({ settings: state.settings, question, answer });
+    btn.textContent = '存入中…';
+    const res = saveAnswerToNote(question, answer);
     if (res.ok) {
-      card.querySelector('.t').textContent = res.path;
-      card.querySelector('.d').textContent = '已归档 · 点击打开页面';
-      card.classList.add('done');
       btn.remove();
-      card.addEventListener('click', () => openWikiPage(res.path));
-      toast('回答已回填：' + res.path);
-      await loadWiki();
+      card.querySelector('.t').textContent = '已存入笔记：' + res.title;
+      card.querySelector('.d').textContent = '点击打开';
+      card.classList.add('done');
+      openFn = () => selectNote(res.noteId);
     } else {
-      toast('回填失败：' + res.error, 4000);
       btn.disabled = false;
       btn.textContent = '↩ 回填';
     }
