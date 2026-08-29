@@ -49,8 +49,18 @@ function canImportAsNote(settings, fileName) {
 // 会把中文路径打成 ◆◆◆◆ 乱码；管道按块切分还可能把多字节字符拦腰截断产生替换符。双保险：
 // 1) 给子进程注入 PYTHONUTF8/PYTHONIOENCODING，让 Python 系进程直接输出 UTF-8；
 // 2) 流式解码器跨块保留末尾不完整序列，UTF-8 非法时回退 GBK（仅 Windows）。
+// Windows 下 Python 的 httpx/urllib 会读注册表里的系统代理（WinINet 设置），本机一旦开代理，
+// MinerU 本地 API 的 loopback 健康检查（http://127.0.0.1:<port>/health）也会被送到远程代理节点，
+// 远端连不回本机端口 → 502 Bad Gateway → 健康检查永远不通过直到超时。
+// 故对子进程注入 loopback 的 NO_PROXY 白名单（与已有配置合并，不影响外网走代理）。
+const LOOPBACK_NO_PROXY = '127.0.0.1,localhost,::1';
 function childUtf8Env(extra) {
-  return { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(extra || {}) };
+  const env = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...(extra || {}) };
+  for (const key of ['NO_PROXY', 'no_proxy']) {
+    const cur = String(env[key] || '').trim();
+    env[key] = cur ? `${cur},${LOOPBACK_NO_PROXY}` : LOOPBACK_NO_PROXY;
+  }
+  return env;
 }
 
 function createChildStreamDecoder() {
