@@ -333,8 +333,10 @@ const JOB_RUNNERS = {
       try {
         const info = {}; // extractFileContent 经此交还本次 MinerU 转换暂存的图片目录与解析方式（并发安全，不用全局静态字段）
         // MinerU 子进程输出（含进度条 \r 刷新）经 onLog 流式接入作业「解析过程」，前端实时展示
+        // noCache：提取笔记每次重新生成，不读提取缓存（缓存仅供问答扫描提速，新结果仍会落盘刷新缓存）
         const text = await extractFileContent(abs, settings, {
           forceMineru: !!forceMineru,
+          noCache: true,
           info,
           onLog: (line, replace) => jobLog(job, `[${record.name}] ${line}`, replace),
         });

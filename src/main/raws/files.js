@@ -124,6 +124,60 @@ function buildMineruArgv(parts, input, output) {
   return argv;
 }
 
+// ============ Ollama 服务按需自动启动 ============
+// MinerU 包装脚本（mineru-run.bat）固定走 hybrid-http-client 后端，VLM 推理依赖本机 Ollama 服务
+// （默认 http://127.0.0.1:11434）。Ollama 未启动时 MinerU 报「Failed to connect to server」并回退内置，
+// 笔记质量明显下降。这里在跑 MinerU 转换前探测服务，未启动则自动拉起 ollama serve 并等待就绪。
+// 就绪探测走 Node 原生 http 模块（不读系统代理，不会把 loopback 请求发到远端代理节点）。
+function ollamaBaseUrlFromCmd(parts) {
+  const joined = (parts || []).join(' ');
+  const m = /-u\s+(\S+)/.exec(joined);
+  const raw = m ? m[1] : MINERU_DEFAULT_OLLAMA_URL;
+  return String(raw).replace(/\/+$/, '').replace(/\/v1$/i, '');
+}
+function pingOllama(baseUrl, timeoutMs = 3000) {
+  return new Promise((resolve) => {
+    try {
+      const u = new URL(baseUrl + '/api/version');
+      const req = require('http').request({ hostname: u.hostname, port: u.port || 80, path: u.pathname, method: 'GET', timeout: timeoutMs }, (res) => {
+        res.resume();
+        resolve(res.statusCode >= 200 && res.statusCode < 500);
+      });
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+      req.on('error', () => resolve(false));
+      req.end();
+    } catch (_) { resolve(false); }
+  });
+}
+// 自启动的 Ollama 进程句柄（detached + unref，应用退出不等待它；Ollama 作为本机服务继续运行）
+let ollamaStartedByUs = null;
+async function ensureOllamaServer(settings, onLog) {
+  const parts = mineruCmdParts(settings);
+  if (!parts || !parts.length) return; // 未配置 MinerU，无需拉起
+  const baseUrl = ollamaBaseUrlFromCmd(parts);
+  if (await pingOllama(baseUrl)) return; // 已在运行
+  onLog(`⏳ Ollama 服务未运行（${baseUrl}），正在自动启动…`);
+  let started = false;
+  if (ollamaStartedByUs && !ollamaStartedByUs.killed && ollamaStartedByUs.exitCode === null) {
+    started = true; // 已由本进程拉起，等待就绪即可
+  } else {
+    try {
+      // 继承系统环境但不注入 NO_PROXY 等子进程改写（ollama serve 只需本机监听）
+      const child = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore', windowsHide: true });
+      child.unref();
+      ollamaStartedByUs = child;
+      started = true;
+    } catch (_) { started = false; }
+  }
+  if (!started) { onLog('⚠ 未找到 ollama 命令，无法自动启动 Ollama 服务（请先安装 Ollama 或手动运行 ollama serve）'); return; }
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1000));
+    if (await pingOllama(baseUrl)) { onLog(`✅ Ollama 服务已就绪（${baseUrl}）`); return; }
+  }
+  onLog('⚠ Ollama 服务启动后 30 秒内未就绪，继续尝试转换（如失败请手动检查 ollama serve）');
+}
+
 // 递归收集目录下所有 .md（MinerU 会按 <文件名>/auto/<文件名>.md 之类结构产出），取内容最长者
 function collectMarkdownFiles(dir) {
   const out = [];
@@ -216,6 +270,9 @@ async function convertWithMineru(settings, absPath, opts = {}) {
   const parts = mineruCmdParts(settings);
   if (!parts || !parts.length) return null;
   const onLog = typeof opts.onLog === 'function' ? opts.onLog : () => {};
+  // hybrid-http-client 后端依赖本机 Ollama VLM 服务：MinerU 已配置而 Ollama 未启动时，
+  // 应用自动拉起 ollama serve 并等待就绪，避免「Failed to connect to server http://localhost:11434」回退内置
+  try { await ensureOllamaServer(settings, onLog); } catch (_) { /* 拉起失败不阻断，转换报错时如实展示原因 */ }
   // opts.outDir：调用方指定输出目录（如配置测试要保留产物），否则用临时目录并在结束后清理
   const keepOut = !!opts.outDir;
   const outDir = keepOut ? opts.outDir : fs.mkdtempSync(path.join(os.tmpdir(), 'synapse-mineru-'));
@@ -694,8 +751,10 @@ function writeExtractCache(absPath, text, method, reason) {
 }
 // 对外入口：带缓存的提取。静态属性（lastParseMethod/lastExternalError，jobs.js 读取）
 // 在真实跑解析时由 extractFileContentRaw 维护；命中缓存时沿用条目记录的解析方式（如实展示）。
+// opts.noCache：跳过读缓存每次重新生成（提取笔记作业/单文件提取使用，用户要求产物始终为最新解析）；
+// 问答扫描（readRawText 等）不传该项，仍走缓存避免反复跑分钟级 MinerU 转换。新生成结果照常落盘刷新缓存。
 async function extractFileContent(absPath, settings, opts = {}) {
-  if (!(opts && opts.forceMineru)) {
+  if (!(opts && opts.forceMineru) && !(opts && opts.noCache)) {
     const hit = readExtractCache(absPath, settings);
     if (hit) {
       extractFileContent.lastParseMethod = hit.method;

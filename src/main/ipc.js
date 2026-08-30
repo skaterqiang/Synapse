@@ -304,7 +304,8 @@ function registerIpc(getWindow) {
       }
       const abs = key.startsWith('local:') ? key.slice('local:'.length) : path.join(rawsRoot(settings), key.replace(/^\//, ''));
       const info = {}; // extractFileContent 经此交还本次 MinerU 转换暂存的图片目录
-      const text = await extractFileContent(abs, settings, { info });
+      // noCache：与提取笔记作业同口径，每次重新生成，不读提取缓存
+      const text = await extractFileContent(abs, settings, { info, noCache: true });
       // 目录层级与作业版保持一致（根目录名 + 子目录），key 作为 source 供重复提取时原地更新；
       // 单文件引用（无 root/rel）用文件所在父目录名作笔记目录，避免落入垃圾桶
       const rootName = record.root
