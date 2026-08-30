@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('kb', {
   tplGenerate: (payload) => ipcRenderer.invoke('tpl:generate', payload),
   tplSuggest: (payload) => ipcRenderer.invoke('tpl:suggest', payload),
   tplMatchPrompt: () => ipcRenderer.invoke('tpl:matchPrompt'),
+  tplProfileTree: (profileId) => ipcRenderer.invoke('tpl:profileTree', profileId),
   tplMatchFor: (payload) => ipcRenderer.invoke('tpl:matchFor', payload), // 吸收前领域模板预检查
   tplSuggestName: (payload) => ipcRenderer.invoke('tpl:suggestName', payload), // 未命中后按来源内容归纳领域名称（供新建弹窗自动填充）
   promptsDefs: () => ipcRenderer.invoke('prompts:defs'),
@@ -140,11 +141,15 @@ contextBridge.exposeInMainWorld('kb', {
   // 知识图谱
   graphGet: () => ipcRenderer.invoke('graph:get'),
   graphClear: () => ipcRenderer.invoke('graph:clear'),
-  graphOntology: () => ipcRenderer.invoke('graph:ontology'),
+  graphOntology: (profileId) => ipcRenderer.invoke('graph:ontology', profileId),
+  graphProfiles: () => ipcRenderer.invoke('graph:profiles'),
   graphResolveSources: (payload) => ipcRenderer.invoke('graph:resolveSources', payload),
   ontoSave: (payload) => ipcRenderer.invoke('onto:save', payload),
   ontoRemove: (payload) => ipcRenderer.invoke('onto:remove', payload),
+  ontoSetProfile: (profileId) => ipcRenderer.invoke('onto:setProfile', profileId),
   graphAsk: (payload) => ipcRenderer.invoke('graph:ask', payload),
+  graphImportOwl: (body) => ipcRenderer.invoke('graph:importOwl', body),
+  graphRemoveOwlProfile: (payload) => ipcRenderer.invoke('graph:removeOwlProfile', payload),
   onKgFacts: (callback) => {
     const handler = (_e, data) => callback(data);
     ipcRenderer.on('kg:facts', handler);

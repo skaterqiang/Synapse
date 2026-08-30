@@ -18,6 +18,69 @@ const toPairs = (v, nameKey, descKey) =>
     .map((it) => ({ [nameKey]: trimStr(it && it[nameKey], 100), [descKey]: trimStr(it && it[descKey], 300) }))
     .filter((it) => it[nameKey]);
 
+// ---------- 模版 v2：体系绑定 + 领域类/谓词/约束 ----------
+// 解析指定 profile 的合成本体（延迟 require 避免与 graph.js 的加载顺序耦合）
+function resolveOntologyFor(profileId) {
+  const graph = require('./graph');
+  try { return graph.resolveOntology(profileId); } catch (_) { return graph.resolveOntology('bfo-lite'); }
+}
+
+// domainClasses/domainPredicates 归一化
+const toClasses = (v) =>
+  (Array.isArray(v) ? v : [])
+    .map((it) => ({
+      key: trimStr(it && it.key, 60),
+      label: trimStr(it && it.label, 100),
+      parent: trimStr(it && it.parent, 60),
+      desc: trimStr(it && it.desc, 300),
+      examples: toList(it && it.examples),
+      from: it && it.from === 'base' ? 'base' : 'custom',
+    }))
+    .filter((it) => it.key);
+const toPredicates = (v) =>
+  (Array.isArray(v) ? v : [])
+    .map((it) => ({
+      key: trimStr((it && it.key) || (it && it.label), 60),
+      label: trimStr((it && it.label) || (it && it.key), 100),
+      domain: trimStr(it && it.domain, 60),
+      range: trimStr(it && it.range, 60),
+      features: toList(it && it.features),
+      from: it && it.from === 'base' ? 'base' : 'custom',
+    }))
+    .filter((it) => it.key);
+// 约束五元组：{subject, attr, op, value, desc}
+const toConstraints = (v) =>
+  (Array.isArray(v) ? v : [])
+    .map((it) => ({
+      subject: trimStr(it && it.subject, 60),
+      attr: trimStr(it && it.attr, 60),
+      op: trimStr(it && it.op, 20),
+      value: trimStr(it && it.value, 200),
+      desc: trimStr(it && it.desc, 300),
+    }))
+    .filter((it) => it.subject || it.desc);
+
+// v1 → v2 惰性迁移：entityTypes→domainClasses（挂 bfo-lite object）、conceptTypes→挂 information
+// 通用模版（general）domainClasses 留空（不限制，退化为现有行为）
+function migrateTplV2(tpl) {
+  if (!tpl || typeof tpl !== 'object') return tpl;
+  if (Array.isArray(tpl.domainClasses)) return tpl; // 已是 v2
+  const migrated = { ...tpl, ontologyProfile: tpl.ontologyProfile || 'bfo-lite', migratedFrom: 'v1' };
+  const isGeneral = tpl.id === 'general';
+  const ent = (tpl.entityTypes || []).map((t) => ({
+    key: trimStr(t.name, 60), label: trimStr(t.name, 100), parent: 'object',
+    desc: trimStr(t.desc, 300), examples: [], from: 'custom',
+  })).filter((c) => c.key);
+  const con = (tpl.conceptTypes || []).map((t) => ({
+    key: trimStr(t.name, 60), label: trimStr(t.name, 100), parent: 'information',
+    desc: trimStr(t.desc, 300), examples: [], from: 'custom',
+  })).filter((c) => c.key);
+  migrated.domainClasses = isGeneral ? [] : [...ent, ...con];
+  migrated.domainPredicates = Array.isArray(tpl.domainPredicates) ? toPredicates(tpl.domainPredicates) : [];
+  migrated.constraints = Array.isArray(tpl.constraints) ? toConstraints(tpl.constraints) : [];
+  return migrated;
+}
+
 function listTemplates() {
   let list = [];
   try {
@@ -29,9 +92,14 @@ function listTemplates() {
   // 兜底：确保内置通用模版始终存在且排在最前
   if (!list.some((t) => t && t.id === 'general')) {
     list.unshift({ ...GENERAL_TEMPLATE, updatedAt: Date.now() });
-    db.setKv(KV_KEY, JSON.stringify(list));
-    db.flush();
   }
+  // v1 → v2 惰性迁移（加载时升级，返回前持久化一次）
+  let migratedAny = false;
+  list = list.map((t) => {
+    if (t && !Array.isArray(t.domainClasses)) { migratedAny = true; return migrateTplV2(t); }
+    return t;
+  });
+  if (migratedAny) persistTemplates(list);
   return list;
 }
 
@@ -52,23 +120,46 @@ function saveTemplate(input) {
     while (list.some((t) => t.id === id)) id += Math.floor(Math.random() * 36).toString(36);
   }
   const old = list.find((t) => t.id === id);
+  const profileId = trimStr(tpl.ontologyProfile, 60) || 'bfo-lite';
+  const onto = resolveOntologyFor(profileId);
+  const profileKeys = new Set((onto.classes || []).map((c) => c.key));
+  // 领域类：base 项的 key 必须存在于体系类树；custom 项的 parent 必须存在于体系类树
+  const domainClasses = toClasses(tpl.domainClasses);
+  const warnings = [];
+  for (const c of domainClasses) {
+    if (c.from === 'base' && !profileKeys.has(c.key)) {
+      warnings.push(`领域类「${c.key}」不在体系「${onto.name}」中，已忽略`);
+    }
+    if (c.from !== 'base' && c.parent && !profileKeys.has(c.parent) && !domainClasses.some((x) => x.key === c.parent)) {
+      warnings.push(`领域类「${c.label || c.key}」的父类「${c.parent}」不在体系类树内，已挂到兜底类 ${onto.fallbackType}`);
+      c.parent = onto.fallbackType;
+    }
+  }
+  const validClasses = domainClasses.filter((c) => c.from !== 'base' || profileKeys.has(c.key));
   const next = {
     id,
     name: trimStr(tpl.name, 100),
     desc: trimStr(tpl.desc),
     keywords: toList(tpl.keywords),
-    entityTypes: toPairs(tpl.entityTypes, 'name', 'desc'),
-    conceptTypes: toPairs(tpl.conceptTypes, 'name', 'desc'),
+    ontologyProfile: profileId,
+    domainClasses: validClasses,
+    domainPredicates: toPredicates(tpl.domainPredicates),
+    constraints: toConstraints(tpl.constraints),
     mustExtract: toList(tpl.mustExtract),
     ignoreContent: toList(tpl.ignoreContent),
     quality: trimStr(tpl.quality),
     skeleton: toPairs(tpl.skeleton, 'title', 'desc'),
     builtin: !!(old && old.builtin),
+    demo: !!(old && old.demo),
     updatedAt: Date.now(),
   };
+  // 兼容：从 domainClasses 反推 entityTypes/conceptTypes，供未升级的旧读取方使用
+  next.entityTypes = validClasses.filter((c) => c.parent !== 'information').map((c) => ({ name: c.label || c.key, desc: c.desc }));
+  next.conceptTypes = validClasses.filter((c) => c.parent === 'information').map((c) => ({ name: c.label || c.key, desc: c.desc }));
   if (old) list[list.indexOf(old)] = next;
   else list.push(next);
   persistTemplates(list);
+  next._warnings = warnings; // 非持久化字段，供前端提示降级项
   return next;
 }
 
@@ -153,21 +244,37 @@ async function preMatchTemplate(settings, raws, opts = {}) {
   return { matched, hasSpecific, total: list.length, degraded: !!degradeErr, degradeError: degradeMsg };
 }
 
-// 模版 → 吸收提示词中的领域约束块
+// 模版 → 吸收提示词中的领域约束块（v2 四段式：体系 + 领域类 + 领域谓词 + 约束）
 function templateGuidance(tpl) {
   if (!tpl) return '';
+  const v2 = Array.isArray(tpl.domainClasses) ? tpl : migrateTplV2(tpl);
   const pairs = (arr, nameKey, descKey) =>
     (arr || []).map((it) => (it[descKey] ? `${it[nameKey]}（${it[descKey]}）` : it[nameKey])).join('、') || '无';
+  const onto = resolveOntologyFor(v2.ontologyProfile);
+  // 领域类：custom 类标注父类挂载点，base 类直接列名
+  const classLine = (v2.domainClasses || []).map((c) => {
+    const nm = c.label || c.key;
+    const base = c.from === 'base';
+    const parentTag = !base && c.parent ? `⊂${c.parent}` : '';
+    return `${nm}${parentTag}${c.desc ? `（${c.desc}）` : ''}${base ? '' : '〔领域〕'}`;
+  }).join('、') || '无';
+  const predLine = (v2.domainPredicates || []).map((p) => {
+    const sig = p.domain && p.range ? `（${p.domain}→${p.range}）` : '';
+    return `${p.label || p.key}${sig}`;
+  }).join('、') || '无';
+  const consLine = (v2.constraints || []).map((c) => c.desc || `${c.subject}.${c.attr} ${c.op} ${c.value}`).join('；') || '无';
   return [
-    `=== 领域模版：${tpl.name}（${tpl.id}） ===`,
-    `领域描述：${tpl.desc || '无'}`,
-    `实体类型：${pairs(tpl.entityTypes, 'name', 'desc')}`,
-    `概念类型：${pairs(tpl.conceptTypes, 'name', 'desc')}`,
-    `必须提取：${(tpl.mustExtract || []).join('、') || '无'}`,
-    `忽略内容：${(tpl.ignoreContent || []).join('、') || '无'}`,
-    `质量标准：${tpl.quality || '无'}`,
-    `核心页面骨架：${pairs(tpl.skeleton, 'title', 'desc')}`,
-    '吸收要求：entities/concepts 页面按上述实体/概念类型组织；「必须提取」的信息不得遗漏，「忽略内容」不写入页面；topics 综合页参考核心页面骨架组织章节，并满足质量标准。',
+    `=== 领域模版：${v2.name}（${v2.id}） ===`,
+    `绑定体系：${onto.name}（${v2.ontologyProfile}）`,
+    `领域描述：${v2.desc || '无'}`,
+    `领域类（挂在体系类树上）：${classLine}`,
+    `领域谓词：${predLine}`,
+    `领域约束：${consLine}`,
+    `必须提取：${(v2.mustExtract || []).join('、') || '无'}`,
+    `忽略内容：${(v2.ignoreContent || []).join('、') || '无'}`,
+    `质量标准：${v2.quality || '无'}`,
+    `核心页面骨架：${pairs(v2.skeleton, 'title', 'desc')}`,
+    '吸收要求：按上述领域类组织节点（领域类优先归入其父类对应的体系类）；「必须提取」的信息不得遗漏，「忽略内容」不写入页面；关系优先使用领域谓词；产物满足质量标准并参考核心页面骨架组织章节。',
   ].join('\n');
 }
 
@@ -184,15 +291,16 @@ async function generateTemplate(settings, { name, desc }, onDelta) {
     '只输出一个 JSON 对象，不要输出其他任何内容：',
     '{',
     '  "id": "与该领域语义对应的英文标识符（小写字母/数字/下划线，字母开头；应是领域名称的英文翻译或缩写，例如领域“樱桃种植”对应 cherry_planting；严禁照抄本示例）",',
+    '  "ontologyProfile": "建议绑定的顶层本体体系，三选一：bfo-lite（通用轻量，默认）/ bfo（科研严谨）/ iso15926（工业设备）",',
     '  "keywords": ["用于领域匹配的中文关键词，5-8 个"],',
-    '  "entityTypes": [ { "name": "实体类型名", "desc": "一句话说明" } ],',
-    '  "conceptTypes": [ { "name": "概念类型名", "desc": "一句话说明" } ],',
+    '  "domainClasses": [ { "label": "领域类中文名", "parent": "父类（体系类 key，实物体用 object，信息/概念用 information）", "desc": "一句话说明" } ],',
+    '  "domainPredicates": [ { "label": "领域谓词中文名", "domain": "主语类", "range": "宾语类" } ],',
     '  "mustExtract": ["必须提取的信息点，3-6 条"],',
     '  "ignoreContent": ["应忽略的内容，2-4 条"],',
     '  "quality": "对页面内容的质量要求（一段话）",',
     '  "skeleton": [ { "title": "核心页面标题", "desc": "页面职责说明" } ]',
     '}',
-    '要求：id 必须与领域名称语义一致；entityTypes 与 conceptTypes 各 3-5 个，skeleton 3-5 个页面，全部使用中文（id 除外）。',
+    '要求：id 必须与领域名称语义一致；domainClasses 5-8 个，parent 只能是 object（具体的人/物/组织/工具）或 information（概念/文档/方法等抽象信息）；domainPredicates 0-4 个；skeleton 3-5 个页面；全部使用中文（id 除外）。',
   ].join('\n');
   const answer = await chatOnce(settings, [
     { role: 'system', content: getPrompt(settings, 'tplGenPrompt') },
@@ -202,11 +310,21 @@ async function generateTemplate(settings, { name, desc }, onDelta) {
   // 防模型照抄提示词示例/泛占位：命中时回退为时间戳 id（用户可在弹窗中修改）
   let id = /^[A-Za-z][A-Za-z0-9_]*$/.test(trimStr(raw.id, 60)) ? trimStr(raw.id, 60) : '';
   if (!id || /^(rental_service|example|domain|test|demo)$/.test(id)) id = 'domain_' + Date.now().toString(36);
+  const profileId = ['bfo-lite', 'bfo', 'iso15926'].includes(trimStr(raw.ontologyProfile, 60)) ? trimStr(raw.ontologyProfile, 60) : 'bfo-lite';
+  const domainClasses = (Array.isArray(raw.domainClasses) ? raw.domainClasses : [])
+    .map((c) => ({
+      key: trimStr(c.label, 60), label: trimStr(c.label, 100),
+      parent: ['object', 'information'].includes(trimStr(c.parent, 60)) ? trimStr(c.parent, 60) : 'object',
+      desc: trimStr(c.desc, 300), examples: [], from: 'custom',
+    }))
+    .filter((c) => c.key);
   return {
     id,
+    ontologyProfile: profileId,
     keywords: toList(raw.keywords),
-    entityTypes: toPairs(raw.entityTypes, 'name', 'desc'),
-    conceptTypes: toPairs(raw.conceptTypes, 'name', 'desc'),
+    domainClasses,
+    domainPredicates: toPredicates(raw.domainPredicates),
+    constraints: [],
     mustExtract: toList(raw.mustExtract),
     ignoreContent: toList(raw.ignoreContent),
     quality: trimStr(raw.quality),
@@ -269,13 +387,16 @@ async function suggestTemplates(settings) {
     '  "name": "领域中文名",',
     '  "desc": "领域简要描述",',
     '  "keywords": ["中文关键词 5-8 个"],',
-    '  "entityTypes": [ { "name": "", "desc": "" } ],',
-    '  "conceptTypes": [ { "name": "", "desc": "" } ],',
+    '  "ontologyProfile": "bfo-lite | bfo | iso15926 三选一（通用/科研工程/工业资产）",',
+    '  "domainClasses": [ { "label": "领域类中文名", "parent": "object 或 information", "desc": "一句话说明" } ],',
+    '  "domainPredicates": [ { "label": "领域谓词", "domain": "主语类中文", "range": "宾语类中文" } ],',
     '  "mustExtract": ["3-6 条"],',
     '  "ignoreContent": ["2-4 条"],',
     '  "quality": "一段话",',
     '  "skeleton": [ { "title": "", "desc": "" } ]',
     '} ] }',
+    '',
+    '要求：domainClasses 4-6 个，parent 只能是 object（具体的人/物/组织/工具）或 information（概念/文档/方法等抽象信息）；domainPredicates 0-3 个。',
     '',
     '=== 知识库内容摘录 ===',
     corpus,
@@ -293,8 +414,16 @@ async function suggestTemplates(settings) {
       name: trimStr(t.name, 100),
       desc: trimStr(t.desc),
       keywords: toList(t.keywords),
-      entityTypes: toPairs(t.entityTypes, 'name', 'desc'),
-      conceptTypes: toPairs(t.conceptTypes, 'name', 'desc'),
+      ontologyProfile: ['bfo-lite', 'bfo', 'iso15926'].includes(trimStr(t.ontologyProfile, 60)) ? trimStr(t.ontologyProfile, 60) : 'bfo-lite',
+      domainClasses: (Array.isArray(t.domainClasses) ? t.domainClasses : [])
+        .map((c) => ({
+          key: trimStr(c.label, 60), label: trimStr(c.label, 100),
+          parent: ['object', 'information'].includes(trimStr(c.parent, 60)) ? trimStr(c.parent, 60) : 'object',
+          desc: trimStr(c.desc, 300), examples: [], from: 'custom',
+        }))
+        .filter((c) => c.key),
+      domainPredicates: toPredicates(t.domainPredicates),
+      constraints: [],
       mustExtract: toList(t.mustExtract),
       ignoreContent: toList(t.ignoreContent),
       quality: trimStr(t.quality),

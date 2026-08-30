@@ -9,7 +9,8 @@ const graphSim = { nodes: [], edges: [], zoom: 1, ox: 0, oy: 0, drag: null, sele
 function graphTypes() {
   const cls = (state.kg && state.kg.onto && state.kg.onto.classes) || [];
   const list = cls.length ? cls.map((c) => ({ key: c.key, name: c.label || c.key })) : Object.entries(GRAPH_TYPE_NAMES).map(([k, name]) => ({ key: k, name }));
-  return list.map((t, i) => ({ ...t, color: GRAPH_COLORS[t.key] || GRAPH_PALETTE[i % GRAPH_PALETTE.length] }));
+  // 固定色优先；其余按黄金角生成，确保任意数量类型颜色互不重复
+  return list.map((t, i) => ({ ...t, color: GRAPH_COLORS[t.key] || graphGenColor(i) }));
 }
 
 function graphTypeColor(key) {
@@ -421,8 +422,8 @@ function renderKgTab() {
   else if (tab === 'ontology') renderKgOntology();
 }
 
-function kgCard(icon, num, label) {
-  return `<div class="kg-card"><span class="kg-card-icon">${icoSvg(icon, 16)}</span><div><b>${num}</b><span>${label}</span></div></div>`;
+function kgCard(icon, num, label, sub) {
+  return `<div class="kg-card"><span class="kg-card-icon">${icoSvg(icon, 16)}</span><div><b>${num}</b><span>${label}</span>${sub ? `<em class="kg-card-sub">${escapeHtml(sub)}</em>` : ''}</div></div>`;
 }
 
 function renderKgOverview() {
@@ -527,24 +528,128 @@ function renderKgEntityDetail(id) {
 async function renderKgOntology() {
   if (!state.kg.onto) state.kg.onto = await window.kb.graphOntology();
   const o = state.kg.onto;
+  // 体系 tab（内置三体系 + OWL 导入，横排展开，每项带 类/谓词/约束 计数）
+  const tabs = $('onto-profile-tabs');
+  if (tabs && o.profiles) {
+    const sig = o.profiles.map((p) => p.id + ':' + JSON.stringify(p.counts || {})).join(',');
+    if (tabs.dataset.sig !== sig) {
+      tabs.dataset.sig = sig;
+      tabs.innerHTML = o.profiles.map((p) => {
+        const c = p.counts || {};
+        const cnt = c.classes !== undefined ? `<span class="onto-prof-count">${c.classes}类·${c.predicates}谓·${c.constraints}约</span>` : '';
+        return `<button data-pid="${escapeHtml(p.id)}" class="${p.owl ? 'is-owl' : ''}" title="${escapeHtml(p.desc || p.name)}">${escapeHtml(p.name)}${p.owl ? '<span class="mini-tag onto-prof-owl">OWL</span>' : ''}${cnt}</button>`;
+      }).join('');
+    }
+    tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.pid === o.profileId));
+    const pd = $('onto-profile-desc');
+    if (pd) pd.textContent = `${o.profileName || ''} · ${o.profileDesc || ''} · ${o.promptMode === 'two-stage' ? '两阶段提取' : '单阶段提取'}`;
+    const btnRemoveOwl = $('btn-onto-remove-owl');
+    if (btnRemoveOwl) btnRemoveOwl.hidden = !String(o.profileId || '').startsWith('owl:');
+  }
+  // 统计卡：前 3 项属于当前体系（类/谓词/约束），后 2 项是全局图谱实例（跨体系累计）
   $('kg-onto-cards').innerHTML =
-    kgCard('entities', o.stats.classCount, '实体类') +
-    kgCard('mcp', o.stats.predicateCount, '谓词') +
-    kgCard('table', o.stats.constraintCount, '校验约束') +
-    kgCard('kg', o.stats.instanceCount, '实例总数') +
-    kgCard('mcp', o.stats.edgeCount, '关系总数');
-  const acts = (attr) => `<span class="kg-class-acts"><button class="icon-btn" data-act="edit" ${attr} title="编辑">${icoSvg('edit', 12)}</button><button class="icon-btn danger" data-act="del" ${attr} title="删除">${icoSvg('close', 12)}</button></span>`;
+    kgCard('entities', o.stats.classCount, '实体类', o.profileName) +
+    kgCard('mcp', o.stats.predicateCount, '谓词', o.profileName) +
+    kgCard('table', o.stats.constraintCount, '校验约束', o.profileName) +
+    kgCard('kg', o.stats.instanceCount, '实例总数', '全部体系') +
+    kgCard('mcp', o.stats.edgeCount, '关系总数', '全部体系') +
+    kgCard('table', o.stats.axiomCount || 0, '逻辑公理', o.profileName);
+
+  // 视图切换：结构树 / 列表
+  const view = state.kg.ontoView || 'tree';
+  const treeWrap = $('onto-tree-wrap');
+  const listBar = $('onto-list-bar');
+  const listBody = $('kg-onto-body');
+  document.querySelectorAll('#onto-view-tabs button').forEach((x) => x.classList.toggle('active', x.dataset.ov === view));
+  if (treeWrap) treeWrap.hidden = view !== 'tree';
+  if (listBar) listBar.hidden = view !== 'list';
+  if (listBody) listBody.hidden = view !== 'list';
+  // 公理 tab 只读：隐藏「新增」按钮
+  const btnOntoAdd = $('btn-onto-add');
+  if (btnOntoAdd) btnOntoAdd.hidden = view === 'list' && state.kg.ontoTab === 'axioms';
+
+  // 顶层本体结构树（设计 §7.1）
+  if (view === 'tree' && treeWrap && window.renderOntologyTree) {
+    treeWrap.innerHTML = '<svg id="onto-tree-svg" role="img" aria-label="本体结构树"></svg>';
+    const svg = $('onto-tree-svg');
+    const ontoForTree = {
+      classes: (o.classes || []).map((c) => ({ key: c.key, label: c.label, desc: c.desc, parent: c.parent || null, custom: !!c.custom })),
+    };
+    window.renderOntologyTree(svg, ontoForTree, {
+      onSelect: (cls) => {
+        // 切到列表视图并高亮对应类卡片
+        state.kg.ontoView = 'list';
+        state.kg.ontoTab = 'classes';
+        document.querySelectorAll('#kg-onto-tabs button').forEach((x) => x.classList.toggle('active', x.dataset.ot === 'classes'));
+        renderKgOntology();
+        setTimeout(() => {
+          const cards = document.querySelectorAll('#kg-onto-body .kg-class');
+          for (const card of cards) {
+            const code = card.querySelector('code');
+            if (code && code.textContent === cls.key) {
+              card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              card.style.outline = '1.5px solid var(--accent)';
+              card.style.outlineOffset = '2px';
+              setTimeout(() => { card.style.outline = ''; card.style.outlineOffset = ''; }, 1800);
+              break;
+            }
+          }
+        }, 30);
+      },
+    });
+  }
+  // 内置基座项只读（无操作按钮），用户自定义项可编辑删除并带徽标
+  const acts = (attr, readonly) => readonly
+    ? '<span class="kg-class-acts"><span class="mini-tag" style="opacity:.55">内置</span></span>'
+    : `<span class="kg-class-acts">${attr.custom ? '<span class="mini-tag" style="color:var(--accent)">自定义</span>' : ''}<button class="icon-btn" data-act="edit" ${attr.data} title="编辑">${icoSvg('edit', 12)}</button><button class="icon-btn danger" data-act="del" ${attr.data} title="删除">${icoSvg('close', 12)}</button></span>`;
   const body = $('kg-onto-body');
   if (state.kg.ontoTab === 'classes') {
-    body.innerHTML = o.classes.map((c) => `
+    const byKey = new Map(o.classes.map((c) => [c.key, c]));
+    const childrenOf = new Map();
+    for (const c of o.classes) {
+      const parentKey = c.parent && byKey.has(c.parent) ? c.parent : null;
+      if (!childrenOf.has(parentKey)) childrenOf.set(parentKey, []);
+      childrenOf.get(parentKey).push(c);
+    }
+    // 子树折叠状态（按类 key）：默认全部展开，点击父节点头部箭头切换
+    const collapsed = state.kg.ontoCollapsed || (state.kg.ontoCollapsed = {});
+    const renderNode = (c) => {
+      const kids = childrenOf.get(c.key) || [];
+      const isCollapsed = !!collapsed[c.key];
+      const toggle = kids.length
+        ? `<button class="icon-btn kg-onto-toggle${isCollapsed ? ' collapsed' : ''}" data-toggle="${escapeHtml(c.key)}" title="${isCollapsed ? '展开子类' : '收起子类'}"><svg class="ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button><span class="mini-tag kg-onto-kidcount">${kids.length} 子类</span>`
+        : '';
+      return `
+      <div class="kg-class-node">
+        <div class="kg-class">
+          <div class="kg-class-head">${toggle}<code>${escapeHtml(c.key)}</code><b>${escapeHtml(c.label)}</b><span>${escapeHtml(c.desc)}</span><em>${c.instances} 实例</em>${acts({ custom: c.custom, data: `data-key="${escapeHtml(c.key)}"` }, c.builtin && !c.custom)}</div>
+          <div class="kg-class-ex">示例：${(c.examples || []).map((s) => `<span class="mini-tag">${escapeHtml(s)}</span>`).join(' ') || '—'}</div>
+        </div>
+        ${kids.length && !isCollapsed ? `<div class="kg-onto-kids">${kids.map(renderNode).join('')}</div>` : ''}
+      </div>`;
+    };
+    const roots = childrenOf.get(null) || [];
+    body.innerHTML = roots.length
+      ? roots.map(renderNode).join('')
+      : '<div class="gd-desc">当前体系下未找到层级关系，已按平铺展示。</div>' + o.classes.map((c) => `
       <div class="kg-class">
-        <div class="kg-class-head"><code>${escapeHtml(c.key)}</code><b>${escapeHtml(c.label)}</b><span>${escapeHtml(c.desc)}</span><em>${c.instances} 实例</em>${acts(`data-key="${escapeHtml(c.key)}"`)}</div>
+        <div class="kg-class-head"><code>${escapeHtml(c.key)}</code><b>${escapeHtml(c.label)}</b><span>${escapeHtml(c.desc)}</span><em>${c.instances} 实例</em>${acts({ custom: c.custom, data: `data-key="${escapeHtml(c.key)}"` }, c.builtin && !c.custom)}</div>
         <div class="kg-class-ex">示例：${(c.examples || []).map((s) => `<span class="mini-tag">${escapeHtml(s)}</span>`).join(' ') || '—'}</div>
       </div>`).join('');
   } else if (state.kg.ontoTab === 'preds') {
-    body.innerHTML = o.predicates.map((p) => `<div class="kg-class"><div class="kg-class-head"><code>${escapeHtml(p.key)}</code><span>${escapeHtml(p.desc)}</span>${acts(`data-key="${escapeHtml(p.key)}"`)}</div></div>`).join('');
-  } else {
-    body.innerHTML = (o.constraints || []).map((c, i) => `<div class="kg-class"><div class="kg-class-head"><code>${i + 1}</code><span>${escapeHtml(c)}</span>${acts(`data-idx="${i}"`)}</div></div>`).join('');
+    body.innerHTML = o.predicates.map((p) => `<div class="kg-class"><div class="kg-class-head"><code>${escapeHtml(p.key)}</code><span>${escapeHtml(p.desc)}</span>${acts({ custom: p.custom, data: `data-key="${escapeHtml(p.key)}"` }, p.builtin && !p.custom)}</div></div>`).join('');
+  } else if (state.kg.ontoTab === 'cons') {
+    // 合并顺序：[...内置(from base), ...自定义(from custom)]；自定义项 data-idx 需映射回 userConstraints 索引（减去内置数）
+    const baseCount = (o.constraints || []).filter((c) => typeof c === 'object' && c.from === 'base').length;
+    body.innerHTML = (o.constraints || []).map((c, i) => {
+      const desc = typeof c === 'string' ? c : c.desc;
+      const isBase = typeof c === 'object' && c.from === 'base';
+      const userIdx = i - baseCount; // 自定义项在 userConstraints 中的索引
+      return `<div class="kg-class"><div class="kg-class-head"><code>${i + 1}</code><span>${escapeHtml(desc)}</span>${isBase ? '<span class="kg-class-acts"><span class="mini-tag" style="opacity:.55">内置</span></span>' : acts({ custom: true, data: `data-idx="${userIdx}"` }, false)}</div></div>`;
+    }).join('');
+  } else if (state.kg.ontoTab === 'axioms') {
+    const typeNames = { DisjointClasses: '不相交类', SubClassOf: '子类于', TransitiveProperty: '传递属性', SymmetricProperty: '对称属性', AsymmetricProperty: '非对称属性', InverseProperties: '互逆属性', PropertyDomain: '属性定义域', PropertyRange: '属性值域', FunctionalProperty: '函数属性', InverseFunctionalProperty: '反函数属性', ReflexiveProperty: '自反属性', IrreflexiveProperty: '反自反属性' };
+    body.innerHTML = (o.axioms || []).length ? (o.axioms || []).map((a) => `<div class="kg-class"><div class="kg-class-head"><code class="axiom-type">${escapeHtml(typeNames[a.type] || a.type)}</code><b>${escapeHtml(a.subject || '')}${a.object ? ' ⇄ ' + escapeHtml(a.object) : ''}</b><span>${escapeHtml(a.desc || '')}</span><span class="kg-class-acts"><span class="mini-tag" style="opacity:.55">公理</span></span></div></div>`).join('') : '<div class="gd-desc">当前体系未定义逻辑公理。</div>';
   }
 }
 
@@ -582,7 +687,7 @@ async function saveOntoItem() {
   } else {
     item.desc = $('onto-desc').value;
   }
-  const res = await window.kb.ontoSave({ kind, item });
+  const res = await window.kb.ontoSave({ kind, item, profileId: state.kg.onto && state.kg.onto.profileId });
   if (!res.ok) { toast('保存失败：' + res.error, 4000); return; }
   state.kg.onto = res.ontology;
   $('onto-modal').hidden = true;
@@ -591,13 +696,32 @@ async function saveOntoItem() {
 }
 
 async function removeOntoItem(kind, keyOrIndex) {
-  const label = kind === 'cons' ? `约束 #${Number(keyOrIndex) + 1}` : keyOrIndex;
+  let label = keyOrIndex;
+  if (kind === 'cons') {
+    // keyOrIndex 是 userConstraints 索引；从 onto.constraints 里找对应描述用于确认提示
+    const o = state.kg.onto;
+    const custom = (o && o.constraints ? o.constraints : []).filter((c) => typeof c === 'object' ? c.from !== 'base' : true);
+    const item = custom[Number(keyOrIndex)];
+    const desc = item ? (typeof item === 'string' ? item : item.desc) : null;
+    label = desc ? (desc.length > 24 ? desc.slice(0, 24) + '…' : desc) : `约束 #${Number(keyOrIndex) + 1}`;
+  }
   if (!confirm(`确定删除「${label}」？`)) return;
-  const res = await window.kb.ontoRemove({ kind, key: keyOrIndex });
+  const res = await window.kb.ontoRemove({ kind, key: keyOrIndex, profileId: state.kg.onto && state.kg.onto.profileId });
   if (!res.ok) { toast('删除失败：' + res.error, 4000); return; }
   state.kg.onto = res.ontology;
   toast('已删除');
   renderKgOntology();
+}
+
+// 体系切换：落 kv + 重新拉取本体并重绘
+async function switchOntoProfile(profileId) {
+  const res = await window.kb.ontoSetProfile(profileId);
+  if (!res.ok) { toast('切换失败：' + res.error, 4000); return; }
+  state.kg.onto = res.ontology;
+  state.kg.ontoView = 'tree'; // 切换体系后回到结构树视图，直观看到层级
+  state.kg.ontoCollapsed = {}; // 新体系重置子树折叠状态
+  renderKgOntology();
+  toast('已切换到体系「' + (res.ontology.profileName || profileId) + '」', 2000);
 }
 
 // KG 自然语言问答：抽取实体 → 邻居事实 → 事实约束回答
@@ -1097,19 +1221,115 @@ function bindGraphEvents() {
     document.querySelectorAll('#kg-onto-tabs button').forEach((x) => x.classList.toggle('active', x === b));
     renderKgOntology();
   });
+  // 体系 tabs（横排展开，点击切换）
+  const profTabs = $('onto-profile-tabs');
+  if (profTabs) profTabs.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-pid]');
+    if (!b) return;
+    if (state.kg.onto && b.dataset.pid === state.kg.onto.profileId) return;
+    switchOntoProfile(b.dataset.pid);
+  });
+  // 结构树 / 列表 视图切换
+  const viewTabs = $('onto-view-tabs');
+  if (viewTabs) viewTabs.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-ov]');
+    if (!b) return;
+    state.kg.ontoView = b.dataset.ov;
+    renderKgOntology();
+  });
+  // 导入 OWL 体系（Electron 走 dialog；Web 走 <input type=file> + /api/upload）
+  const btnImportOwl = $('btn-onto-import-owl');
+  const doImport = async (filePath) => {
+    const r = await window.kb.graphImportOwl(filePath ? { filePath } : {});
+    return handleImportResult(r);
+  };
+  const doImportWeb = async (filePath, fileName) => {
+    const r = await window.kb.graphImportOwl({ filePath, fileName });
+    return handleImportResult(r);
+  };
+  const handleImportResult = async (r) => {
+    if (r && r.canceled) return;
+    if (!r || r.ok === false) { toast('OWL 导入失败：' + ((r && r.error) || '未知错误')); return; }
+    const rep = r.report || {};
+    toast(`已导入「${r.profile.name}」：${rep.classCount} 类 / ${rep.predicateCount} 谓词${rep.truncated ? '（超大本体已截断）' : ''}${rep.orphanClasses && rep.orphanClasses.length ? '，孤儿类 ' + rep.orphanClasses.length + ' 个' : ''}`);
+    state.kg.onto = null; // 清缓存强制重拉
+    await renderKgOntology();
+    switchOntoProfile(r.profile.id);
+  };
+  if (btnImportOwl) btnImportOwl.addEventListener('click', async () => {
+    try {
+      btnImportOwl.disabled = true;
+      // Web 模式（无 Electron dialog）：隐藏文件选择器 → 上传 → 拿服务端路径
+      if (!window.kb.isElectron) {
+        const inp = document.createElement('input');
+        inp.type = 'file';
+        inp.accept = '.owl,.rdf,.ttl,.xml';
+        inp.onchange = async () => {
+          const f = inp.files && inp.files[0];
+          if (!f) { btnImportOwl.disabled = false; return; }
+          try {
+            const buf = await f.arrayBuffer();
+            const up = await fetch('/api/upload?name=' + encodeURIComponent(f.name), { method: 'POST', body: buf });
+            const uj = await up.json();
+            if (!uj || !uj.path) { toast('上传失败'); btnImportOwl.disabled = false; return; }
+            await doImportWeb(uj.path, f.name);
+          } catch (e2) { toast('上传/导入异常：' + e2.message); }
+          btnImportOwl.disabled = false;
+        };
+        inp.click();
+        return;
+      }
+      // Electron 模式：直接走 dialog
+      await doImport(null);
+      btnImportOwl.disabled = false;
+    } catch (e) { btnImportOwl.disabled = false; toast('OWL 导入异常：' + e.message); }
+  });
+  // 删除当前 OWL 体系（仅 owl:* 时显示）
+  const btnRemoveOwl = $('btn-onto-remove-owl');
+  if (btnRemoveOwl) btnRemoveOwl.addEventListener('click', async () => {
+    const cur = state.kg.onto && state.kg.onto.profileId ? state.kg.onto.profileId : '';
+    if (!cur.startsWith('owl:')) return;
+    const reset = async (msg) => { toast(msg); state.kg.onto = null; await switchOntoProfile('bfo-lite'); };
+    if (!confirm(`删除体系「${cur}」？\n可选择是否连带清除该体系已提取的图谱节点。\n「确定」= 连带清除节点；「取消」= 仅删体系保留节点。`)) {
+      const r0 = await window.kb.graphRemoveOwlProfile({ profileId: cur, clearGraphNodes: false });
+      if (r0 && r0.ok) await reset('已删除体系（保留图谱节点）');
+      return;
+    }
+    const r = await window.kb.graphRemoveOwlProfile({ profileId: cur, clearGraphNodes: true });
+    if (r && r.ok) await reset(`已删除体系并清除 ${r.clearedNodes} 个节点`);
+    else toast('删除失败：' + ((r && r.error) || '未知错误'));
+  });
   // 本体增删改查
-  $('btn-onto-add').addEventListener('click', () => openOntoModal(state.kg.ontoTab, null));
+  $('btn-onto-add').addEventListener('click', () => {
+    if (state.kg.ontoTab === 'axioms') { toast('公理为体系内置只读，不可新增', 2500); return; }
+    openOntoModal(state.kg.ontoTab, null);
+  });
   $('btn-onto-cancel').addEventListener('click', () => { $('onto-modal').hidden = true; });
   $('btn-onto-save').addEventListener('click', saveOntoItem);
   $('kg-onto-body').addEventListener('click', (e) => {
+    // 父节点收起/展开子树
+    const toggle = e.target.closest('button.kg-onto-toggle');
+    if (toggle) {
+      const collapsed = state.kg.ontoCollapsed || (state.kg.ontoCollapsed = {});
+      collapsed[toggle.dataset.toggle] = !collapsed[toggle.dataset.toggle];
+      renderKgOntology();
+      return;
+    }
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
+    if (state.kg.ontoTab === 'axioms') return; // 公理只读
     const kind = state.kg.ontoTab === 'classes' ? 'classes' : state.kg.ontoTab === 'preds' ? 'preds' : 'cons';
     if (btn.dataset.act === 'edit') {
       const o = state.kg.onto;
       if (kind === 'classes') openOntoModal(kind, o.classes.find((c) => c.key === btn.dataset.key));
       else if (kind === 'preds') openOntoModal(kind, o.predicates.find((p) => p.key === btn.dataset.key));
-      else openOntoModal(kind, { index: Number(btn.dataset.idx), text: o.constraints[Number(btn.dataset.idx)] });
+      else {
+        // data-idx 是 userConstraints 索引；取对应描述文本（constraints 已规范化为 {desc, from} 对象）
+        const custom = (o.constraints || []).filter((c) => typeof c === 'object' ? c.from !== 'base' : true);
+        const item = custom[Number(btn.dataset.idx)];
+        const desc = item ? (typeof item === 'string' ? item : item.desc) : '';
+        openOntoModal(kind, { index: Number(btn.dataset.idx), text: desc });
+      }
     } else {
       removeOntoItem(kind, kind === 'cons' ? btn.dataset.idx : btn.dataset.key);
     }

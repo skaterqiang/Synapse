@@ -1,0 +1,43 @@
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix eq: <http://example.org/equip#> .
+
+eq:Equipment a owl:Class ;
+  rdfs:label "设备" ;
+  rdfs:comment "任何物理设备" .
+
+eq:PowerEquipment a owl:Class ;
+  rdfs:label "电力设备" ;
+  rdfs:comment "与供配电相关" ;
+  rdfs:subClassOf eq:Equipment .
+
+eq:Transformer a owl:Class ;
+  rdfs:label "变压器" ;
+  rdfs:subClassOf eq:PowerEquipment .
+
+eq:Cable a owl:Class ;
+  rdfs:label "电缆" ;
+  rdfs:subClassOf eq:PowerEquipment .
+
+eq:ChargingPile a owl:Class ;
+  rdfs:label "充电桩" ;
+  rdfs:comment "终端充电设施" ;
+  rdfs:subClassOf eq:Equipment .
+
+eq:Person a owl:Class ;
+  rdfs:label "人员" .
+
+eq:supplies a owl:ObjectProperty ;
+  rdfs:label "供电" ;
+  rdfs:domain eq:PowerEquipment ;
+  rdfs:range eq:Equipment .
+
+eq:maintains a owl:ObjectProperty ;
+  rdfs:label "维护" ;
+  rdfs:domain eq:Person ;
+  rdfs:range eq:Equipment .
+
+eq:connectsTo a owl:ObjectProperty ;
+  rdfs:label "连接" ;
+  a owl:SymmetricProperty .

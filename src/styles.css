@@ -1021,7 +1021,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .kg-crumb b { color: var(--text); }
 .kg-pane { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
 .kg-pane[data-pane="graph"] { overflow: hidden; }
-.kg-cards { display: flex; gap: 12px; flex-wrap: wrap; }
+.kg-cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .kg-card {
   flex: 1 1 150px; display: flex; align-items: center; gap: 10px;
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px;
@@ -1083,7 +1083,16 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .kg-tabs button { border: none; background: transparent; cursor: pointer; padding: 6px 12px; border-radius: var(--radius); font-size: 13px; color: var(--text-sub); }
 .kg-tabs button.active { background: rgba(16, 185, 129, 0.12); color: var(--primary); font-weight: 600; }
 .kg-onto-body { display: flex; flex-direction: column; gap: 10px; }
+/* 本体类树形列表：子类容器嵌套在父节点内，左侧边框作父级轨道线 */
+.kg-onto-kids { margin-left: 14px; padding-left: 14px; border-left: 2px solid rgba(16, 185, 129, 0.22); display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.kg-onto-toggle { transition: transform 0.15s ease; flex: none; }
+.kg-onto-toggle.collapsed { transform: rotate(-90deg); }
+.kg-onto-kidcount { opacity: 0.6; }
 .onto-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.onto-profile-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 12px; flex-wrap: wrap; }
+.onto-profile-bar label { font-size: 13px; font-weight: 600; color: var(--text); }
+.onto-profile-bar select { min-width: 220px; }
+.onto-profile-desc { font-size: 12px; color: var(--text-sub); flex: 1; min-width: 200px; }
 .kg-class-acts { display: inline-flex; gap: 4px; margin-left: 10px; }
 .kg-class { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; }
 .kg-class-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -1466,6 +1475,49 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .tpl-row .tpl-row-desc { flex: 1; }
 .tpl-add { margin-top: 6px; font-size: 12.5px; padding: 5px 12px; }
 .tpl-warn { font-size: 12px; color: var(--danger); margin: 6px 0 0; }
+/* ---------- 模版 v2：体系绑定 / 类树 / 谓词 ---------- */
+.tpl-field-hint { font-size: 12px; color: var(--text-sub); margin: 6px 0 0; }
+.tpl-classtree-wrap { display: grid; grid-template-columns: 1fr 220px; gap: 10px; }
+.tpl-classtree {
+  max-height: 240px; overflow-y: auto; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: rgba(255,255,255,0.5); padding: 4px 0;
+}
+.tpl-classtree-row {
+  display: flex; align-items: center; gap: 6px; padding: 3px 8px;
+  font-size: 12.5px; cursor: pointer; white-space: nowrap;
+}
+.tpl-classtree-row:hover { background: rgba(0,0,0,0.04); }
+.tpl-classtree-row code { font-size: 11px; color: var(--text-sub); }
+.tpl-classtree-side { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.tpl-classtree-side-head { font-size: 12px; color: var(--text-sub); }
+.tpl-classtree-side-head span { color: var(--accent); font-weight: 600; }
+.tpl-classtree-sel {
+  flex: 1; max-height: 190px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;
+}
+.tpl-sel-row {
+  display: flex; align-items: center; gap: 6px; font-size: 12px;
+  padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.55);
+}
+.tpl-sel-row code { font-size: 11px; color: var(--text-sub); }
+.tpl-sel-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tpl-sel-row em { font-style: normal; font-size: 11px; color: var(--text-sub); }
+.tpl-sel-row .icon-btn { padding: 1px 3px; }
+.tpl-predlist { display: flex; flex-direction: column; gap: 6px; }
+.tpl-pred-base { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.tpl-pred-row {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px;
+  padding: 3px 6px; border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap;
+}
+.tpl-pred-row:hover { background: rgba(0,0,0,0.04); }
+.tpl-pred-row code { font-size: 11px; color: var(--text-sub); }
+.tpl-pred-custom { display: flex; flex-direction: column; gap: 4px; border-top: 1px dashed var(--border); padding-top: 6px; }
+.tpl-pred-row.custom { display: flex; border: 1px solid var(--border); background: rgba(255,255,255,0.55); }
+.tpl-pred-row.custom em { font-style: normal; font-size: 11px; color: var(--text-sub); flex: 1; }
+.tpl-badge-profile {
+  font-size: 11px; color: var(--accent); border: 1px solid var(--accent);
+  border-radius: 999px; padding: 0 8px; line-height: 18px; white-space: nowrap;
+}
 .tpl-prompt-pre {
   max-height: 50vh;
   overflow-y: auto;
@@ -2405,3 +2457,31 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   color: var(--text-sub); font-size: 12px; white-space: nowrap;
 }
 
+
+.onto-profile-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px;flex-wrap:wrap}
+.onto-profile-tabs{flex:1 1 auto;flex-wrap:wrap}
+.onto-profile-acts{display:flex;gap:8px;flex:0 0 auto}
+.onto-profile-sub{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 0 6px;flex-wrap:wrap}
+#onto-profile-desc{color:var(--muted);font-size:12px}
+.onto-view-tabs{flex:0 0 auto}
+.onto-profile-tabs button.is-owl{outline:1px dashed var(--accent);outline-offset:-1px}
+.onto-profile-tabs button{display:inline-flex;align-items:center;gap:6px;flex-direction:column;padding:6px 12px 5px}
+.onto-profile-tabs button>span:first-child{line-height:1.2}
+.onto-prof-count{font-size:10px;color:var(--muted);font-weight:400;letter-spacing:.2px}
+.onto-profile-tabs button.active .onto-prof-count{color:var(--primary);opacity:.8}
+.onto-prof-owl{margin-left:0;font-size:9px;padding:0 4px;line-height:1.4}
+.kg-card-sub{display:block;font-style:normal;font-size:10px;color:var(--muted);margin-top:1px}
+/* 顶层本体树形可视化（仿 知识图谱顶层本体结构图.html 卡片风格） */
+.onto-tree-wrap{margin:6px 0 4px;border:1px solid var(--border);border-radius:10px;background:linear-gradient(180deg,#0d1117 0%,#161b22 100%);overflow:auto;height:420px}
+.onto-tree-wrap svg{display:block;width:100%;height:100%}
+.onto-tree-node{cursor:pointer}
+.onto-tree-node rect{transition:filter .15s;fill:#1c2333;stroke:#3d5a99;stroke-width:1.2}
+.onto-tree-node.is-root rect{fill:#26417c;stroke:#6d9dff;stroke-width:1.6}
+.onto-tree-node:hover rect{filter:brightness(1.35)}
+.onto-tree-node,.onto-tree-edge{transition:opacity .15s}
+.onto-tree-edge{stroke:#3a4256;stroke-width:1.4;fill:none}
+.onto-tree-edge.is-hl{stroke:#6d9dff;stroke-width:2}
+.onto-tree-lbl{font-size:11px;fill:#e6edf3;text-anchor:middle;font-family:inherit}
+.onto-tree-lbl-en{font-size:9px;fill:#8b949e;text-anchor:middle;font-family:inherit}
+.onto-tree-lbl-root{font-size:12.5px;fill:#fff;font-weight:700;text-anchor:middle;font-family:inherit}
+.onto-tree-lbl-desc{font-size:8.5px;fill:#6e7681;text-anchor:middle;font-family:inherit}

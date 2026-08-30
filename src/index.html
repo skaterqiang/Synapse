@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: kb-asset: kb-doc: https:;" />
   <title>Synapse</title>
-  <link rel="stylesheet" href="styles.css?v=20260829d" />
+  <link rel="stylesheet" href="styles.css?v=20260830b" />
   <link rel="stylesheet" href="lib/hljs-atom-one-dark.min.css" />
 </head>
 <body>
@@ -232,12 +232,28 @@
         </div>
 
         <div class="kg-pane" data-pane="ontology" hidden>
+          <div class="onto-profile-bar">
+            <div class="kg-tabs onto-profile-tabs" id="onto-profile-tabs"></div>
+            <div class="onto-profile-acts">
+              <button class="btn btn-ghost" id="btn-onto-import-owl" title="导入 OWL 2 本体文件（.owl/.rdf/.ttl）"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>导入 OWL</button>
+              <button class="btn btn-ghost danger" id="btn-onto-remove-owl" hidden title="删除当前 OWL 体系">删除体系</button>
+            </div>
+          </div>
           <div class="kg-cards" id="kg-onto-cards"></div>
-          <div class="onto-bar">
+          <div class="onto-profile-sub">
+            <span class="form-hint" id="onto-profile-desc"></span>
+            <div class="kg-tabs onto-view-tabs" id="onto-view-tabs">
+              <button data-ov="tree" class="active" title="树状结构图"><svg class="ico" width="13" height="13"><use href="#i-kg"/></svg>结构树</button>
+              <button data-ov="list" title="条目列表"><svg class="ico" width="13" height="13"><use href="#i-table"/></svg>列表</button>
+            </div>
+          </div>
+          <div class="onto-tree-wrap" id="onto-tree-wrap"></div>
+          <div class="onto-bar" id="onto-list-bar">
             <div class="kg-tabs" id="kg-onto-tabs">
               <button data-ot="classes" class="active"><svg class="ico" width="13" height="13"><use href="#i-entities"/></svg>实体类</button>
               <button data-ot="preds"><svg class="ico" width="13" height="13"><use href="#i-mcp"/></svg>谓词</button>
               <button data-ot="cons"><svg class="ico" width="13" height="13"><use href="#i-table"/></svg>约束</button>
+              <button data-ot="axioms"><svg class="ico" width="13" height="13"><use href="#i-kg"/></svg>公理</button>
             </div>
             <button class="btn btn-ghost" id="btn-onto-add"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>新增</button>
           </div>
@@ -325,22 +341,37 @@
         <input type="text" id="tpl-keywords" data-req="1" placeholder="如: 大促, 满减, 优惠券, 预售" />
         </section>
         <section class="tpl-sec">
-        <div class="tpl-sec-head"><span class="tpl-sec-ico"><svg class="ico" width="15" height="15"><use href="#i-search"/></svg></span><b>② 抽取规则</b><span class="tpl-sec-tip">关注什么 / 忽略什么：实体与概念类型决定识别哪些对象，必须提取不得遗漏，忽略内容直接丢弃</span></div>
-        <label>关注的实体类型 <i class="tpl-req">*</i></label>
-        <div class="tpl-rows" id="tpl-entity-rows"></div>
-        <button class="btn btn-ghost tpl-add" id="btn-tpl-add-entity"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>添加实体类型</button>
-        <p class="tpl-warn" id="tpl-entity-warn">请至少添加一个实体类型并填写名称</p>
-        <label>关注的概念类型 <i class="tpl-req">*</i></label>
-        <div class="tpl-rows" id="tpl-concept-rows"></div>
-        <button class="btn btn-ghost tpl-add" id="btn-tpl-add-concept"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>添加概念类型</button>
-        <p class="tpl-warn" id="tpl-concept-warn">请至少添加一个概念类型并填写名称</p>
+        <div class="tpl-sec-head"><span class="tpl-sec-ico"><svg class="ico" width="15" height="15"><use href="#i-kg"/></svg></span><b>② 本体体系绑定</b><span class="tpl-sec-tip">该领域用哪套顶层本体归类：选定后下方领域类/谓词随之切换数据源；提取时自动带上对应体系</span></div>
+        <label>本体体系</label>
+        <select id="tpl-ontology-profile"></select>
+        <p class="tpl-field-hint" id="tpl-ontology-profile-desc"></p>
+        </section>
+        <section class="tpl-sec">
+        <div class="tpl-sec-head"><span class="tpl-sec-ico"><svg class="ico" width="15" height="15"><use href="#i-search"/></svg></span><b>③ 领域类（挂在体系类树上）</b><span class="tpl-sec-tip">勾选体系类直接纳入，或在其下添加领域子类；提取时节点优先归入这些类</span></div>
+        <div class="tpl-classtree-wrap">
+          <div class="tpl-classtree" id="tpl-classtree"></div>
+          <div class="tpl-classtree-side">
+            <div class="tpl-classtree-side-head">已选领域类 <span id="tpl-class-count">0</span></div>
+            <div class="tpl-classtree-sel" id="tpl-classtree-sel"></div>
+            <button class="btn btn-ghost tpl-add" id="btn-tpl-add-subclass"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>添加领域子类</button>
+          </div>
+        </div>
+        <p class="tpl-warn" id="tpl-class-warn">请至少勾选或添加一个领域类</p>
+        </section>
+        <section class="tpl-sec">
+        <div class="tpl-sec-head"><span class="tpl-sec-ico"><svg class="ico" width="15" height="15"><use href="#i-mcp"/></svg></span><b>④ 领域谓词</b><span class="tpl-sec-tip">勾选体系谓词或定义领域专用谓词（可选）；提取时关系优先使用这些谓词</span></div>
+        <div class="tpl-predlist" id="tpl-predlist"></div>
+        <button class="btn btn-ghost tpl-add" id="btn-tpl-add-pred"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>添加领域谓词</button>
+        </section>
+        <section class="tpl-sec">
+        <div class="tpl-sec-head"><span class="tpl-sec-ico"><svg class="ico" width="15" height="15"><use href="#i-search"/></svg></span><b>⑤ 抽取规则</b><span class="tpl-sec-tip">必须提取不得遗漏，忽略内容直接丢弃</span></div>
         <label>必须提取（逗号分隔，不得遗漏）<i class="tpl-req">*</i></label>
         <input type="text" id="tpl-must" data-req="1" placeholder="如: 活动名称, 优惠力度, 时间节点" />
         <label>忽略内容（逗号分隔，不写入页面）<i class="tpl-req">*</i></label>
         <input type="text" id="tpl-ignore" data-req="1" placeholder="如: 通用客套话, 非业务寒暄" />
         </section>
         <section class="tpl-sec">
-        <div class="tpl-sec-head"><span class="tpl-sec-ico"><svg class="ico" width="15" height="15"><use href="#i-book"/></svg></span><b>③ 产物组织</b><span class="tpl-sec-tip">产物怎么组织：页面骨架决定产物的章节结构，质量标准约束内容写法</span></div>
+        <div class="tpl-sec-head"><span class="tpl-sec-ico"><svg class="ico" width="15" height="15"><use href="#i-book"/></svg></span><b>⑥ 产物组织</b><span class="tpl-sec-tip">产物怎么组织：页面骨架决定产物的章节结构，质量标准约束内容写法</span></div>
         <label>核心页面骨架 <i class="tpl-req">*</i></label>
         <div class="tpl-rows" id="tpl-skel-rows"></div>
         <button class="btn btn-ghost tpl-add" id="btn-tpl-add-skel"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>添加骨架页面</button>
@@ -456,6 +487,7 @@
             <button data-tab="jobs"><svg class="ico" width="14" height="14"><use href="#i-jobs"/></svg>作业</button>
             <button data-tab="parse"><svg class="ico" width="14" height="14"><use href="#i-parse"/></svg>文档解析</button>
             <button data-tab="ask"><svg class="ico" width="14" height="14"><use href="#i-ask"/></svg>问答</button>
+            <button data-tab="graph"><svg class="ico" width="14" height="14"><use href="#i-kg"/></svg>图谱</button>
             <button data-tab="editor"><svg class="ico" width="14" height="14"><use href="#i-editor"/></svg>编辑器</button>
             <button data-tab="mcp"><svg class="ico" width="14" height="14"><use href="#i-mcp"/></svg>MCP</button>
             <button data-tab="skills"><svg class="ico" width="14" height="14"><use href="#i-skill"/></svg>技能</button>
@@ -625,6 +657,9 @@
               <label>日志展示行数（log.md 尾部）</label>
               <input type="number" id="set-loglines" min="1" max="500" placeholder="默认 30" />
             </div>
+            <div class="settings-pane" data-pane="graph" hidden>
+              <p class="modal-tip">本体体系的全局默认与新建模版缺省体系，已移至「知识图谱管理 → 本体定义」页顶部管理（此处不再重复设置）。</p>
+            </div>
             <div class="settings-pane" data-pane="editor" hidden>
               <label>默认编辑器模式</label>
               <select id="set-editormode">
@@ -784,6 +819,9 @@
       <select id="domain-pick-sel" disabled></select>
       <label class="radio-row"><input type="radio" name="domain-mode" value="create" /> <svg class="ico" width="14" height="14"><use href="#i-sparkles"/></svg>自动创建新领域<i class="radio-hint">跳过匹配，直接按来源内容归纳并新建领域（在作业内执行）</i></label>
       <label class="radio-row"><input type="radio" name="domain-mode" value="manual" /> <svg class="ico" width="14" height="14"><use href="#i-edit"/></svg>手动新建领域<i class="radio-hint">现在打开「新建领域模版」，可用 AI 生成后再审阅创建</i></label>
+      <label>本体体系（可选）</label>
+      <select id="extract-profile-sel"></select>
+      <p class="tpl-field-hint" id="extract-profile-hint"></p>
       <div class="modal-actions">
         <button class="btn btn-ghost" id="btn-domain-cancel">取消</button>
         <button class="btn btn-primary" id="btn-domain-ok">开始提取</button>
@@ -942,13 +980,14 @@
   <script src="lib/purify.min.js"></script>
   <script src="lib/highlight.min.js"></script>
   <!-- 渲染进程按模块分文件加载：常量 → 公共 → 笔记/原始文件/模版 → 问答 → 作业 → 图谱 → 入口 -->
-  <script src="renderer/constants.js?v=20260829c"></script>
-  <script src="renderer/common.js?v=20260829e"></script>
-  <script src="renderer/notes.js?v=20260829c"></script>
-  <script src="renderer/raws.js?v=20260829c"></script>
-  <script src="renderer/chat.js?v=20260829c"></script>
-  <script src="renderer/jobs.js?v=20260829c"></script>
-  <script src="renderer/graph.js?v=20260829c"></script>
-  <script src="renderer/app.js?v=20260829c"></script>
+  <script src="renderer/constants.js?v=20260830b"></script>
+  <script src="renderer/common.js?v=20260830b"></script>
+  <script src="renderer/notes.js?v=20260830b"></script>
+  <script src="renderer/raws.js?v=20260830b"></script>
+  <script src="renderer/chat.js?v=20260830b"></script>
+  <script src="renderer/jobs.js?v=20260830b"></script>
+  <script src="renderer/ontologyTree.js?v=20260830c"></script>
+  <script src="renderer/graph.js?v=20260830c"></script>
+  <script src="renderer/app.js?v=20260830c"></script>
 </body>
 </html>

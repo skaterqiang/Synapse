@@ -71,6 +71,7 @@
     tplGenerate: (payload) => call('tpl:generate', payload),
     tplSuggest: (payload) => call('tpl:suggest', payload),
     tplMatchPrompt: () => call('tpl:matchPrompt'),
+    tplProfileTree: (profileId) => call('tpl:profileTree', profileId),
     promptsDefs: () => call('prompts:defs'),
 
     // 原始文件管理（目录选择在浏览器不可用，返回 canceled 由前端提示）
@@ -126,11 +127,15 @@
     // 知识图谱
     graphGet: () => call('graph:get'),
     graphClear: () => call('graph:clear'),
-    graphOntology: () => call('graph:ontology'),
+    graphOntology: (profileId) => call('graph:ontology', profileId),
+    graphProfiles: () => call('graph:profiles'),
     graphResolveSources: (payload) => call('graph:resolveSources', payload),
     ontoSave: (payload) => call('onto:save', payload),
     ontoRemove: (payload) => call('onto:remove', payload),
+    ontoSetProfile: (profileId) => call('onto:setProfile', profileId),
     graphAsk: (payload) => call('graph:ask', payload),
+    graphImportOwl: (body) => call('graph:importOwl', body),
+    graphRemoveOwlProfile: (payload) => call('graph:removeOwlProfile', payload),
     onKgFacts: on('kg:facts'),
     onKgStage: on('kg:stage'),
 

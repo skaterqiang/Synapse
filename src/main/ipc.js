@@ -221,6 +221,16 @@ function registerIpc(getWindow) {
 
   ipcMain.handle('tpl:matchPrompt', () => templates.matchPrompt());
 
+  // 返回指定 profile 的类树 + 谓词集（供模版编辑器复选框渲染），避免前端自行合成本体
+  ipcMain.handle('tpl:profileTree', (_e, profileId) => {
+    try {
+      const onto = graph.resolveOntology(profileId || 'bfo-lite');
+      return { ok: true, profileId: onto.id, profileName: onto.name, classes: onto.classes, predicates: onto.predicates, fallbackType: onto.fallbackType };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   // 预匹配/自动建模共用：把 rawPaths（raw/… 或 local:…）与 texts（内联文本）读成来源内容列表
   const buildMatchRaws = async (settings, rawPaths, texts) => {
     const raws = [];
@@ -587,7 +597,43 @@ function registerIpc(getWindow) {
   // ---------- 知识图谱 ----------
   ipcMain.handle('graph:get', () => graph.getGraph());
   ipcMain.handle('graph:clear', () => graph.clearGraph());
-  ipcMain.handle('graph:ontology', () => graph.getOntology());
+  ipcMain.handle('graph:ontology', (_e, profileId) => graph.getOntology(profileId));
+  ipcMain.handle('graph:profiles', () => graph.listProfiles());
+  // OWL 导入（Electron：dialog 选文件；web：通过上传接口走后由 body.filePath 传入）
+  ipcMain.handle('graph:importOwl', async (e, body) => {
+    try {
+      let filePath = body && body.filePath;
+      if (!filePath) {
+        const { dialog } = require('electron');
+        const win = require('electron').BrowserWindow.fromWebContents(e.sender);
+        const r = await dialog.showOpenDialog(win, {
+          title: '导入 OWL 本体文件',
+          filters: [{ name: 'OWL 本体', extensions: ['owl', 'rdf', 'ttl', 'xml'] }],
+          properties: ['openFile'],
+        });
+        if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
+        filePath = r.filePaths[0];
+      }
+      const result = graph.importOwl(filePath, body && body.fileName ? { displayName: body.fileName } : undefined);
+      return { ok: true, profile: result.profile, report: result.report };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('graph:removeOwlProfile', (_e, { profileId, clearGraphNodes }) => {
+    try {
+      return graph.removeOwlProfile(profileId, !!clearGraphNodes);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('onto:setProfile', (_e, profileId) => {
+    try {
+      return { ok: true, ontology: graph.setOntologyProfile(profileId) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
   // 节点来源标签 → 可打开目标（笔记/原始文件），供详情面板点击跳转
   ipcMain.handle('graph:resolveSources', (_e, { settings, labels }) => {
     try {
@@ -597,17 +643,17 @@ function registerIpc(getWindow) {
     }
   });
 
-  ipcMain.handle('onto:save', (_e, { kind, item }) => {
+  ipcMain.handle('onto:save', (_e, { kind, item, profileId }) => {
     try {
-      return { ok: true, ontology: graph.saveOntologyItem(kind, item) };
+      return { ok: true, ontology: graph.saveOntologyItem(kind, item, profileId) };
     } catch (err) {
       return { ok: false, error: err.message };
     }
   });
 
-  ipcMain.handle('onto:remove', (_e, { kind, key }) => {
+  ipcMain.handle('onto:remove', (_e, { kind, key, profileId }) => {
     try {
-      return { ok: true, ontology: graph.removeOntologyItem(kind, key) };
+      return { ok: true, ontology: graph.removeOntologyItem(kind, key, profileId) };
     } catch (err) {
       return { ok: false, error: err.message };
     }

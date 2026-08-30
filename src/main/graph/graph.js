@@ -7,43 +7,115 @@ const { num } = require('../common/config');
 const { buildTasks } = require('../jobs/tasks');
 const { getPrompt } = require('../ai/prompts');
 
-// ---------- 本体层定义（抽取与展示共用的受控词表，可增删改查，持久化在 kv） ----------
-// ONTOLOGY_KEY / DEFAULT_ONTOLOGY 定义于 common/constants.js
-const { ONTOLOGY_KEY, DEFAULT_ONTOLOGY } = require('../common/constants');
+// ---------- 本体层定义（多体系：内置只读基座 + 用户叠加层，kv schema v3） ----------
+// ONTOLOGY_KEY / DEFAULT_ONTOLOGY / ONTOLOGY_PROFILES / PROFILE_LIST 定义于 common/constants.js
+const { ONTOLOGY_KEY, DEFAULT_ONTOLOGY, ONTOLOGY_PROFILES, PROFILE_LIST } = require('../common/constants');
 
-// 读取当前本体定义（未持久化时回退默认）
-function getOntologyDef() {
-  try {
-    const o = JSON.parse(db.getKv(ONTOLOGY_KEY) || 'null');
-    if (o && Array.isArray(o.classes) && o.classes.length && Array.isArray(o.predicates) && o.predicates.length) return o;
-  } catch (_) {}
-  return DEFAULT_ONTOLOGY;
+// 读取并迁移本体 kv（v3：{profileId,userClasses[],userPredicates[],userConstraints[],owlProfiles[]}）
+// 旧版（扁平 {classes,predicates,constraints}）整体转入用户层叠加到 bfo-lite，中文谓词 key 原样保留，零数据丢失
+function readOntologyKv() {
+  let o = null;
+  try { o = JSON.parse(db.getKv(ONTOLOGY_KEY) || 'null'); } catch (_) {}
+  if (o && o.profileId !== undefined) {
+    return {
+      profileId: o.profileId || 'bfo-lite',
+      userClasses: Array.isArray(o.userClasses) ? o.userClasses : [],
+      userPredicates: Array.isArray(o.userPredicates) ? o.userPredicates : [],
+      userConstraints: Array.isArray(o.userConstraints) ? o.userConstraints : [],
+      owlProfiles: Array.isArray(o.owlProfiles) ? o.owlProfiles : [],
+    };
+  }
+  // v1 扁平结构 → v3：旧 classes/predicates/constraints 视为用户层叠加项
+  if (o && Array.isArray(o.classes)) {
+    return {
+      profileId: 'bfo-lite',
+      userClasses: o.classes.map((c) => ({ key: c.key, label: c.label || c.key, parent: '', desc: c.desc || '', examples: c.examples || [], from: 'custom' })),
+      userPredicates: (o.predicates || []).map((p) => ({ key: p.key, label: p.key, desc: p.desc || '', from: 'custom' })),
+      userConstraints: (o.constraints || []).map((d) => ({ desc: d, from: 'custom' })),
+      owlProfiles: [],
+      _migrated: true,
+    };
+  }
+  return { profileId: 'bfo-lite', userClasses: [], userPredicates: [], userConstraints: [], owlProfiles: [] };
 }
 
-function persistOntology(o) {
-  db.setKv(ONTOLOGY_KEY, JSON.stringify(o));
+// 合成生效本体：基座（内置或 OWL 导入）+ 用户层（同 key 覆盖）
+// profileId 省略时用 kv 当前编辑 profileId；owl:* 从 owlProfiles 查找，缺失回退 bfo-lite
+function resolveOntology(profileId) {
+  const kv = readOntologyKv();
+  let id = profileId || kv.profileId || 'bfo-lite';
+  let base = null;
+  if (id.startsWith('owl:')) {
+    base = (kv.owlProfiles || []).find((p) => p.id === id);
+    if (!base) { id = 'bfo-lite'; }
+  }
+  if (!base) base = ONTOLOGY_PROFILES[id] || ONTOLOGY_PROFILES['bfo-lite'];
+  const merged = JSON.parse(JSON.stringify(base));
+  merged.id = base.id;
+  // 叠加用户层（同 key 覆盖，新增追加）
+  for (const uc of kv.userClasses) {
+    const i = merged.classes.findIndex((c) => c.key === uc.key);
+    if (i >= 0) merged.classes[i] = { ...merged.classes[i], ...uc, from: 'custom' };
+    else merged.classes.push({ ...uc, from: 'custom' });
+  }
+  for (const up of kv.userPredicates) {
+    const i = merged.predicates.findIndex((p) => p.key === up.key);
+    if (i >= 0) merged.predicates[i] = { ...merged.predicates[i], ...up, from: 'custom' };
+    else merged.predicates.push({ ...up, from: 'custom' });
+  }
+  merged.constraints = [
+    ...(merged.constraints || []).map((d) => (typeof d === 'string' ? { desc: d, from: 'base' } : d)),
+    ...kv.userConstraints.map((c) => (typeof c === 'string' ? { desc: c, from: 'custom' } : c)),
+  ];
+  return merged;
+}
+
+// 用户层持久化（只写叠加层，内置基座永不落库）
+function persistOntologyKv(kv) {
+  const clean = {
+    profileId: kv.profileId || 'bfo-lite',
+    userClasses: kv.userClasses || [],
+    userPredicates: kv.userPredicates || [],
+    userConstraints: kv.userConstraints || [],
+    owlProfiles: kv.owlProfiles || [],
+  };
+  db.setKv(ONTOLOGY_KEY, JSON.stringify(clean));
   db.flush();
 }
 
-// 实体类 key → 展示名（抽取提示与上下文注入共用）
-function nodeTypesMap() {
+// 列出可选体系（内置三体系 + OWL 导入），每项带 类/谓词/约束 计数（体系 tab 徽标用）
+function listProfiles() {
+  const kv = readOntologyKv();
+  const countOf = (src) => ({ classes: (src.classes || []).length, predicates: (src.predicates || []).length, constraints: (src.constraints || []).length, axioms: (src.axioms || []).length });
+  const builtins = PROFILE_LIST.map((p) => {
+    const src = ONTOLOGY_PROFILES[p.id] || {};
+    return { ...p, counts: countOf(src) };
+  });
+  const owls = (kv.owlProfiles || []).map((p) => ({ id: p.id, name: p.name || p.id, desc: p.desc || 'OWL 导入体系', owl: true, counts: countOf(p) }));
+  return [...builtins, ...owls];
+}
+
+// 实体类 key → 展示名（按当前生效本体）
+function nodeTypesMap(profileId) {
   const m = {};
-  for (const c of getOntologyDef().classes) m[c.key] = `${c.label}（${c.desc || ''}）`;
+  for (const c of resolveOntology(profileId).classes) m[c.key] = `${c.label}（${c.desc || ''}）`;
   return m;
 }
 
-function relationsList() {
-  return getOntologyDef().predicates.map((p) => p.key);
+function relationsList(profileId) {
+  return resolveOntology(profileId).predicates.map((p) => p.key);
 }
 
-// 类型/谓词被删后的回退值
-function fallbackType() {
-  const keys = Object.keys(nodeTypesMap());
-  return keys.includes('concept') ? 'concept' : keys[0] || 'concept';
+// 类型/谓词回退值（按当前生效本体的 fallback）
+function fallbackType(profileId) {
+  const o = resolveOntology(profileId);
+  const keys = o.classes.map((c) => c.key);
+  return keys.includes(o.fallbackType) ? o.fallbackType : (keys[0] || 'object');
 }
-function fallbackRel() {
-  const rels = relationsList();
-  return rels.includes('相关') ? '相关' : rels[0] || '相关';
+function fallbackRel(profileId) {
+  const o = resolveOntology(profileId);
+  const rels = o.predicates.map((p) => p.key);
+  return rels.includes(o.fallbackRel) ? o.fallbackRel : (rels[0] || '相关');
 }
 
 const GRAPH_KEY = 'graph';
@@ -94,7 +166,9 @@ function collectSources() {
 // 逐批调用模型抽取节点/边，合并去重后持久化；onStage 回调用于作业阶段进度展示
 // resolveDomain(raws)：未命中特定领域时由作业层决定最终领域（可新建/复用领域模版），
 // 返回 { domainId, domainLabel, typeHints }；graph 层不直接依赖 templates
-async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain }, onStage, onProgress, onTasks) {
+async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile }, onStage, onProgress, onTasks) {
+  // 生效体系优先级：弹窗显式指定 > 命中模板的体系绑定（resolveDomain 回填）> settings 全局默认 > bfo-lite
+  const explicitPid = ontologyProfile || '';
   let sources;
   if (Array.isArray(inlineSources) && inlineSources.length) {
     // 内联语料：直接从传入文本抽取（笔记「生成图谱」按钮）
@@ -118,14 +192,29 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
   let hints = typeHints;
   let domLabel = domainLabel;
   let domainTag = domainId && domainId !== 'general' ? domainId : (domain && domain !== 'general' ? domain : '');
+  let tplProfile = '';
   if (resolveDomain) {
     const r = await resolveDomain(sources.map((s) => ({ rawPath: s.label, content: s.text })));
     if (r) {
       if (r.typeHints) hints = r.typeHints;
       if (r.domainLabel) domLabel = r.domainLabel;
       if (r.domainId && r.domainId !== 'general') domainTag = r.domainId;
+      if (r.ontologyProfile) tplProfile = r.ontologyProfile;
     }
   }
+  // 指定已有领域（不走 resolveDomain）时，主动读取该领域模版绑定的体系，否则模版的 ontologyProfile 不会生效
+  if (!tplProfile && domainTag && domainTag !== 'general') {
+    try {
+      const { listTemplates } = require('./templates');
+      const tpl = listTemplates().find((t) => t.id === domainTag);
+      if (tpl && tpl.ontologyProfile) tplProfile = tpl.ontologyProfile;
+    } catch (_) {}
+  }
+  // 体系解析放在领域判定之后：弹窗显式指定优先，其次命中模板的体系绑定，最后全局默认
+  const pid = explicitPid || tplProfile || (settings && settings.ontologyProfile) || 'bfo-lite';
+  const onto = resolveOntology(pid);
+  const profileId = onto.id;
+  const twoStage = onto.promptMode === 'two-stage';
   // 收集阶段同时报出本次抽取所用领域与类型约束（与吸收作业「使用领域模版：X」的信息量对齐）
   if (onStage) {
     const ent = (hints && hints.entity) || [];
@@ -133,7 +222,7 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
     const domText = ent.length || con.length
       ? `领域「${domLabel || domainTag}」（实体〔${ent.join('、')}〕；概念〔${con.join('、')}〕）`
       : `领域「${domLabel || domainTag || '通用'}」（未附加实体/概念类型约束）`;
-    onStage('collect', `共 ${sources.length} 个来源，${domText}，开始分批抽取…`);
+    onStage('collect', `共 ${sources.length} 个来源，${domText}，体系「${onto.name}」${twoStage ? '（两阶段）' : ''}，开始分批抽取…`);
   }
 
   // 分批：每个来源独立一批（一个任务），便于逐任务展示当前进度与独立输出
@@ -144,14 +233,19 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
   const tasks = buildTasks(sources.map((s) => s.label));
   if (onTasks) onTasks(tasks);
 
-  const nodes = new Map(); // key -> {id,name,type,desc,sources[],domain}
+  const nodes = new Map(); // key -> {id,name,type,desc,sources[],domain,profile}
   const edges = new Map(); // key -> {from,to,rel,sources[]}
+  const typeMap = nodeTypesMap(profileId);
+  const rels = relationsList(profileId);
+  const fbType = fallbackType(profileId);
+  const fbRel = fallbackRel(profileId);
   const ensureNode = (name, type, desc, srcLabel, srcDomain) => {
     const key = nodeKey(name);
     if (!key) return null;
     let node = nodes.get(key);
     if (!node) {
-      node = { id: key, name: String(name).trim().slice(0, 40), type: nodeTypesMap()[type] ? type : fallbackType(), desc: '', sources: [], domain: srcDomain || '' };
+      // id 带 profile 前缀：同一事物在不同体系下生成不同节点，保证多体系图谱共存可对比
+      node = { id: `${profileId}:${key}`, name: String(name).trim().slice(0, 40), type: typeMap[type] ? type : fbType, desc: '', sources: [], domain: srcDomain || '', profile: profileId };
       nodes.set(key, node);
     }
     if (!node.desc && desc) node.desc = String(desc).slice(0, 120);
@@ -170,8 +264,6 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
     for (const s of batches[i]) if (tasks[s._i]) tasks[s._i].status = 'running';
     if (onTasks) onTasks(tasks);
     const batchText = batches[i].map((s) => `=== 来源: ${s.label} ===\n${s.text}`).join('\n\n');
-    const typesMap = nodeTypesMap();
-    const rels = relationsList();
     // 已抽取节点（供后续任务建立跨来源关系）
     const existing = [...nodes.values()].slice(0, 60).map((n) => `${n.name}(${n.type})`).join('、');
     // 流式上报本批思考/输出进度与尾部预览（节流 600ms）
@@ -191,17 +283,26 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
         }
       }
       : null;
+    // 体系提示：类型表（两阶段=仅顶级类）+ 谓词表
+    const classLine = (list) => list.map((c) => `${c.key}(${c.label}${c.desc ? '：' + c.desc : ''})`).join('、');
+    const topClasses = onto.classes.filter((c) => !c.parent || !typeMap[c.parent]);
+    const promptHead = twoStage
+      ? `【第一步·粗分类】本体系为两阶段抽取。节点的一级类只能从以下顶级类中选择：${classLine(topClasses)}。\n`
+      : `节点类型只能从：${classLine(onto.classes)} 中选择。\n`;
+    const sysPrompt = getPrompt(settings, 'graphExtractPrompt') + (twoStage
+      ? `\n当前使用顶层本体体系「${onto.name}」的两阶段抽取模式：第一步先按顶级类粗分类，第二步再在用户指定的子树内细分到叶子类。`
+      : `\n当前使用顶层本体体系「${onto.name}」。`);
     const answer = await chatOnce(settings, [
-      { role: 'system', content: getPrompt(settings, 'graphExtractPrompt') },
+      { role: 'system', content: sysPrompt },
       {
         role: 'user',
         content:
           `以下是知识库中的一个来源内容。请抽取本体层：节点与关系。\n` +
-          `节点类型只能从：${Object.entries(typesMap).map(([k, v]) => `${k}(${v})`).join('、')} 中选择。\n` +
+          promptHead +
           `关系只能从：${rels.join('、')} 中选择。\n` +
           (existing ? `已有节点（可为其建立关系，避免重复创建）：${existing}。\n` : '') +
           (hints && ((hints.entity || []).length || (hints.concept || []).length)
-            ? `本次为领域「${domLabel || domainTag || ''}」抽取，请围绕该领域模版的类别组织节点：entity 节点对应实体类型〔${(hints.entity || []).join('、')}〕；concept 节点对应概念类型〔${(hints.concept || []).join('、')}〕。\n`
+            ? `本次为领域「${domLabel || domainTag || ''}」抽取，请围绕该领域模版的类别组织节点：优先归入〔${(hints.entity || []).concat(hints.concept || []).join('、')}〕相关类别。\n`
             : '') +
           `节点名使用规范简短名词；同一事物只输出一个节点；关系须有明确依据，最多 30 个节点、50 条边。\n` +
           `输出 JSON：{"nodes":[{"name":"","type":"","desc":""}],"edges":[{"from":"","to":"","rel":""}]}\n\n` +
@@ -217,11 +318,46 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
     } catch (_) {
       return; // 单批解析失败跳过，不中断整体抽取
     }
-    for (const n of parsed.nodes || []) ensureNode(n.name, n.type, n.desc, null);
+    let coarse = parsed.nodes || [];
+    // 两阶段第二步：在粗分类顶级类的子树内细分到叶子类
+    if (twoStage && coarse.length) {
+      const subOf = {};
+      for (const n of coarse) {
+        const top = typeMap[n.type] ? n.type : (onto.classes.find((c) => !c.parent || !typeMap[c.parent]) || {}).key;
+        if (!subOf[top]) subOf[top] = [];
+        subOf[top].push(n.name);
+      }
+      const refined = [];
+      for (const [top, names] of Object.entries(subOf)) {
+        const subtree = onto.classes.filter((c) => {
+          let p = c;
+          while (p) { if (p.key === top) return true; p = onto.classes.find((x) => x.key === p.parent); }
+          return false;
+        });
+        try {
+          const ans2 = await chatOnce(settings, [
+            { role: 'system', content: sysPrompt },
+            {
+              role: 'user',
+              content:
+                `【第二步·细分类】以下节点已粗分为「${top}」，请在子树内细分为最合适的叶子类。\n` +
+                `可选类型：${classLine(subtree)}。\n` +
+                `节点：${names.join('、')}。\n` +
+                `输出 JSON：{"nodes":[{"name":"","type":""}]}，只输出这些节点的细分结果。`,
+            },
+          ]);
+          const r = extractJson(ans2);
+          for (const x of r.nodes || []) refined.push(x);
+        } catch (_) { /* 单组细分失败则沿用粗分类 */ }
+      }
+      const refMap = new Map(refined.map((x) => [nodeKey(x.name), x.type]));
+      coarse = coarse.map((n) => ({ ...n, type: refMap.get(nodeKey(n.name)) || n.type }));
+    }
+    for (const n of coarse) ensureNode(n.name, n.type, n.desc, null);
     for (const e of parsed.edges || []) {
       const from = ensureNode(e.from, null, null, null);
       const to = ensureNode(e.to, null, null, null);
-      const rel = rels.includes(e.rel) ? e.rel : fallbackRel();
+      const rel = rels.includes(e.rel) ? e.rel : fbRel;
       if (!from || !to || from.id === to.id) continue;
       const key = `${from.id}|${to.id}|${rel}`;
       if (!edges.has(key)) edges.set(key, { from: from.id, to: to.id, rel });
@@ -251,8 +387,28 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
   await Promise.all(workers);
 
   if (!nodes.size) throw new Error('模型未抽取到任何节点，请检查 API 配置或缩小范围重试');
-  saveGraph([...nodes.values()], [...edges.values()]);
-  return { nodeCount: nodes.size, edgeCount: edges.size, sourceCount: sources.length, sourceLabels: sources.map((s) => s.label) };
+
+  // 多体系共存合并：节点 id 带 profile 前缀（避免跨体系同名撞 id）；
+  // 与已有图谱合并——同 profile 同 id 合并 sources/desc，跨 profile 节点保留共存，差的版本可按体系清除
+  const existing = getGraph();
+  const mergedNodes = new Map(); // nodeId -> node
+  const mergedEdges = new Map(); // edgeKey -> edge
+  const putNode = (n) => {
+    const ex = mergedNodes.get(n.id);
+    if (!ex) { mergedNodes.set(n.id, { ...n }); return; }
+    // 同 id 同 profile：合并 sources / desc / domain，保留既有 type
+    for (const s of n.sources || []) if (!ex.sources.includes(s) && ex.sources.length < 8) ex.sources.push(s);
+    if (!ex.desc && n.desc) ex.desc = n.desc;
+    if (!ex.domain && n.domain) ex.domain = n.domain;
+  };
+  const putEdge = (e) => { const k = `${e.from}|${e.to}|${e.rel}`; if (!mergedEdges.has(k)) mergedEdges.set(k, { ...e }); };
+  // 先放已有图谱（跨体系保留），再放本次抽取（本体系内合并）
+  for (const n of existing.nodes || []) if (n && n.id) putNode(n);
+  for (const e of existing.edges || []) if (e && e.from && e.to) putEdge(e);
+  for (const n of nodes.values()) putNode(n);
+  for (const e of edges.values()) putEdge(e);
+  saveGraph([...mergedNodes.values()], [...mergedEdges.values()]);
+  return { nodeCount: mergedNodes.size, edgeCount: mergedEdges.size, sourceCount: sources.length, sourceLabels: sources.map((s) => s.label), profileId, profileName: onto.name };
 }
 
 // ---------- 问答上下文注入 ----------
@@ -305,7 +461,7 @@ function recallFor(question, maxNodes = 8) {
       })
       .filter(Boolean)
       .join('；');
-    return `- [${nodeTypesMap()[n.type] ? n.type : fallbackType()}] ${n.name}${n.desc ? `：${n.desc}` : ''}${rels ? `（关系：${rels}）` : ''}`;
+    return `- [${nodeTypesMap()[n.type] ? n.type : fallbackType()}] ${n.name}${n.desc ? `：${n.desc}` : ''}${rels ? `（关系：${rels}）` : ''}`; // 上下文注入用当前编辑体系
   });
   return {
     context: `【知识图谱·本体层】\n${lines.join('\n')}\n回答时可结合上述实体与关系。`,
@@ -318,31 +474,56 @@ function contextFor(question, maxNodes = 8) {
   return recallFor(question, maxNodes).context;
 }
 
-// ---------- 本体定义（Ontology）查询与增删改查 ----------
-// 本体视图数据：类/谓词/约束 + 实例统计
-function getOntology() {
-  const o = getOntologyDef();
+// ---------- 本体定义（Ontology）查询与增删改查（v3：基座 + 用户层） ----------
+// 本体视图数据：profile 摘要 + 类树 + 谓词 + 约束 + 实例统计 + 可选体系列表
+function getOntology(profileId) {
+  const kv = readOntologyKv();
+  const id = profileId || kv.profileId || 'bfo-lite';
+  const o = resolveOntology(id);
   const g = getGraph();
   const countBy = {};
   for (const n of g.nodes) countBy[n.type] = (countBy[n.type] || 0) + 1;
-  const classes = o.classes.map((c) => ({ ...c, instances: countBy[c.key] || 0 }));
+  const baseKeys = { classes: new Set(), predicates: new Set() };
+  const baseProfile = id.startsWith('owl:') ? (kv.owlProfiles || []).find((p) => p.id === id) : ONTOLOGY_PROFILES[id];
+  (baseProfile ? baseProfile.classes : []).forEach((c) => baseKeys.classes.add(c.key));
+  (baseProfile ? baseProfile.predicates : []).forEach((p) => baseKeys.predicates.add(p.key));
+  const classes = o.classes.map((c) => ({ ...c, instances: countBy[c.key] || 0, builtin: baseKeys.classes.has(c.key), custom: !baseKeys.classes.has(c.key) }));
+  const predicates = o.predicates.map((p) => ({ ...p, builtin: baseKeys.predicates.has(p.key), custom: !baseKeys.predicates.has(p.key) }));
   return {
+    profileId: id,
+    profileName: o.name,
+    profileDesc: o.desc,
+    promptMode: o.promptMode,
     classes,
-    predicates: o.predicates,
+    predicates,
     constraints: o.constraints || [],
+    axioms: o.axioms || [],
+    profiles: listProfiles(),
+    owlProfiles: kv.owlProfiles.map((p) => ({ id: p.id, name: p.name, desc: p.desc })),
     stats: {
       classCount: o.classes.length,
       predicateCount: o.predicates.length,
       constraintCount: (o.constraints || []).length,
+      axiomCount: (o.axioms || []).length,
       instanceCount: g.nodes.length,
       edgeCount: g.edges.length,
     },
   };
 }
 
-// 增/改：kind = classes | predicates | constraints；constraints 用 item.index 定位编辑
-function saveOntologyItem(kind, item) {
-  const o = getOntologyDef();
+// 切换本体页当前编辑的体系（落 kv profileId）
+function setOntologyProfile(profileId) {
+  const kv = readOntologyKv();
+  const ok = ONTOLOGY_PROFILES[profileId] || (kv.owlProfiles || []).some((p) => p.id === profileId);
+  if (!ok) throw new Error('未知本体体系：' + profileId);
+  kv.profileId = profileId;
+  persistOntologyKv(kv);
+  return getOntology(profileId);
+}
+
+// 增/改：写入用户叠加层（同 key 覆盖基座）；kind = classes | predicates | constraints
+function saveOntologyItem(kind, item, profileId) {
+  const kv = readOntologyKv();
   const it = item || {};
   if (kind === 'classes') {
     const key = String(it.key || '').trim();
@@ -352,42 +533,50 @@ function saveOntologyItem(kind, item) {
     const rec = {
       key,
       label,
+      parent: String(it.parent || '').trim(),
       desc: String(it.desc || '').trim(),
       examples: Array.isArray(it.examples) ? it.examples.map((s) => String(s).trim()).filter(Boolean).slice(0, 8) : [],
+      from: 'custom',
     };
-    const i = o.classes.findIndex((c) => c.key === key);
-    if (i >= 0) o.classes[i] = rec; else o.classes.push(rec);
+    const i = kv.userClasses.findIndex((c) => c.key === key);
+    if (i >= 0) kv.userClasses[i] = rec; else kv.userClasses.push(rec);
   } else if (kind === 'predicates') {
     const key = String(it.key || '').trim();
     if (!key) throw new Error('谓词名称不能为空');
-    const rec = { key, desc: String(it.desc || '').trim() };
-    const i = o.predicates.findIndex((p) => p.key === key);
-    if (i >= 0) o.predicates[i] = rec; else o.predicates.push(rec);
+    const rec = { key, label: String(it.label || key).trim(), desc: String(it.desc || '').trim(), from: 'custom' };
+    const i = kv.userPredicates.findIndex((p) => p.key === key);
+    if (i >= 0) kv.userPredicates[i] = rec; else kv.userPredicates.push(rec);
   } else {
     const text = String(it.desc || '').trim();
     if (!text) throw new Error('约束内容不能为空');
     const idx = Number(it.index);
-    if (Number.isInteger(idx) && o.constraints[idx] !== undefined) o.constraints[idx] = text;
-    else (o.constraints = o.constraints || []).push(text);
+    if (Number.isInteger(idx) && kv.userConstraints[idx] !== undefined) kv.userConstraints[idx] = { desc: text, from: 'custom' };
+    else kv.userConstraints.push({ desc: text, from: 'custom' });
   }
-  persistOntology(o);
-  return getOntology();
+  persistOntologyKv(kv);
+  return getOntology(profileId || kv.profileId);
 }
 
-// 删：classes/predicates 按 key，constraints 按下标
-function removeOntologyItem(kind, keyOrIndex) {
-  const o = getOntologyDef();
+// 删：仅删用户叠加层项；内置基座项只读不可删
+function removeOntologyItem(kind, keyOrIndex, profileId) {
+  const kv = readOntologyKv();
   if (kind === 'classes') {
-    if (keyOrIndex === fallbackType()) throw new Error(`「${keyOrIndex}」是回退实体类，不可删除`);
-    o.classes = o.classes.filter((c) => c.key !== keyOrIndex);
+    const isBuiltin = Object.values(ONTOLOGY_PROFILES).some((p) => p.classes.some((c) => c.key === keyOrIndex));
+    if (isBuiltin) { const e = new Error('内置基座类只读，不可删除'); e.code = 'BUILTIN_READONLY'; throw e; }
+    const i = kv.userClasses.findIndex((c) => c.key === keyOrIndex);
+    if (i < 0) throw new Error('未找到自定义类：' + keyOrIndex);
+    kv.userClasses.splice(i, 1);
   } else if (kind === 'predicates') {
-    if (o.predicates.length <= 1) throw new Error('至少保留一个谓词');
-    o.predicates = o.predicates.filter((p) => p.key !== keyOrIndex);
+    const isBuiltin = Object.values(ONTOLOGY_PROFILES).some((p) => p.predicates.some((x) => x.key === keyOrIndex));
+    if (isBuiltin) { const e = new Error('内置基座谓词只读，不可删除'); e.code = 'BUILTIN_READONLY'; throw e; }
+    const i = kv.userPredicates.findIndex((p) => p.key === keyOrIndex);
+    if (i < 0) throw new Error('未找到自定义谓词：' + keyOrIndex);
+    kv.userPredicates.splice(i, 1);
   } else {
-    o.constraints.splice(Number(keyOrIndex), 1);
+    kv.userConstraints.splice(Number(keyOrIndex), 1);
   }
-  persistOntology(o);
-  return getOntology();
+  persistOntologyKv(kv);
+  return getOntology(profileId || kv.profileId);
 }
 
 // ---------- KG 自然语言问答 ----------
@@ -459,7 +648,11 @@ async function kgAsk(event, { settings, question, hops, withFacts }) {
         else if (frontier.includes(e.to)) other = e.from;
         if (!other) continue;
         const a = byId.get(e.from), b = byId.get(e.to);
-        if (a && b) facts.push(`${a.name} —${e.rel}→ ${b.name}`);
+        if (a && b) {
+          // 事实三元组带体系标签（§5），混合图谱下可辨识来源体系
+          const tag = (n) => `[${n.profile || 'bfo-lite'}·${n.type}]`;
+          facts.push(`${tag(a)}${a.name} —${e.rel}→ ${tag(b)}${b.name}`);
+        }
         if (!seen.has(other)) { seen.add(other); next.push(other); }
       }
       frontier = next;
@@ -549,4 +742,48 @@ function resolveSources(settings, labels) {
   return out;
 }
 
-module.exports = { getGraph, saveGraph, clearGraph, extractGraph, contextFor, recallFor, getOntology, saveOntologyItem, removeOntologyItem, kgAsk, resolveSources };
+// ---------- OWL 导入 ----------
+// 导入 OWL 文件：解析 → 生成 profile → 存入 kv.owlProfiles（同名覆盖）→ 源文件复制到 data/ontology/ 留存
+function importOwl(filePath, opts) {
+  const { parseOwlFile } = require('./owl');
+  const path = require('path');
+  const fs = require('fs');
+  const { profile, report } = parseOwlFile(filePath, opts);
+  const kv = readOntologyKv();
+  kv.owlProfiles = kv.owlProfiles || [];
+  const idx = kv.owlProfiles.findIndex((p) => p.id === profile.id);
+  if (idx >= 0) kv.owlProfiles[idx] = profile; else kv.owlProfiles.push(profile);
+  persistOntologyKv(kv);
+  // 源文件复制到 data/ontology/ 留存（便于重新导入）
+  try {
+    const { dataRoot } = require('../common/paths');
+    const ontoDir = path.join(dataRoot(), 'ontology');
+    if (!fs.existsSync(ontoDir)) fs.mkdirSync(ontoDir, { recursive: true });
+    const dest = path.join(ontoDir, path.basename(filePath));
+    if (path.resolve(dest) !== path.resolve(filePath)) fs.copyFileSync(filePath, dest);
+  } catch (_) { /* 留存失败不影响导入结果 */ }
+  return { profile, report };
+}
+
+// 删除 OWL 体系；可选连带清除该体系图谱节点
+function removeOwlProfile(profileId, clearGraphNodes) {
+  const kv = readOntologyKv();
+  kv.owlProfiles = kv.owlProfiles || [];
+  const idx = kv.owlProfiles.findIndex((p) => p.id === profileId);
+  if (idx < 0) return { ok: false, error: '体系不存在' };
+  const removed = kv.owlProfiles.splice(idx, 1)[0];
+  persistOntologyKv(kv);
+  let clearedNodes = 0;
+  if (clearGraphNodes) {
+    const g = getGraph();
+    const before = g.nodes.length;
+    const nodes = g.nodes.filter((n) => n.profile !== profileId);
+    const nodeIds = new Set(nodes.map((n) => n.id));
+    const edges = g.edges.filter((e) => nodeIds.has(e.from) && nodeIds.has(e.to));
+    saveGraph(nodes, edges);
+    clearedNodes = before - nodes.length;
+  }
+  return { ok: true, removed: { id: removed.id, name: removed.name }, clearedNodes };
+}
+
+module.exports = { getGraph, saveGraph, clearGraph, extractGraph, contextFor, recallFor, getOntology, setOntologyProfile, saveOntologyItem, removeOntologyItem, listProfiles, resolveOntology, kgAsk, resolveSources, importOwl, removeOwlProfile };

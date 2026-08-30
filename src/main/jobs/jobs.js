@@ -408,7 +408,7 @@ const JOB_RUNNERS = {
   },
   // 知识图谱作业：收集语料 → AI 本体抽取 → 合并存图
   async graph(job) {
-    const { settings, rawPaths, inlineSources, typeHints, domainId, domainLabel } = job.payload;
+    const { settings, rawPaths, inlineSources, typeHints, domainId, domainLabel, ontologyProfile } = job.payload;
     setStage(job, 'collect', 'running', inlineSources && inlineSources.length ? `读取 ${inlineSources.length} 个笔记来源…` : (rawPaths && rawPaths.length ? `读取 ${rawPaths.length} 个原始来源…` : '读取全部笔记…'));
     const res = await graph.extractGraph(settings, {
       rawPaths,
@@ -416,6 +416,7 @@ const JOB_RUNNERS = {
       typeHints,
       domainId,
       domainLabel,
+      ontologyProfile,
       // 领域：只有选了“自动”时才在作业内找/建领域；用户显式指定领域（含通用）时 autoDomain=false，按其选择执行
       resolveDomain: job.payload.autoDomain === false ? undefined : (raws) => resolveAutoDomain(job, raws, 'collect'),
       readRaw: (rel) => filesMod.readRawText(settings, rel).catch(() => ''),
@@ -432,7 +433,11 @@ const JOB_RUNNERS = {
       emitJobs();
     });
     delete job.livePreview;
-    setStage(job, 'extract', 'success', `抽取完成：${res.nodeCount} 节点 / ${res.edgeCount} 关系`);
+    // 体系徽标写入作业 source，供作业项展示
+    job.source = { ...(job.source || {}), ontologyProfile: res.profileId, ontologyProfileName: res.profileName };
+    persistJobs();
+    emitJobs();
+    setStage(job, 'extract', 'success', `抽取完成：${res.nodeCount} 节点 / ${res.edgeCount} 关系（体系「${res.profileName}」）`);
     setStage(job, 'save', 'success', '图谱已持久化到 SQLite');
     return res;
   },
@@ -454,8 +459,8 @@ async function resolveAutoDomain(job, raws, stageKey) {
     return { domainId: p.domainId || p.domain, domainLabel: p.domainLabel || p.templateName, typeHints: p.typeHints };
   }
   // 领域信息回写作业卡片（source.domain），使徽标展示最终生效的领域而不是提交时的“通用”
-  const writeBack = (domainId, domainLabel, typeHints) => {
-    job.source = { ...(job.source || {}), domain: domainId, domainLabel, typeHints };
+  const writeBack = (domainId, domainLabel, typeHints, tplProfile) => {
+    job.source = { ...(job.source || {}), domain: domainId, domainLabel, typeHints, ...(tplProfile ? { tplProfile } : {}) };
     persistJobs();
     emitJobs();
   };
@@ -474,13 +479,21 @@ async function resolveAutoDomain(job, raws, stageKey) {
       if (templates.listTemplates().some((t) => t.id === id && t.name !== sug.name)) id = `${id}_${Date.now().toString(36)}`;
       tpl = templates.saveTemplate({ ...gen, id, name: sug.name, desc: sug.desc });
     }
-    const typeHints = {
-      entity: (tpl.entityTypes || []).map((x) => x.name).filter(Boolean),
-      concept: (tpl.conceptTypes || []).map((x) => x.name).filter(Boolean),
-    };
-    writeBack(tpl.id, tpl.name, typeHints);
-    setStage(job, stageKey, 'running', `${exist ? '复用' : '已新建'}领域「${tpl.name}」（${tpl.id}），本次产物将挂到该领域下`);
-    return { domainId: tpl.id, domainLabel: tpl.name, typeHints };
+    // v2：typeHints 从 domainClasses 派生（parent!==information→entity，=information→concept）；同时携带体系绑定
+    const classes = Array.isArray(tpl.domainClasses) ? tpl.domainClasses : [];
+    const typeHints = classes.length
+      ? {
+          entity: classes.filter((c) => c.parent !== 'information').map((c) => c.label || c.key).filter(Boolean),
+          concept: classes.filter((c) => c.parent === 'information').map((c) => c.label || c.key).filter(Boolean),
+        }
+      : {
+          entity: (tpl.entityTypes || []).map((x) => x.name).filter(Boolean),
+          concept: (tpl.conceptTypes || []).map((x) => x.name).filter(Boolean),
+        };
+    const tplProfile = tpl.ontologyProfile || '';
+    writeBack(tpl.id, tpl.name, typeHints, tplProfile);
+    setStage(job, stageKey, 'running', `${exist ? '复用' : '已新建'}领域「${tpl.name}」（${tpl.id}）${tplProfile ? `，绑定体系「${tplProfile}」` : ''}，本次产物将挂到该领域下`);
+    return { domainId: tpl.id, domainLabel: tpl.name, typeHints, ontologyProfile: tplProfile || undefined };
   } catch (err) {
     setStage(job, stageKey, 'running', `自动建域未完成（${err.message}），本次按通用模版处理`);
     return null;

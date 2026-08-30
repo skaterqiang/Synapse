@@ -1804,6 +1804,19 @@ function showSettingsView() {
     renderMineruModelOptions();
     $('set-editormode').value = EDITOR_MODES.includes(s.defaultEditorMode) ? s.defaultEditorMode : 'split';
     $('set-aiassist').value = s.aiAssistPrompt || '';
+    // 知识图谱：全局默认本体体系（独立异步，不阻塞其余字段填充）
+    window.kb.graphProfiles().then((profiles) => {
+      const sel = $('set-ontologyprofile');
+      if (!sel) return;
+      sel.innerHTML = (profiles || []).map((p) => `<option value="${p.id}">${p.name}${p.owl ? '（OWL）' : ''}</option>`).join('');
+      sel.value = s.ontologyProfile || 'bfo-lite';
+      const showDesc = () => {
+        const p = (profiles || []).find((x) => x.id === sel.value);
+        $('set-ontologyprofile-desc').textContent = p ? `${p.name} — ${p.desc || ''}` : '';
+      };
+      sel.onchange = () => { showDesc(); saveSettings(); };
+      showDesc();
+    }).catch(() => {});
     window.kb.getDataPath().then((p) => { state.currentDbPath = p; $('set-dbpath').value = p; $('data-path').textContent = '数据文件：' + p; });
   } catch (e) { console.error('设置填充失败:', e); }
   renderEditor();
@@ -2206,6 +2219,7 @@ function saveSettingsFields() {
     updatePreview();
   }
   s.aiAssistPrompt = $('set-aiassist').value.trim();
+  // 本体体系全局默认已移至「本体定义」页管理（onto-profile-sel），设置页不再读/写 ontologyProfile，避免误删
   state.settings = s;
   persist();
   markSettingsSaved();

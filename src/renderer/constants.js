@@ -49,6 +49,11 @@ const DOC_ASSET_IMG_RE = /\.(png|jpe?g|gif|svg|webp|bmp)$/i;
 const GRAPH_PALETTE = ['#3370ff', '#0fbfa1', '#7a5af8', '#f5a623', '#8a919f'];
 const GRAPH_COLORS = { entity: '#3370ff', source: '#0fbfa1', concept: '#7a5af8', topic: '#f5a623', note: '#8a919f' };
 const GRAPH_TYPE_NAMES = { concept: '抽象概念', entity: '实体', topic: '主题', source: '来源', note: '笔记' };
+// 类型数超出调色板时，按黄金角共轭在色环上取色，保证各类颜色互不重复
+function graphGenColor(index) {
+  const hue = (index * 137.508) % 360;
+  return `hsl(${hue.toFixed(1)}, 68%, 52%)`;
+}
 // 图谱面板 Tab 名称
 const KG_TAB_NAMES = { overview: '概览', entities: '实体浏览', graph: '整体图谱', ontology: '本体定义', ask: '自然语言问答' };
 

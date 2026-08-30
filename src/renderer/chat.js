@@ -191,7 +191,18 @@ function editViewUserMessage(el) {
   });
 }
 async function loadAiSessions() {
-  try { state.aiSessions = (await window.kb.chatGetSessions()) || []; } catch (_) { state.aiSessions = []; }
+  let disk;
+  try { disk = (await window.kb.chatGetSessions()) || []; } catch (_) { disk = []; }
+  const mem = state.aiSessions || [];
+  // 回答中的会话以内存为准（流式回答尚未落盘，直接用磁盘数据会丢内容）
+  const busyId = state.aiBusySessionId;
+  const busyMem = busyId ? mem.find((x) => x.id === busyId) : null;
+  // 合并：保留磁盘与内存共有的会话（内存版可能更新），加上磁盘独有的，再加上内存独有的
+  const merged = [];
+  const seen = new Set();
+  for (const s of mem) { merged.push(s); seen.add(s.id); }
+  for (const s of disk) { if (!seen.has(s.id)) merged.push(s); }
+  state.aiSessions = merged;
   renderAiSessionList();
 }
 function saveAiSessions() { try { window.kb.chatSaveSessions(state.aiSessions || []); } catch (_) {} }
@@ -298,16 +309,30 @@ function bindSetupChecklist() {
   });
 }
 
-function showAiView() {
+async function showAiView() {
   hideMainViews();
   setAiPanelVisible(false);
   $('ai-view').hidden = false;
-  loadAiSessions();
+  // 必须先 await loadAiSessions，否则 openAiSession 用旧数组重建后
+  // loadAiSessions 异步完成会覆盖 state.aiSessions，导致视图与数据不一致
+  await loadAiSessions();
   refreshAiExtTitles();
-  // 回答中切回 AI 页：保留活 DOM（步骤组+流式气泡），不重建，否则进行中的过程会消失
-  if (!state.aiBusy) {
-    if (state.activeSessionId) openAiSession(state.activeSessionId); else aiNewTask();
-  }
+  if (state.aiBusy) {
+    // 回答中切回：若活 DOM 还在则原位恢复，否则保持当前 DOM 不动
+    if (liveView && liveView.sessionId === state.aiBusySessionId) {
+      state.activeSessionId = state.aiBusySessionId;
+      $('ai-view-welcome').hidden = true;
+      const box = $('ai-view-messages');
+      box.hidden = false;
+      box.innerHTML = '';
+      if (liveView.userEl) box.appendChild(liveView.userEl);
+      box.appendChild(liveView.groupEl);
+      box.appendChild(liveView.msgEl);
+      box.scrollTop = box.scrollHeight;
+      renderAiSessionList();
+    }
+  } else if (state.activeSessionId) openAiSession(state.activeSessionId);
+  else aiNewTask();
   refreshSetupChecklist();
   renderEditor();
   renderSidebar();
@@ -470,9 +495,11 @@ async function sendAiViewQuestion(presetText) {
     state.aiBusy = false;
     state.aiBusySessionId = null;
     status.stop();
-    if (answer) s.messages.push({ role: 'assistant', content: answer, steps: group.steps, ms: Date.now() - t0 });
+    // 无论是否有内容都补一条 assistant 消息，避免用户消息成为孤儿（无回答）
+    const stoppedContent = answer || '> ⚠ 已停止。';
+    s.messages.push({ role: 'assistant', content: stoppedContent, steps: group.steps, ms: Date.now() - t0 });
     saveAiSessions();
-    bubble.innerHTML = renderMarkdown((answer ? answer + '\n\n' : '') + '> ⚠ 已停止。');
+    bubble.innerHTML = renderMarkdown(stoppedContent);
     group.finish();
     setAiSendBusy(false);
     renderAiSessionList();

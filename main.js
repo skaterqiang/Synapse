@@ -85,7 +85,7 @@ async function createWindow() {
   });
   if (process.argv.includes('--kb-debug')) mainWindow.webContents.openDevTools({ mode: 'detach' });
   // 版本 query 使 index.html 自身绕开 file:// 缓存（内部脚本引用另带各自版本号）
-  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'), { query: { v: '20260829e' } });
+  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'), { query: { v: '20260830b' } });
 }
 
 app.whenReady().then(async () => {

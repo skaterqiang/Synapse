@@ -250,7 +250,8 @@ const stdioMock = { name: 'mockStdio', type: 'stdio', command: process.execPath,
   const cacheFiles = fs.existsSync(cacheDir) ? fs.readdirSync(cacheDir) : [];
   check('提取结果写入磁盘缓存', cacheFiles.length > 0, JSON.stringify(cacheFiles));
   await filesMod.extractFileContent(docxPath, settings);
-  check('二次读取命中缓存（parseMethod=cache）', filesMod.extractFileContent.lastParseMethod === 'cache', filesMod.extractFileContent.lastParseMethod);
+  // 缓存命中时如实展示条目记录的解析方式（builtin/mineru/fallback），不再返回字面 'cache'
+  check('二次读取命中缓存（沿用条目解析方式）', filesMod.extractFileContent.lastParseMethod === 'builtin', filesMod.extractFileContent.lastParseMethod);
   await new Promise((r2) => setTimeout(r2, 30)); // 保证 mtime 差异
   fs.writeFileSync(docxPath, await mkDocx('缓存失效后的新内容'));
   const t2 = await filesMod.readRawTextForScan(settings, 'raw/cache-probe.docx', 512 * 1024);

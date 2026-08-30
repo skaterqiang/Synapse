@@ -90,15 +90,23 @@ async function pickDomainForExtract({ label, rawPaths = [], texts = [] }) {
   const sel = $('domain-pick-sel');
   sel.innerHTML = (state.templates || [])
     .map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}${t.id === 'general' ? '（无类型约束）' : ''}</option>`).join('');
+  // 本体体系下拉：跟随模版（默认）/ 各内置体系 / OWL 导入
+  const profiles = await getProfiles();
+  const pSel = $('extract-profile-sel');
+  pSel.innerHTML = `<option value="">跟随领域模版 / 全局默认</option>` + profiles
+    .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}${p.owl ? '（OWL）' : ''}</option>`).join('');
+  $('extract-profile-hint').textContent = '选择顶层本体体系；不选则按领域模版绑定或全局默认（bfo-lite）';
   // 每次打开都回到默认项，避免沿用上一次的选择造成误操作
   document.querySelectorAll('input[name="domain-mode"]').forEach((r) => { r.checked = r.value === 'auto'; });
+  pSel.value = '';
   syncDomainPickState();
   $('domain-modal').hidden = false;
   const mode = await new Promise((resolve) => { domainPicker = { resolve }; });
+  const ontologyProfile = pSel.value || '';
   $('domain-modal').hidden = true;
   if (!mode) { toast('已取消提取', 2000); return null; }
-  // 领域 → payload 字段：图谱需要 typeHints/domainLabel
-  const extras = (domain, autoDomain) => ({ ...graphDomainExtras(domain), autoDomain });
+  // 领域 → payload 字段：图谱需要 typeHints/domainLabel；体系显式选择则带上
+  const extras = (domain, autoDomain) => ({ ...graphDomainExtras(domain), autoDomain, ...(ontologyProfile ? { ontologyProfile } : {}) });
   if (mode === 'pick') {
     const tpl = (state.templates || []).find((t) => t.id === sel.value);
     if (!tpl) { toast('未找到所选领域模版', 3000); return null; }
@@ -110,7 +118,7 @@ async function pickDomainForExtract({ label, rawPaths = [], texts = [] }) {
     if (!created) return null; // 取消时 cancelTplModal 已给提示
     return extras(created, false);
   }
-  if (mode === 'create') return { autoDomain: true }; // 跳过匹配，交由作业内归纳并新建
+  if (mode === 'create') return { autoDomain: true, ...(ontologyProfile ? { ontologyProfile } : {}) }; // 跳过匹配，交由作业内归纳并新建
   // auto：带超时的领域预匹配，命中特定领域就用它，否则交由作业内自动建域
   toast('正在匹配领域模版，随后自动提交作业…', 6000);
   const domain = await checkDomainBeforeIngest({
@@ -118,7 +126,7 @@ async function pickDomainForExtract({ label, rawPaths = [], texts = [] }) {
   });
   if (domain === null) return null;
   const specific = domain !== 'skip' && domain.id !== 'general';
-  return specific ? extras(domain, false) : { autoDomain: true };
+  return specific ? extras(domain, false) : { autoDomain: true, ...(ontologyProfile ? { ontologyProfile } : {}) };
 }
 
 // 图谱作业的领域信息：命中特定领域时按模板实体/概念类型组织节点（通用模板不加类型约束）
@@ -127,18 +135,166 @@ function graphDomainExtras(domain) {
   if (!domain || domain === 'skip') return { domainId: '', domainLabel: '通用（未做领域预检查）' };
   const base = { domainId: domain.id, domainLabel: domain.name };
   if (domain.id === 'general' || !domain.tpl) return base;
-  return {
-    ...base,
-    typeHints: {
-      entity: (domain.tpl.entityTypes || []).map((t) => t.name),
-      concept: (domain.tpl.conceptTypes || []).map((t) => t.name),
-    },
-  };
+  const tpl = domain.tpl;
+  // v2：优先从 domainClasses 派生（parent!==information→实体，=information→概念）；v1 回退 entityTypes/conceptTypes
+  const classes = Array.isArray(tpl.domainClasses) ? tpl.domainClasses : [];
+  const typeHints = classes.length
+    ? {
+        entity: classes.filter((c) => c.parent !== 'information').map((c) => c.label || c.key).filter(Boolean),
+        concept: classes.filter((c) => c.parent === 'information').map((c) => c.label || c.key).filter(Boolean),
+      }
+    : {
+        entity: (tpl.entityTypes || []).map((t) => t.name),
+        concept: (tpl.conceptTypes || []).map((t) => t.name),
+      };
+  return { ...base, typeHints };
 }
 
 // ---------- 领域模版 ----------
+// 本体体系清单缓存（供卡片徽章 / 编辑器下拉共用）
+let tplProfileCache = null;
+async function getProfiles() {
+  if (!tplProfileCache) tplProfileCache = (await window.kb.graphProfiles()) || [];
+  return tplProfileCache;
+}
+function profileNameOf(id) {
+  const p = (tplProfileCache || []).find((x) => x.id === id);
+  return p ? p.name : id;
+}
+
 let tplEditingId = null; // 当前编辑的模版 id（null = 新建）
 let tplTouched = false; // 新建弹窗打开时不立即标红空必填项，用户输入或尝试创建后才显示
+// 模版 v2 编辑器状态：当前绑定的 profile 树 + 已选领域类/谓词
+let tplProfileTree = null;   // { classes[], predicates[], fallbackType }
+let tplSelClasses = [];      // [{key,label,parent,desc,examples,from}]
+let tplSelPreds = [];        // [{key,label,domain,range,features,from}]
+
+// 加载并渲染指定 profile 的类树复选框 + 谓词复选列表
+async function loadTplProfileTree(profileId) {
+  const res = await window.kb.tplProfileTree(profileId || 'bfo-lite');
+  if (!res || !res.ok) { tplProfileTree = null; return; }
+  tplProfileTree = res;
+  const pd = $('tpl-ontology-profile-desc');
+  if (pd) pd.textContent = `${res.profileName} · ${res.classes.length} 个体系类 · ${res.predicates.length} 个谓词`;
+  renderTplClassTree();
+  renderTplPredList();
+}
+
+// 类树复选框：按 parent 分层缩进展示；勾选 base 类=纳入领域类（from:'base'）
+function renderTplClassTree() {
+  const box = $('tpl-classtree');
+  if (!box) return;
+  if (!tplProfileTree) { box.innerHTML = '<div class="list-empty">体系加载失败</div>'; return; }
+  const classes = tplProfileTree.classes || [];
+  const selKeys = new Set(tplSelClasses.filter((c) => c.from === 'base').map((c) => c.key));
+  const childrenOf = (p) => classes.filter((c) => (c.parent || '') === p);
+  const roots = classes.filter((c) => !c.parent || !classes.some((x) => x.key === c.parent));
+  const rows = [];
+  const walk = (c, depth) => {
+    rows.push(`<label class="tpl-classtree-row" style="padding-left:${depth * 18 + 6}px" title="${escapeHtml(c.desc || '')}">
+      <input type="checkbox" data-ck="${escapeHtml(c.key)}" ${selKeys.has(c.key) ? 'checked' : ''} />
+      <code>${escapeHtml(c.key)}</code><span>${escapeHtml(c.label || c.key)}</span></label>`);
+    childrenOf(c.key).forEach((ch) => walk(ch, depth + 1));
+  };
+  roots.forEach((r) => walk(r, 0));
+  box.innerHTML = rows.join('');
+  box.querySelectorAll('input[type=checkbox]').forEach((cb) => cb.addEventListener('change', () => {
+    const key = cb.dataset.ck;
+    const cls = classes.find((c) => c.key === key);
+    if (cb.checked && cls) {
+      if (!tplSelClasses.some((x) => x.key === key && x.from === 'base')) {
+        tplSelClasses.push({ key: cls.key, label: cls.label || cls.key, parent: cls.parent || '', desc: cls.desc || '', examples: cls.examples || [], from: 'base' });
+      }
+    } else {
+      tplSelClasses = tplSelClasses.filter((x) => !(x.key === key && x.from === 'base'));
+    }
+    renderTplSelClasses();
+    updateTplValidation();
+  }));
+  renderTplSelClasses();
+}
+
+// 右侧已选领域类列表（含 base 勾选 + custom 子类），custom 可删除
+function renderTplSelClasses() {
+  const box = $('tpl-classtree-sel');
+  if (!box) return;
+  const cnt = $('tpl-class-count');
+  if (cnt) cnt.textContent = tplSelClasses.length;
+  box.innerHTML = tplSelClasses.map((c, i) => `
+    <div class="tpl-sel-row">
+      <code>${escapeHtml(c.key)}</code><span>${escapeHtml(c.label || c.key)}</span>
+      <em>${c.from === 'base' ? '体系' : '领域' + (c.parent ? '⊂' + c.parent : '')}</em>
+      ${c.from === 'base' ? '' : `<button class="icon-btn danger" data-i="${i}" title="移除">${icoSvg('close', 11)}</button>`}
+    </div>`).join('') || '<div class="list-empty">尚未选择，左侧勾选体系类或添加领域子类</div>';
+  box.querySelectorAll('button[data-i]').forEach((b) => b.addEventListener('click', () => {
+    tplSelClasses.splice(Number(b.dataset.i), 1);
+    renderTplClassTree(); // 重渲以同步复选态（custom 删除不影响 base 勾选，但保持一致）
+    updateTplValidation();
+  }));
+}
+
+// 添加领域子类：选 parent（体系类或已选领域类）、填 label/desc
+function addTplSubclass() {
+  if (!tplProfileTree) return;
+  const label = (prompt('领域子类名称（中文）：') || '').trim();
+  if (!label) return;
+  const parents = [...(tplProfileTree.classes || []).map((c) => c.key), ...tplSelClasses.filter((c) => c.from === 'custom').map((c) => c.key)];
+  const parent = (prompt(`父类 key（须属于体系类树，默认 ${tplProfileTree.fallbackType}）：\n可选：${parents.slice(0, 20).join('、')}`, tplProfileTree.fallbackType) || '').trim() || tplProfileTree.fallbackType;
+  const desc = (prompt('一句话说明（可选）：') || '').trim();
+  const key = label;
+  if (tplSelClasses.some((c) => c.key === key)) { toast('已存在同名领域类：' + label); return; }
+  tplSelClasses.push({ key, label, parent, desc, examples: [], from: 'custom' });
+  renderTplSelClasses();
+  updateTplValidation();
+}
+
+// 谓词复选列表：base 谓词复选 + custom 谓词行
+function renderTplPredList() {
+  const box = $('tpl-predlist');
+  if (!box) return;
+  if (!tplProfileTree) { box.innerHTML = ''; return; }
+  const selKeys = new Set(tplSelPreds.filter((p) => p.from === 'base').map((p) => p.key));
+  const base = (tplProfileTree.predicates || []).map((p) => `
+    <label class="tpl-pred-row" title="${escapeHtml(p.desc || '')}">
+      <input type="checkbox" data-pk="${escapeHtml(p.key)}" ${selKeys.has(p.key) ? 'checked' : ''} />
+      <code>${escapeHtml(p.key)}</code><span>${escapeHtml(p.label || p.key)}</span>
+    </label>`).join('');
+  const custom = tplSelPreds.filter((p) => p.from === 'custom').map((p, i) => `
+    <div class="tpl-pred-row custom">
+      <code>${escapeHtml(p.key)}</code><span>${escapeHtml(p.label || p.key)}</span>
+      <em>${p.domain || '?'}→${p.range || '?'}</em>
+      <button class="icon-btn danger" data-ci="${i}" title="移除">${icoSvg('close', 11)}</button>
+    </div>`).join('');
+  box.innerHTML = `<div class="tpl-pred-base">${base}</div>${custom ? `<div class="tpl-pred-custom">${custom}</div>` : ''}`;
+  box.querySelectorAll('input[data-pk]').forEach((cb) => cb.addEventListener('change', () => {
+    const key = cb.dataset.pk;
+    const pr = (tplProfileTree.predicates || []).find((p) => p.key === key);
+    if (cb.checked && pr) {
+      if (!tplSelPreds.some((x) => x.key === key && x.from === 'base')) {
+        tplSelPreds.push({ key: pr.key, label: pr.label || pr.key, domain: pr.domain || '', range: pr.range || '', features: pr.features || [], from: 'base' });
+      }
+    } else {
+      tplSelPreds = tplSelPreds.filter((x) => !(x.key === key && x.from === 'base'));
+    }
+  }));
+  box.querySelectorAll('button[data-ci]').forEach((b) => b.addEventListener('click', () => {
+    const customs = tplSelPreds.filter((p) => p.from === 'custom');
+    const target = customs[Number(b.dataset.ci)];
+    tplSelPreds = tplSelPreds.filter((x) => x !== target);
+    renderTplPredList();
+  }));
+}
+
+function addTplPred() {
+  const label = (prompt('领域谓词名称（中文，如「隶属于」）：') || '').trim();
+  if (!label) return;
+  const domain = (prompt('主语类 key（可空）：') || '').trim();
+  const range = (prompt('宾语类 key（可空）：') || '').trim();
+  const key = label;
+  if (tplSelPreds.some((p) => p.key === key)) { toast('已存在同名谓词：' + label); return; }
+  tplSelPreds.push({ key, label, domain, range, features: [], from: 'custom' });
+  renderTplPredList();
+}
 
 function showTplView() {
   hideMainViews();
@@ -174,8 +330,9 @@ function renderTplCards() {
       <div class="tpl-card-head"><b>${escapeHtml(t.name)}</b><code>${escapeHtml(t.id)}</code></div>
       <p class="tpl-card-desc">${escapeHtml(t.desc || '')}</p>
       <div class="tpl-counts">
-        <span>实体类型: ${(t.entityTypes || []).length}</span>
-        <span>概念类型: ${(t.conceptTypes || []).length}</span>
+        <span class="tpl-badge-profile">${escapeHtml(profileNameOf(t.ontologyProfile || 'bfo-lite'))}</span>
+        <span>领域类: ${(t.domainClasses || t.entityTypes || []).length}</span>
+        <span>领域谓词: ${(t.domainPredicates || []).length}</span>
       </div>
       ${kws ? `<div class="tpl-kws">${kws}</div>` : ''}
       <div class="tpl-card-foot">
@@ -223,13 +380,24 @@ function tplRows(boxId, nameKey) {
 }
 
 function fillTplRows(tpl) {
-  ['tpl-entity-rows', 'tpl-concept-rows', 'tpl-skel-rows'].forEach((id) => { $(id).innerHTML = ''; });
-  (tpl.entityTypes || []).forEach((v) => addTplRow('tpl-entity-rows', '类型名称', '一句话说明（可选）', v));
-  (tpl.conceptTypes || []).forEach((v) => addTplRow('tpl-concept-rows', '类型名称', '一句话说明（可选）', v));
+  ['tpl-skel-rows'].forEach((id) => { $(id).innerHTML = ''; });
   (tpl.skeleton || []).forEach((v) => addTplRow('tpl-skel-rows', '页面标题', '页面职责说明（可选）', v));
 }
 
-function openTplModal(tpl, forceNew) {
+// 填充体系绑定下拉（内置三体系 + OWL），并初始化领域类/谓词编辑器状态
+async function fillTplProfilePicker(tpl) {
+  const profiles = await getProfiles();
+  const sel = $('tpl-ontology-profile');
+  sel.innerHTML = profiles.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}${p.owl ? '（OWL）' : ''}</option>`).join('');
+  const pid = (tpl && tpl.ontologyProfile) || 'bfo-lite';
+  sel.value = pid;
+  // 初始化已选领域类/谓词：v2 直读；v1 旧模版由后端迁移为 domainClasses（兼容兜底）
+  tplSelClasses = (tpl && Array.isArray(tpl.domainClasses) ? tpl.domainClasses : []).map((c) => ({ key: c.key, label: c.label || c.key, parent: c.parent || '', desc: c.desc || '', examples: c.examples || [], from: c.from === 'base' ? 'base' : 'custom' }));
+  tplSelPreds = (tpl && Array.isArray(tpl.domainPredicates) ? tpl.domainPredicates : []).map((p) => ({ key: p.key, label: p.label || p.key, domain: p.domain || '', range: p.range || '', features: p.features || [], from: p.from === 'base' ? 'base' : 'custom' }));
+  await loadTplProfileTree(pid);
+}
+
+async function openTplModal(tpl, forceNew) {
   const editing = tpl && !forceNew ? tpl.id : null;
   tplEditingId = editing;
   tplTouched = !!editing;
@@ -245,6 +413,7 @@ function openTplModal(tpl, forceNew) {
   $('tpl-ignore').value = tpl ? (tpl.ignoreContent || []).join(', ') : '';
   $('tpl-quality').value = tpl ? (tpl.quality || '') : '';
   fillTplRows(tpl || {});
+  await fillTplProfilePicker(tpl);
   updateTplValidation();
   // 在主框架内全屏展示编辑页（不再使用右侧抽屉）
   $('tpl-view').hidden = true;
@@ -278,7 +447,7 @@ async function openTplSuggest() {
         <div class="tpl-card-head"><b>${escapeHtml(c.name || c.id)}</b><code>${escapeHtml(c.id || '')}</code></div>
         <p class="tpl-card-desc">${escapeHtml(c.desc || '')}</p>
         <div class="tpl-kws">${(c.keywords || []).slice(0, 6).map((k) => `<span class="tpl-kw">${escapeHtml(k)}</span>`).join('')}</div>
-        <div class="tpl-card-foot"><span>实体 ${(c.entityTypes || []).length} · 概念 ${(c.conceptTypes || []).length}</span>
+        <div class="tpl-card-foot"><span>领域类 ${(c.domainClasses || c.entityTypes || []).length} · 谓词 ${(c.domainPredicates || []).length}</span>
           <span class="tpl-card-btns"><button class="btn btn-primary" data-act="adopt">采纳并编辑</button></span></div>`;
       card.querySelector('[data-act="adopt"]').addEventListener('click', () => {
         $('tpl-suggest-modal').hidden = true;
@@ -304,9 +473,11 @@ function updateTplValidation() {
   const idBad = !!idEl.value.trim() && !/^[A-Za-z][A-Za-z0-9_]*$/.test(idEl.value.trim());
   idEl.classList.toggle('invalid', idBad);
   if (idBad) ok = false;
+  // 领域类非空校验（勾选或添加任意一个即可）
+  const classBad = tplSelClasses.length === 0;
+  $('tpl-class-warn').hidden = !classBad;
+  if (classBad) ok = false;
   const lists = [
-    ['tpl-entity-rows', 'tpl-entity-warn'],
-    ['tpl-concept-rows', 'tpl-concept-warn'],
     ['tpl-skel-rows', 'tpl-skel-warn'],
   ];
   for (const [boxId, warnId] of lists) {
@@ -338,19 +509,25 @@ async function saveTplForm() {
     if (id && state.templates.some((t) => t.id === id)) { toast('模版 ID 已存在：' + id); return; }
     if (!id) id = 'tpl_' + Date.now().toString(36);
   }
+  const editingFull = state.templates.find((t) => t.id === tplEditingId) || null;
   const res = await window.kb.tplSave({
     id,
     name: $('tpl-name').value.trim(),
     desc: $('tpl-desc').value.trim(),
     keywords: $('tpl-keywords').value,
-    entityTypes: tplRows('tpl-entity-rows', 'name'),
-    conceptTypes: tplRows('tpl-concept-rows', 'name'),
+    ontologyProfile: $('tpl-ontology-profile').value || 'bfo-lite',
+    domainClasses: tplSelClasses,
+    domainPredicates: tplSelPreds,
+    constraints: (editingFull && editingFull.constraints) || [],
     mustExtract: $('tpl-must').value,
     ignoreContent: $('tpl-ignore').value,
     quality: $('tpl-quality').value.trim(),
     skeleton: tplRows('tpl-skel-rows', 'title'),
   });
   if (!res.ok) { toast('保存失败：' + res.error, 4000); return; }
+  if (res.template && Array.isArray(res.template._warnings) && res.template._warnings.length) {
+    toast('已保存，但存在体系告警：' + res.template._warnings[0], 5000);
+  }
   const wasNew = !tplEditingId;
   closeTplEditor();
   toast(wasNew ? '模版已创建' : '模版已更新');
@@ -419,6 +596,19 @@ async function runTplGenerate() {
     $('tpl-must').value = (t.mustExtract || []).join(', ');
     $('tpl-ignore').value = (t.ignoreContent || []).join(', ');
     $('tpl-quality').value = t.quality || '';
+    // v2 生成：回填体系绑定 + 领域类/谓词
+    if (t.ontologyProfile) {
+      $('tpl-ontology-profile').value = t.ontologyProfile;
+      await loadTplProfileTree(t.ontologyProfile);
+    }
+    if (Array.isArray(t.domainClasses)) {
+      tplSelClasses = t.domainClasses.map((c) => ({ key: c.key, label: c.label || c.key, parent: c.parent || '', desc: c.desc || '', examples: c.examples || [], from: c.from === 'base' ? 'base' : 'custom' }));
+      renderTplClassTree();
+    }
+    if (Array.isArray(t.domainPredicates)) {
+      tplSelPreds = t.domainPredicates.map((p) => ({ key: p.key, label: p.label || p.key, domain: p.domain || '', range: p.range || '', features: p.features || [], from: p.from === 'base' ? 'base' : 'custom' }));
+      renderTplPredList();
+    }
     fillTplRows(t);
     updateTplValidation();
     setTplGenStatus('✔ 生成阶段完成：各字段已补全，请审阅并按需调整，确认后点「创建」', 'ok');
@@ -475,8 +665,20 @@ function bindTplEvents() {
   document.querySelectorAll('input[name="domain-mode"]').forEach((r) => r.addEventListener('change', syncDomainPickState));
   $('btn-tpl-save').addEventListener('click', saveTplForm);
   $('btn-tpl-ai').addEventListener('click', runTplGenerate);
-  $('btn-tpl-add-entity').addEventListener('click', () => { addTplRow('tpl-entity-rows', '类型名称', '一句话说明（可选）'); updateTplValidation(); });
-  $('btn-tpl-add-concept').addEventListener('click', () => { addTplRow('tpl-concept-rows', '类型名称', '一句话说明（可选）'); updateTplValidation(); });
+  $('btn-tpl-add-subclass').addEventListener('click', addTplSubclass);
+  $('btn-tpl-add-pred').addEventListener('click', addTplPred);
+  $('tpl-ontology-profile').addEventListener('change', () => {
+    // 切换体系：base 勾选仅保留仍存在于新体系的 key，custom 保留（保存时后端再校验重挂）
+    const keep = (tplProfileTree ? tplProfileTree.classes.map((c) => c.key) : []);
+    loadTplProfileTree($('tpl-ontology-profile').value).then(() => {
+      const now = new Set((tplProfileTree ? tplProfileTree.classes.map((c) => c.key) : keep));
+      tplSelClasses = tplSelClasses.filter((c) => c.from === 'custom' || now.has(c.key));
+      tplSelPreds = tplSelPreds.filter((p) => p.from === 'custom' || (tplProfileTree.predicates || []).some((x) => x.key === p.key));
+      renderTplClassTree();
+      renderTplPredList();
+      updateTplValidation();
+    });
+  });
   $('btn-tpl-add-skel').addEventListener('click', () => { addTplRow('tpl-skel-rows', '页面标题', '页面职责说明（可选）'); updateTplValidation(); });
   // 输入即时校验（事件委托覆盖动态行）
   $('tpl-modal-body').addEventListener('input', updateTplValidation);
