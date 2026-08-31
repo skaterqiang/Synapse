@@ -38,6 +38,16 @@ function withModelParams(body, settings) {
   return body;
 }
 
+// Ollama 兼容接口默认不下发推理增量（reasoning 字段）；未显式配置时自动开启，
+// 使判定类请求（领域匹配/体系匹配等）也能把思考过程实时推给进度弹窗。
+function withOllamaThink(body, settings) {
+  if (body.think !== undefined) return body; // 调用方已显式指定（含 false）
+  const s = settings || {};
+  if (String(s.apiProvider || '') !== 'ollama') return body;
+  body.think = true;
+  return body;
+}
+
 // 可重试错误：网络异常、5xx、空返回等瞬时故障（4xx 客户端错误不重试）
 class RetriableError extends Error {}
 
@@ -105,6 +115,17 @@ async function consumeSseStream(resp, onDelta) {
   emitDataLine(buffer.trim(), onDelta);
 }
 
+// Qwen3 风格 <think>...</think> 包裹：部分 Ollama/第三方兼容接口不开 think 开关时，
+// 会把推理内容直接嵌在 content 增量里。解析时把包裹内的文本也按 reasoning 上报，
+// 否则这些接口下判定弹窗始终不打印思考过程。
+const THINK_RE = /<think>([\s\S]*?)<\/think>/g;
+function splitThinkWrapped(content) {
+  if (!content || !content.includes('<think>')) return { think: '', text: content || '' };
+  let think = '';
+  const text = String(content).replace(THINK_RE, (_, inner) => { think += inner; return ''; });
+  return { think, text };
+}
+
 function emitDataLine(trimmed, onDelta) {
   if (!trimmed.startsWith('data:')) return;
   const data = trimmed.slice(5).trim();
@@ -113,7 +134,11 @@ function emitDataLine(trimmed, onDelta) {
     const delta = JSON.parse(data).choices?.[0]?.delta;
     const think = reasoningOf(delta);
     if (think) onDelta(think, true);
-    if (delta?.content) onDelta(delta.content, false);
+    if (delta?.content) {
+      const { think: wrappedThink, text } = splitThinkWrapped(delta.content);
+      if (wrappedThink) onDelta(wrappedThink, true);
+      if (text) onDelta(text, false);
+    }
   } catch (_) {
     // 忽略无法解析的行
   }
@@ -198,7 +223,7 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
       resp = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
-        body: JSON.stringify(withModelParams({ model: normalizeModel(settings.model), messages, stream: true }, settings)),
+        body: JSON.stringify(withOllamaThink(withModelParams({ model: normalizeModel(settings.model), messages, stream: true }, settings), settings)),
         dispatcher: llmDispatcher(settings),
         ...(signal ? { signal } : {}),
       });
