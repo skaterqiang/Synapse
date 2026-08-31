@@ -150,6 +150,10 @@ function buildJobCard(job) {
 
   const actions = document.createElement('span');
   actions.className = 'job-actions';
+  // 执行中/排队中：停止按钮（中断在途模型请求与 MinerU 子进程，未开始的批次不再执行）
+  if (job.status === 'running' || job.status === 'queued') {
+    actions.appendChild(jobActionBtn(icoSvg('stop', 12) + ' 停止', 'danger', () => stopJob(job), '停止该作业：中断在途任务，未开始的批次不再执行'));
+  }
   // 失败可重试：lint / 图谱（payload 带来源即可重跑）/ 已保存来源的吸收作业
   const hasRaw = (job.rawPaths && job.rawPaths.length) || (job.payload && job.payload.rawPaths && job.payload.rawPaths.length);
   if (job.status === 'failed' && (job.type === 'lint' || job.type === 'graph' || job.type === 'extract-note' || hasRaw)) {
@@ -271,8 +275,9 @@ function buildJobDetail(job) {
       if (t.output && !collapsed) {
         const pre = document.createElement('pre');
         pre.className = 'job-live task-output';
-        pre.textContent = String(t.output).slice(-800);
+        pre.textContent = String(t.output); // 完整思考+输出；CSS 限高滚动，默认滚到尾部显示最终 JSON 结果
         wrap.appendChild(pre);
+        requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });
       }
       list.appendChild(wrap);
     });
@@ -362,6 +367,12 @@ async function retryJob(job) {
     const res = await window.kb.jobsRetry({ id: job.id, settings: state.settings });
   if (res.ok) { toast('已在原作业上重试'); return; }
   toast('重试失败：' + res.error, 4000);
+}
+
+async function stopJob(job) {
+  const res = await window.kb.jobsCancel(job.id);
+  if (res.ok) { toast('已请求停止作业'); return; }
+  toast('停止失败：' + (res.error || '未知错误'), 4000);
 }
 
 // 用 MinerU 重跑：对回退的来源提交新的强制 MinerU 提取作业（不回退内置），原地更新笔记产物

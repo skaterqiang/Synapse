@@ -91,19 +91,33 @@ async function openNoteFolder({ folderId, trashed }) {
 }
 
 // AI 辅助（编辑器工具栏）：默认润色提示词，可在设置-编辑器自定义
-const DEFAULT_AI_ASSIST_PROMPT = '你是一位专业文字编辑：请润色以下内容，修正错别字与语病、优化表达与标点，保持原意与 Markdown 结构不变，直接输出润色后的全文，不要输出任何解释或额外说明。';
+const DEFAULT_AI_ASSIST_PROMPT = '你是一位专业文字编辑：请清理并润色以下内容，先删除没有意义的乱码/杂码（解析失败产生的随机符号碎片、残缺多语言字符等）及因此产生的空行，再修正错别字与语病、优化表达与标点，保持有意义的原文与 Markdown 结构不变，直接输出清理润色后的全文，不要输出任何解释或额外说明。';
 
-async function aiAssist({ settings, text, prompt }) {
+let assistCtrl = null; // 当前 AI 优化请求的取消控制器（停止按钮用）
+
+// event 用于把流式增量（思考/正文）经 ai:assist-chunk 广播给渲染层，供执行过程实时呈现
+async function aiAssist(event, { settings, text, prompt }) {
   try {
     const sys = (prompt || '').trim() || getPrompt(settings, 'aiAssistPrompt');
+    assistCtrl = new AbortController();
+    const send = (ch, d) => { try { event.sender.send(ch, d); } catch (_) { /* 窗口已销毁时忽略 */ } };
     const out = await llm.chatOnce(settings, [
       { role: 'system', content: sys },
       { role: 'user', content: String(text || '') },
-    ]);
+    ], undefined, (delta, isReasoning) => send('ai:assist-chunk', { type: isReasoning ? 'think' : 'text', text: delta }), assistCtrl.signal);
     return { ok: true, text: String(out || '').trim() };
   } catch (err) {
+    if (assistCtrl && assistCtrl.signal.aborted) return { ok: false, aborted: true, error: '已停止' };
     return { ok: false, error: err.message };
+  } finally {
+    assistCtrl = null;
   }
+}
+
+// 停止当前 AI 优化：abort 后 chatOnce 抛中断错误且不重试
+function aiAssistStop() {
+  if (assistCtrl) assistCtrl.abort();
+  return { ok: true };
 }
 
 // ---------------- 笔记历史版本 ----------------
@@ -159,4 +173,4 @@ function deleteVersions(noteId) {
   } catch (_) {}
 }
 
-module.exports = { exportNote, pickImage, saveImage, scan, openNoteFolder, aiAssist, DEFAULT_AI_ASSIST_PROMPT, saveVersion, listVersions, getVersion, deleteVersions };
+module.exports = { exportNote, pickImage, saveImage, scan, openNoteFolder, aiAssist, aiAssistStop, DEFAULT_AI_ASSIST_PROMPT, saveVersion, listVersions, getVersion, deleteVersions };

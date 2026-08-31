@@ -29,6 +29,7 @@ function serializeNote(n) {
     `title: "${String(n.title || '').replace(/"/g, '\\"')}"`,
     `tags: ${JSON.stringify(Array.isArray(n.tags) ? n.tags : [])}`,
     `pinned: ${n.pinned ? 1 : 0}`,
+    `favorited: ${n.favorited ? 1 : 0}`,
     `createdAt: ${n.createdAt || 0}`,
     `updatedAt: ${n.updatedAt || 0}`,
   ];
@@ -68,6 +69,7 @@ function parseNoteFile(file) {
     title,
     tags: Array.isArray(tags) ? tags : [],
     pinned: fm.pinned === '1',
+    favorited: fm.favorited === '1',
     createdAt: Number(fm.createdAt) || 0,
     updatedAt: Number(fm.updatedAt) || 0,
     source: fm.source || '',

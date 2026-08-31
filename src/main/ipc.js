@@ -101,7 +101,9 @@ function registerIpc(getWindow) {
     let knowledgeText = '';
     if (enabled && lastUser && Object.values(enabled).some(Boolean)) {
       try {
-        const know = await knowledge.retrieve({ settings, question, enabled, onStep: sendStep });
+        // graphProfile：知识图谱源的体系范围（'all' 或具体体系 id），由渲染层知识源条的子选择传入
+        // graphScope：二级范围（具体知识图谱，'profile|domain' 多选逗号分隔），优先于 graphProfile
+        const know = await knowledge.retrieve({ settings, question, enabled, onStep: sendStep, graphProfile: payload.graphProfile, graphScope: payload.graphScope });
         knowledgeText = know.text || '';
         // 引用归一后一次上报（渲染层据此渲染 笔记/图谱/原始文件 引用徽标）
         try {
@@ -211,14 +213,6 @@ function registerIpc(getWindow) {
     }
   });
 
-  ipcMain.handle('tpl:suggest', async (_e, { settings }) => {
-    try {
-      return { ok: true, templates: await templates.suggestTemplates(settings) };
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-  });
-
   ipcMain.handle('tpl:matchPrompt', () => templates.matchPrompt());
 
   // 返回指定 profile 的类树 + 谓词集（供模版编辑器复选框渲染），避免前端自行合成本体
@@ -253,7 +247,9 @@ function registerIpc(getWindow) {
       const raws = await buildMatchRaws(settings, rawPaths, texts);
       if (!raws.length) return { ok: true, matched: null, hasSpecific: templates.listTemplates().some((x) => x.id !== 'general'), noText: true };
       const budget = num({ n: timeoutMs }, 'n', 25000, 3000, 120000);
-      return { ok: true, ...(await templates.preMatchTemplate(settings, raws, { timeoutMs: budget, retries: 0 })) };
+      // 流式增量（含思考过程）实时推给渲染层，弹窗逐步打印判定思路
+      const onDelta = (delta, isReasoning) => { try { _e.sender.send('tpl:match-chunk', { text: delta, reasoning: !!isReasoning }); } catch (_) { /* 窗口已关闭 */ } };
+      return { ok: true, ...(await templates.preMatchTemplate(settings, raws, { timeoutMs: budget, retries: 0, onDelta })) };
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -270,6 +266,20 @@ function registerIpc(getWindow) {
     }
   });
 
+  // 提取前按来源内容实时匹配最合适的本体体系（不读模版绑定）：从内置三体系+导入 OWL 中选最贴合者，返回 {id,name,similarity,reason}
+  // 设置无全局默认体系时也走这里：只要来源有文本，就从体系列表中智能匹配，不再依赖模版绑定或全局默认
+  ipcMain.handle('tpl:suggestProfile', async (_e, { settings, rawPaths, texts, timeoutMs }) => {
+    try {
+      const raws = await buildMatchRaws(settings, rawPaths, texts);
+      if (!raws.length) return { ok: false, error: '来源内容为空，无法匹配体系' };
+      // 流式增量（含思考过程）实时推给渲染层，弹窗逐步打印体系匹配思路
+      const onDelta = (delta, isReasoning) => { try { _e.sender.send('tpl:suggest-profile-chunk', { text: delta, reasoning: !!isReasoning }); } catch (_) { /* 窗口已关闭 */ } };
+      return { ok: true, ...(await templates.suggestOntologyProfile(settings, raws, onDelta)) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   // 提示词注册表：供「提示词管理」页动态渲染全部可配置提示词
   ipcMain.handle('prompts:defs', () => prompts.PROMPT_DEFS);
 
@@ -277,9 +287,9 @@ function registerIpc(getWindow) {
   ipcMain.handle('knowledge:sources', () => knowledge.listSources());
 
   // 知识检索（统一入口）：任何需要知识上下文的功能都走这里，不要自己拼接各源
-  ipcMain.handle('knowledge:retrieve', async (_e, { settings, question, sources } = {}) => {
+  ipcMain.handle('knowledge:retrieve', async (_e, { settings, question, sources, graphScope, graphProfile } = {}) => {
     try {
-      return { ok: true, ...(await knowledge.retrieve({ settings, question, enabled: sources })) };
+      return { ok: true, ...(await knowledge.retrieve({ settings, question, enabled: sources, graphScope, graphProfile })) };
     } catch (err) {
       return { ok: false, error: err.message, text: '', cites: {} };
     }
@@ -594,18 +604,24 @@ function registerIpc(getWindow) {
     }
   });
 
+  ipcMain.handle('jobs:cancel', (_e, id) => jobs.cancel(id));
+
   // ---------- 知识图谱 ----------
   ipcMain.handle('graph:get', () => graph.getGraph());
   ipcMain.handle('graph:clear', () => graph.clearGraph());
   ipcMain.handle('graph:ontology', (_e, profileId) => graph.getOntology(profileId));
   ipcMain.handle('graph:profiles', () => graph.listProfiles());
+  // 二级范围：列出有抽取节点的具体知识图谱分组（体系→图谱），供问答范围二级选择
+  ipcMain.handle('graph:scopes', () => graph.listGraphScopes());
   // OWL 导入（Electron：dialog 选文件；web：通过上传接口走后由 body.filePath 传入）
   ipcMain.handle('graph:importOwl', async (e, body) => {
     try {
       let filePath = body && body.filePath;
       if (!filePath) {
-        const { dialog } = require('electron');
-        const win = require('electron').BrowserWindow.fromWebContents(e.sender);
+        const { dialog, BrowserWindow } = require('electron');
+        // Web shim 无 BrowserWindow.fromWebContents：dialog 可选 parent，取不到即 null（桌面版正常取主窗口）
+        let win = null;
+        try { win = (BrowserWindow && BrowserWindow.fromWebContents) ? BrowserWindow.fromWebContents(e.sender) : null; } catch (_) { win = null; }
         const r = await dialog.showOpenDialog(win, {
           title: '导入 OWL 本体文件',
           filters: [{ name: 'OWL 本体', extensions: ['owl', 'rdf', 'ttl', 'xml'] }],
@@ -669,7 +685,8 @@ function registerIpc(getWindow) {
 
   ipcMain.handle('note:openFolder', (_e, payload) => notes.openNoteFolder(payload));
 
-  ipcMain.handle('note:aiAssist', (_e, payload) => notes.aiAssist(payload));
+  ipcMain.handle('note:aiAssist', (event, payload) => notes.aiAssist(event, payload));
+  ipcMain.handle('note:aiAssistStop', () => notes.aiAssistStop());
 
   // ---------- 笔记历史版本（AI 改动前/后自动保存） ----------
   ipcMain.handle('note:saveVersion', (_e, payload) => notes.saveVersion(payload));

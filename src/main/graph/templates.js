@@ -1,4 +1,4 @@
-// 领域模版领域层：模版存储（SQLite kv）、AI 自动生成、吸收时的领域匹配与提取约束注入
+// 领域模版领域层：模版存储（SQLite kv）、AI 自动生成、图谱抽取前的领域匹配与类型约束
 const db = require('../common/db');
 const { chatOnce, extractJson } = require('../ai/llm');
 const { getPrompt } = require('../ai/prompts');
@@ -12,11 +12,7 @@ const toList = (v) => {
   const arr = Array.isArray(v) ? v : String(v ?? '').split(/[,，]/);
   return [...new Set(arr.map((s) => trimStr(s, 100)).filter(Boolean))];
 };
-// {name, desc} 结构数组归一化（实体/概念类型与骨架页面共用）
-const toPairs = (v, nameKey, descKey) =>
-  (Array.isArray(v) ? v : [])
-    .map((it) => ({ [nameKey]: trimStr(it && it[nameKey], 100), [descKey]: trimStr(it && it[descKey], 300) }))
-    .filter((it) => it[nameKey]);
+
 
 // ---------- 模版 v2：体系绑定 + 领域类/谓词/约束 ----------
 // 解析指定 profile 的合成本体（延迟 require 避免与 graph.js 的加载顺序耦合）
@@ -25,7 +21,7 @@ function resolveOntologyFor(profileId) {
   try { return graph.resolveOntology(profileId); } catch (_) { return graph.resolveOntology('bfo-lite'); }
 }
 
-// domainClasses/domainPredicates 归一化
+// domainClasses 归一化
 const toClasses = (v) =>
   (Array.isArray(v) ? v : [])
     .map((it) => ({
@@ -37,28 +33,6 @@ const toClasses = (v) =>
       from: it && it.from === 'base' ? 'base' : 'custom',
     }))
     .filter((it) => it.key);
-const toPredicates = (v) =>
-  (Array.isArray(v) ? v : [])
-    .map((it) => ({
-      key: trimStr((it && it.key) || (it && it.label), 60),
-      label: trimStr((it && it.label) || (it && it.key), 100),
-      domain: trimStr(it && it.domain, 60),
-      range: trimStr(it && it.range, 60),
-      features: toList(it && it.features),
-      from: it && it.from === 'base' ? 'base' : 'custom',
-    }))
-    .filter((it) => it.key);
-// 约束五元组：{subject, attr, op, value, desc}
-const toConstraints = (v) =>
-  (Array.isArray(v) ? v : [])
-    .map((it) => ({
-      subject: trimStr(it && it.subject, 60),
-      attr: trimStr(it && it.attr, 60),
-      op: trimStr(it && it.op, 20),
-      value: trimStr(it && it.value, 200),
-      desc: trimStr(it && it.desc, 300),
-    }))
-    .filter((it) => it.subject || it.desc);
 
 // v1 → v2 惰性迁移：entityTypes→domainClasses（挂 bfo-lite object）、conceptTypes→挂 information
 // 通用模版（general）domainClasses 留空（不限制，退化为现有行为）
@@ -76,8 +50,6 @@ function migrateTplV2(tpl) {
     desc: trimStr(t.desc, 300), examples: [], from: 'custom',
   })).filter((c) => c.key);
   migrated.domainClasses = isGeneral ? [] : [...ent, ...con];
-  migrated.domainPredicates = Array.isArray(tpl.domainPredicates) ? toPredicates(tpl.domainPredicates) : [];
-  migrated.constraints = Array.isArray(tpl.constraints) ? toConstraints(tpl.constraints) : [];
   return migrated;
 }
 
@@ -100,6 +72,12 @@ function listTemplates() {
     return t;
   });
   if (migratedAny) persistTemplates(list);
+  // 运行时补充体系中文名（不持久化）：弹窗/列表直接展示「体系名（id）」
+  for (const t of list) {
+    if (t && typeof t === 'object') {
+      try { t.profileName = resolveOntologyFor(t.ontologyProfile || 'bfo-lite').name; } catch (_) { /* 忽略 */ }
+    }
+  }
   return list;
 }
 
@@ -143,12 +121,6 @@ function saveTemplate(input) {
     keywords: toList(tpl.keywords),
     ontologyProfile: profileId,
     domainClasses: validClasses,
-    domainPredicates: toPredicates(tpl.domainPredicates),
-    constraints: toConstraints(tpl.constraints),
-    mustExtract: toList(tpl.mustExtract),
-    ignoreContent: toList(tpl.ignoreContent),
-    quality: trimStr(tpl.quality),
-    skeleton: toPairs(tpl.skeleton, 'title', 'desc'),
     builtin: !!(old && old.builtin),
     demo: !!(old && old.demo),
     updatedAt: Date.now(),
@@ -160,6 +132,7 @@ function saveTemplate(input) {
   else list.push(next);
   persistTemplates(list);
   next._warnings = warnings; // 非持久化字段，供前端提示降级项
+  next.profileName = onto.name; // 运行时展示字段：体系中文名（listTemplates 不经过本函数，读取方需要时按 ontologyProfile 自查）
   return next;
 }
 
@@ -187,7 +160,8 @@ function matchPrompt(templates) {
     '判定规则：',
     '1. 依据来源的主题、术语与模版关键词的吻合程度判定；',
     '2. 无法明确匹配任何特定领域时，一律返回 general；',
-    '3. 只输出一个 JSON 对象，不要输出其他任何内容：{"template": "<模版ID>", "reason": "一句话判定理由"}',
+    '3. similarity 为 0-100 的整数，表示来源内容与所选模版的相似程度（100 完全契合，0 毫不相关）；选 general 时给 0；',
+    '4. 只输出一个 JSON 对象，不要输出其他任何内容：{"template": "<模版ID>", "similarity": <0-100>, "reason": "一句话判定理由"}',
     '',
     '=== 来源内容摘录 ===',
     '{{SOURCE_EXCERPT}}',
@@ -218,17 +192,27 @@ async function matchTemplate(settings, raws, opts = {}) {
     const answer = await chatOnce(settings, [
       { role: 'system', content: getPrompt(settings, 'matchPrompt') },
       { role: 'user', content: prompt },
-    ], opts.retries, undefined, opts.timeoutMs ? AbortSignal.timeout(opts.timeoutMs) : undefined);
-    const picked = list.find((t) => t.id === extractJson(answer).template);
-    if (picked) return picked;
+    ], opts.retries, opts.onDelta, opts.timeoutMs ? AbortSignal.timeout(opts.timeoutMs) : undefined);
+    const parsed = extractJson(answer);
+    const picked = list.find((t) => t.id === parsed.template);
+    const similarity = Math.max(0, Math.min(100, parseInt(parsed.similarity, 10) || 0));
+    if (picked) { if (opts.onPick) opts.onPick(trimStr(parsed.reason, 200), similarity); picked._similarity = similarity; return picked; }
+    // 模型给了非法 id：把原始返回带给调用方，便于进度流展示
+    if (opts.onPick) opts.onPick('模型返回了未注册的领域 id「' + trimStr(parsed.template, 60) + '」，回退关键词匹配', 0);
   } catch (err) {
     // LLM 匹配失败（含超时）走关键词兜底，绝不阻断调用方的后续提交
     if (opts.onDegrade) opts.onDegrade(err);
   }
-  return matchByKeywords(list, text);
+  const fb = matchByKeywords(list, text);
+  if (opts.onPick && fb && fb.id !== 'general') {
+    const hits = (fb.keywords || []).filter((k) => k && text.includes(k));
+    fb._similarity = Math.min(100, hits.length * 20); // 关键词兜底：每命中一个词计 20 分
+    opts.onPick('关键词命中：' + (hits.join('、') || '无'), fb._similarity);
+  }
+  return fb;
 }
 
-// 吸收前的领域预匹配：返回命中的特定领域模版；未命中（含 LLM/关键词均判定为 general）返回 null，
+// 提取前的领域预匹配：返回命中的特定领域模版；未命中（含 LLM/关键词均判定为 general）返回 null，
 // 由渲染层据此询问用户“新建领域模版还是用通用模版”
 // degraded=true 表示 LLM 判定失败/超时、结果来自关键词兜底
 async function preMatchTemplate(settings, raws, opts = {}) {
@@ -236,49 +220,17 @@ async function preMatchTemplate(settings, raws, opts = {}) {
   const hasSpecific = list.some((t) => t.id !== 'general');
   if (!hasSpecific) return { matched: null, hasSpecific, total: list.length };
   let degradeErr = null;
-  const tpl = await matchTemplate(settings, raws, { ...opts, onDegrade: (err) => { degradeErr = err; } });
-  const matched = tpl && tpl.id !== 'general' ? { id: tpl.id, name: tpl.name } : null;
+  let pickReason = '';
+  let similarity = 0;
+  const tpl = await matchTemplate(settings, raws, { ...opts, onDegrade: (err) => { degradeErr = err; }, onPick: (r, s) => { pickReason = r || ''; similarity = s || 0; } });
+  const matched = tpl && tpl.id !== 'general' ? { id: tpl.id, name: tpl.name, reason: pickReason, similarity } : null;
   // 超时中断在 llm 层报为“已停止回答”，对预检查场景改写成用户能看懂的超时描述
   const degradeMsg = !degradeErr ? ''
     : (degradeErr.name === 'AbortError' && opts.timeoutMs ? `模型未在 ${Math.round(opts.timeoutMs / 1000)} 秒内响应` : degradeErr.message);
-  return { matched, hasSpecific, total: list.length, degraded: !!degradeErr, degradeError: degradeMsg };
+  return { matched, hasSpecific, total: list.length, degraded: !!degradeErr, degradeError: degradeMsg, reason: pickReason };
 }
 
-// 模版 → 吸收提示词中的领域约束块（v2 四段式：体系 + 领域类 + 领域谓词 + 约束）
-function templateGuidance(tpl) {
-  if (!tpl) return '';
-  const v2 = Array.isArray(tpl.domainClasses) ? tpl : migrateTplV2(tpl);
-  const pairs = (arr, nameKey, descKey) =>
-    (arr || []).map((it) => (it[descKey] ? `${it[nameKey]}（${it[descKey]}）` : it[nameKey])).join('、') || '无';
-  const onto = resolveOntologyFor(v2.ontologyProfile);
-  // 领域类：custom 类标注父类挂载点，base 类直接列名
-  const classLine = (v2.domainClasses || []).map((c) => {
-    const nm = c.label || c.key;
-    const base = c.from === 'base';
-    const parentTag = !base && c.parent ? `⊂${c.parent}` : '';
-    return `${nm}${parentTag}${c.desc ? `（${c.desc}）` : ''}${base ? '' : '〔领域〕'}`;
-  }).join('、') || '无';
-  const predLine = (v2.domainPredicates || []).map((p) => {
-    const sig = p.domain && p.range ? `（${p.domain}→${p.range}）` : '';
-    return `${p.label || p.key}${sig}`;
-  }).join('、') || '无';
-  const consLine = (v2.constraints || []).map((c) => c.desc || `${c.subject}.${c.attr} ${c.op} ${c.value}`).join('；') || '无';
-  return [
-    `=== 领域模版：${v2.name}（${v2.id}） ===`,
-    `绑定体系：${onto.name}（${v2.ontologyProfile}）`,
-    `领域描述：${v2.desc || '无'}`,
-    `领域类（挂在体系类树上）：${classLine}`,
-    `领域谓词：${predLine}`,
-    `领域约束：${consLine}`,
-    `必须提取：${(v2.mustExtract || []).join('、') || '无'}`,
-    `忽略内容：${(v2.ignoreContent || []).join('、') || '无'}`,
-    `质量标准：${v2.quality || '无'}`,
-    `核心页面骨架：${pairs(v2.skeleton, 'title', 'desc')}`,
-    '吸收要求：按上述领域类组织节点（领域类优先归入其父类对应的体系类）；「必须提取」的信息不得遗漏，「忽略内容」不写入页面；关系优先使用领域谓词；产物满足质量标准并参考核心页面骨架组织章节。',
-  ].join('\n');
-}
-
-// AI 自动生成：按名称与描述补全模版 ID、关键词、实体/概念类型与提取规则
+// AI 自动生成：按名称与描述补全模版 ID、关键词、体系绑定与领域类
 // onDelta(delta, isReasoning) 可选：流式增量回调，供渲染层实时打印生成过程
 async function generateTemplate(settings, { name, desc }, onDelta) {
   if (!trimStr(name, 100)) throw new Error('请先填写名称');
@@ -293,14 +245,9 @@ async function generateTemplate(settings, { name, desc }, onDelta) {
     '  "id": "与该领域语义对应的英文标识符（小写字母/数字/下划线，字母开头；应是领域名称的英文翻译或缩写，例如领域“樱桃种植”对应 cherry_planting；严禁照抄本示例）",',
     '  "ontologyProfile": "建议绑定的顶层本体体系，三选一：bfo-lite（通用轻量，默认）/ bfo（科研严谨）/ iso15926（工业设备）",',
     '  "keywords": ["用于领域匹配的中文关键词，5-8 个"],',
-    '  "domainClasses": [ { "label": "领域类中文名", "parent": "父类（体系类 key，实物体用 object，信息/概念用 information）", "desc": "一句话说明" } ],',
-    '  "domainPredicates": [ { "label": "领域谓词中文名", "domain": "主语类", "range": "宾语类" } ],',
-    '  "mustExtract": ["必须提取的信息点，3-6 条"],',
-    '  "ignoreContent": ["应忽略的内容，2-4 条"],',
-    '  "quality": "对页面内容的质量要求（一段话）",',
-    '  "skeleton": [ { "title": "核心页面标题", "desc": "页面职责说明" } ]',
+    '  "domainClasses": [ { "label": "领域类中文名", "parent": "父类（体系类 key，实物体用 object，信息/概念用 information）", "desc": "一句话说明" } ]',
     '}',
-    '要求：id 必须与领域名称语义一致；domainClasses 5-8 个，parent 只能是 object（具体的人/物/组织/工具）或 information（概念/文档/方法等抽象信息）；domainPredicates 0-4 个；skeleton 3-5 个页面；全部使用中文（id 除外）。',
+    '要求：id 必须与领域名称语义一致；domainClasses 5-8 个，parent 只能是 object（具体的人/物/组织/工具）或 information（概念/文档/方法等抽象信息）；全部使用中文（id 除外）。',
   ].join('\n');
   const answer = await chatOnce(settings, [
     { role: 'system', content: getPrompt(settings, 'tplGenPrompt') },
@@ -321,14 +268,9 @@ async function generateTemplate(settings, { name, desc }, onDelta) {
   return {
     id,
     ontologyProfile: profileId,
+    profileName: resolveOntologyFor(profileId).name, // 运行时展示字段：体系中文名
     keywords: toList(raw.keywords),
     domainClasses,
-    domainPredicates: toPredicates(raw.domainPredicates),
-    constraints: [],
-    mustExtract: toList(raw.mustExtract),
-    ignoreContent: toList(raw.ignoreContent),
-    quality: trimStr(raw.quality),
-    skeleton: toPairs(raw.skeleton, 'title', 'desc'),
   };
 }
 
@@ -357,78 +299,41 @@ async function suggestTemplateName(settings, raws) {
   return { name, desc: trimStr(raw.desc, 500) };
 }
 
-// 智能生成：分析全部笔记 + 管理的原始文件，产出候选领域模版（数组）
-async function suggestTemplates(settings) {
-  // 延迟 require 避免与 notes 的循环依赖
-  const notesStore = require('../notes/store');
-  const raws = require('../raws/raws');
-  const { readRawText } = require('../raws/files');
-  const parts = [];
-  for (const n of notesStore.getNotes()) {
-    if ((n.content || '').trim() || (n.title || '').trim()) {
-      parts.push(`笔记·${n.title || n.id}\n${String(n.content || '').slice(0, 300)}`);
-    }
-  }
-  for (const r of raws.listRaws(settings)) {
-    let txt = '';
-    try { txt = (await readRawText(settings, r.path)) || ''; } catch (_) {}
-    parts.push(`原始·${r.name}\n${String(txt).slice(0, 300)}`);
-  }
-  if (!parts.length) throw new Error('暂无笔记或原始文件，无法生成候选模版');
-  const corpus = parts.join('\n\n').slice(0, 6000);
+// 从已有本体定义（内置三体系 + OWL 导入）中按来源内容选出最贴合的体系，返回 { id, name, similarity, reason }
+// 体系不再盲从模版上绑定的 ontologyProfile，而是实时按资料内容判定；失败回退 bfo-lite
+// 按来源内容从全部可用体系（内置三体系+导入 OWL）实时匹配最贴合的一个
+// onDelta(delta, isReasoning) 可选：流式增量回调，供渲染层实时打印 AI 思考过程
+async function suggestOntologyProfile(settings, raws, onDelta) {
+  const { listProfiles } = require('./graph'); // 惰性 require 避免循环依赖
+  const profiles = listProfiles();
+  const lines = profiles.map((p) => `- ${p.id}（${p.name}）：${p.desc || '无描述'}（含 ${p.counts ? p.counts.classes : 0} 个类）`);
+  const text = (raws || []).map((r) => r.content || r.text || '').join('\n').slice(0, 3000);
   const prompt = [
-    '你是知识库领域建模专家。下面是一位用户知识库中的全部笔记与原始文件摘录。',
-    '请分析这些内容的主题分布，归纳出 1-3 个「候选领域模版」，用于指导 AI 按领域抽取结构化知识。',
-    '要求：每个模版对应一个清晰、内聚的知识领域；若内容单一只输出 1 个；全部使用中文（id 除外）。',
+    '你是知识库本体建模专家。下方是待抽取的来源内容摘录，以及当前可用的顶层本体体系清单。',
+    '请依据内容的领域属性（通用日常 / 科研严谨推理 / 工业设备 4D 时空 / 其他专用 OWL 体系），从中选出最适合作为本次抽取基座的一个体系。',
+    '',
+    ...lines,
     '',
     '只输出一个 JSON 对象，不要输出其他任何内容：',
-    '{ "templates": [ {',
-    '  "id": "英文标识符（小写字母/数字/下划线，字母开头）",',
-    '  "name": "领域中文名",',
-    '  "desc": "领域简要描述",',
-    '  "keywords": ["中文关键词 5-8 个"],',
-    '  "ontologyProfile": "bfo-lite | bfo | iso15926 三选一（通用/科研工程/工业资产）",',
-    '  "domainClasses": [ { "label": "领域类中文名", "parent": "object 或 information", "desc": "一句话说明" } ],',
-    '  "domainPredicates": [ { "label": "领域谓词", "domain": "主语类中文", "range": "宾语类中文" } ],',
-    '  "mustExtract": ["3-6 条"],',
-    '  "ignoreContent": ["2-4 条"],',
-    '  "quality": "一段话",',
-    '  "skeleton": [ { "title": "", "desc": "" } ]',
-    '} ] }',
+    '{ "profile": "<体系ID>", "similarity": <0-100>, "reason": "为什么选它（一句话，说明内容特征与体系定位的契合点）" }',
+    'similarity 为 0-100 整数，表示内容与该体系定位的契合程度。',
     '',
-    '要求：domainClasses 4-6 个，parent 只能是 object（具体的人/物/组织/工具）或 information（概念/文档/方法等抽象信息）；domainPredicates 0-3 个。',
-    '',
-    '=== 知识库内容摘录 ===',
-    corpus,
+    '=== 来源内容摘录 ===',
+    text || '（空）',
   ].join('\n');
-  const answer = await chatOnce(settings, [
-    { role: 'system', content: getPrompt(settings, 'tplGenPrompt') },
-    { role: 'user', content: prompt },
-  ]);
-  const raw = extractJson(answer);
-  const arr = Array.isArray(raw.templates) ? raw.templates : (Array.isArray(raw) ? raw : []);
-  return arr
-    .filter((t) => t && (t.name || t.id))
-    .map((t) => ({
-      id: /^[A-Za-z][A-Za-z0-9_]*$/.test(trimStr(t.id, 60)) ? trimStr(t.id, 60) : '',
-      name: trimStr(t.name, 100),
-      desc: trimStr(t.desc),
-      keywords: toList(t.keywords),
-      ontologyProfile: ['bfo-lite', 'bfo', 'iso15926'].includes(trimStr(t.ontologyProfile, 60)) ? trimStr(t.ontologyProfile, 60) : 'bfo-lite',
-      domainClasses: (Array.isArray(t.domainClasses) ? t.domainClasses : [])
-        .map((c) => ({
-          key: trimStr(c.label, 60), label: trimStr(c.label, 100),
-          parent: ['object', 'information'].includes(trimStr(c.parent, 60)) ? trimStr(c.parent, 60) : 'object',
-          desc: trimStr(c.desc, 300), examples: [], from: 'custom',
-        }))
-        .filter((c) => c.key),
-      domainPredicates: toPredicates(t.domainPredicates),
-      constraints: [],
-      mustExtract: toList(t.mustExtract),
-      ignoreContent: toList(t.ignoreContent),
-      quality: trimStr(t.quality),
-      skeleton: toPairs(t.skeleton, 'title', 'desc'),
-    }));
+  try {
+    const answer = await chatOnce(settings, [
+      { role: 'system', content: getPrompt(settings, 'tplGenPrompt') },
+      { role: 'user', content: prompt },
+    ], undefined, onDelta);
+    const raw = extractJson(answer);
+    const picked = profiles.find((p) => p.id === trimStr(raw.profile, 60));
+    if (picked) {
+      return { id: picked.id, name: picked.name || picked.id, similarity: Math.max(0, Math.min(100, parseInt(raw.similarity, 10) || 0)), reason: trimStr(raw.reason, 200) };
+    }
+  } catch (_) { /* 失败回退默认 */ }
+  const dft = profiles.find((p) => p.id === 'bfo-lite') || profiles[0];
+  return { id: dft.id, name: dft.name || dft.id, similarity: 0, reason: '模型未给出有效选择，回退默认体系' };
 }
 
-module.exports = { listTemplates, saveTemplate, removeTemplate, matchPrompt, matchTemplate, preMatchTemplate, templateGuidance, generateTemplate, suggestTemplateName, suggestTemplates };
+module.exports = { listTemplates, saveTemplate, removeTemplate, matchPrompt, matchTemplate, preMatchTemplate, generateTemplate, suggestTemplateName, suggestOntologyProfile };

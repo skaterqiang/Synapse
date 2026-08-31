@@ -43,7 +43,7 @@ function listSources() {
 
 // 统一检索：并行跑所有勾选的源，单源失败/超时只丢该源，绝不拖垮整次问答
 // enabled 缺省视为「全开」；onStep 用于把各源的执行过程实时下发给 UI
-async function retrieve({ settings, question, enabled, onStep, signal } = {}) {
+async function retrieve({ settings, question, enabled, onStep, signal, graphProfile, graphScope } = {}) {
   const on = (key) => !enabled || enabled[key] !== false;
   const picked = [...sources.values()].filter((s) => on(s.key)).sort((a, b) => a.order - b.order);
   const emit = (st) => { try { if (onStep) onStep(st); } catch (_) { /* 忽略 */ } };
@@ -52,7 +52,7 @@ async function retrieve({ settings, question, enabled, onStep, signal } = {}) {
     emit({ kind: 'thought', text: `检索${s.label}…` });
     try {
       // 步骤由各源在执行过程中实时自报（结果里仍带回 steps，供未传 onStep 的调用方）；此处不再重复下发
-      return { key: s.key, order: s.order, ...(await s.retrieve({ settings, question, signal, onStep: emit }) || {}) };
+      return { key: s.key, order: s.order, ...(await s.retrieve({ settings, question, signal, onStep: emit, graphProfile, graphScope }) || {}) };
     } catch (err) {
       const st = { kind: 'thought', text: `知识源「${s.label}」检索失败：${err.message}，本轮跳过` };
       emit(st);
@@ -140,12 +140,18 @@ register({
   icon: '🕸',
   order: 30,
   desc: '本体层实体与关系，按问题关键词召回',
-  async retrieve({ question, onStep }) {
+  async retrieve({ question, onStep, graphProfile, graphScope }) {
     const emit = (st) => { if (onStep) onStep(st); };
     const graph = require('../graph/graph');
-    const recall = graph.recallFor(question);
-    if (!String(recall.context || '').trim()) { const steps = [{ kind: 'thought', text: '知识图谱无相关实体命中' }]; steps.forEach(emit); return { steps }; }
-    const steps = [{ kind: 'thought', text: `知识图谱召回 ${(recall.hits || []).length} 个实体` }];
+    // graphScope 优先（二级具体图谱）；否则 graphProfile（'all' 或体系 id）
+    const scope = graphScope && graphScope !== 'all' ? graphScope : '';
+    const pid = !scope && graphProfile && graphProfile !== 'all' ? graphProfile : '';
+    const recall = graph.recallFor(question, 8, pid, scope);
+    if (!String(recall.context || '').trim()) {
+      const steps = [{ kind: 'thought', text: (scope || pid) ? `知识图谱在选定范围下无相关实体命中` : '知识图谱无相关实体命中' }];
+      steps.forEach(emit); return { steps };
+    }
+    const steps = [{ kind: 'thought', text: `知识图谱召回 ${(recall.hits || []).length} 个实体${scope ? '（指定图谱）' : pid ? `（体系：${pid}）` : ''}` }];
     steps.forEach(emit);
     return {
       block: { body: recall.context },

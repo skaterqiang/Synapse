@@ -118,71 +118,123 @@ function parseTurtle(text) {
 }
 
 // ---------- RDF/XML 解析 ----------
-// 用正则提取 owl:Class / owl:ObjectProperty 块（宽松解析，非完整 XML parser）
+// 宽松正则解析（非完整 XML parser），兼容两种序列化：
+//  1) 简写式：<owl:Class rdf:about="…">…</owl:Class> / 自闭合
+//  2) Description 式：<rdf:Description rdf:about="…"><rdf:type rdf:resource="…#Class"/>…</rdf:Description>
+//     （Protégé / rdflib 等工具的常见导出格式，含 xml:lang 多语言标签与 nodeID 匿名节点）
+function xmlUnescape(s) {
+  return String(s || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+// 多语言标签取值：zh 优先 → 无 xml:lang → 任一；rdfs:label 与 skos:prefLabel 等价
+function pickLabel(body) {
+  const re = /<(?:rdfs:label|skos:prefLabel)([^>]*)>([^<]*)<\/(?:rdfs:label|skos:prefLabel)>/g;
+  let any = '';
+  let noLang = '';
+  let zh = '';
+  for (const m of body.matchAll(re)) {
+    const text = xmlUnescape(m[2]).trim();
+    if (!text) continue;
+    if (!any) any = text;
+    const lang = ((m[1] || '').match(/xml:lang=["']([^"']+)["']/) || [])[1] || '';
+    if (!lang && !noLang) noLang = text;
+    if (/^zh/i.test(lang) && !zh) zh = text;
+  }
+  return zh || noLang || any;
+}
+function pickComment(body) {
+  const m = body.match(/<rdfs:comment[^>]*>([^<]*)<\/rdfs:comment>/);
+  return m ? xmlUnescape(m[1]).trim() : '';
+}
+function typeResources(body) {
+  return [...body.matchAll(/<rdf:type\s+rdf:resource=["']([^"']+)["']/g)].map((m) => m[1]);
+}
+function resourceOf(body, tag) {
+  const m = body.match(new RegExp('<' + tag + '\\s+rdf:resource=["\']([^"\']+)["\']'));
+  return m ? m[1] : '';
+}
 function parseRdfXml(text) {
   const classes = new Map();
   const predicates = new Map();
   const constraints = [];
 
-  // 提取 <owl:Class rdf:about="...">...</owl:Class> 或 <owl:Class rdf:ID="...">
-  const classRe = /<owl:Class[^>]*?(?:rdf:about|rdf:ID)=["']([^"']+)["'][^>]*?>([\s\S]*?)<\/owl:Class>/g;
-  for (const m of text.matchAll(classRe)) {
-    const uri = m[1];
-    const body = m[2];
-    const key = localName(uri);
-    if (!key) continue;
-    const c = { key, label: key, parent: '', desc: '', code: uri };
-    const lbl = body.match(/<rdfs:label[^>]*>([^<]+)<\/rdfs:label>/) || body.match(/<skos:prefLabel[^>]*>([^<]+)<\/skos:prefLabel>/);
-    if (lbl) c.label = lbl[1].trim();
-    const cmt = body.match(/<rdfs:comment[^>]*>([^<]+)<\/rdfs:comment>/);
-    if (cmt) c.desc = cmt[1].trim();
-    const sub = body.match(/<rdfs:subClassOf\s+rdf:resource=["']([^"']+)["']/);
-    if (sub) c.parent = localName(sub[1]);
-    if (!/<owl:deprecated[^>]*>true<\/owl:deprecated>/.test(body)) classes.set(key, c);
-  }
-  // 自闭合 <owl:Class rdf:about="..." />
-  const classSelfRe = /<owl:Class\s+(?:rdf:about|rdf:ID)=["']([^"']+)["']\s*\/>/g;
-  for (const m of text.matchAll(classSelfRe)) {
-    const key = localName(m[1]);
-    if (key && !classes.has(key)) classes.set(key, { key, label: key, parent: '', desc: '', code: m[1] });
-  }
+  // 块提取：命名块（含自闭合）统一捕获；嵌套同名 Description 罕见，宽松截断可接受
+  const blockRe = /<(owl:Class|owl:ObjectProperty|rdf:Description)\b([^>]*?)>([\s\S]*?)<\/\1>|<(owl:Class|owl:ObjectProperty|rdf:Description)\b([^>]*?)\/>/g;
+  for (const m of text.matchAll(blockRe)) {
+    const tag = m[1] || m[4];
+    const attrs = m[1] ? m[2] : m[5];
+    const body = m[1] ? m[3] : '';
+    const about = ((attrs || '').match(/(?:rdf:about|rdf:ID)=["']([^"']+)["']/) || [])[1] || '';
+    const types = tag === 'owl:Class' ? ['x#Class'] : tag === 'owl:ObjectProperty' ? ['x#ObjectProperty'] : typeResources(body);
+    const isClass = types.some((t) => /[#/]Class$/.test(t));
+    const isProp = types.some((t) => /#ObjectProperty$/.test(t));
+    const isRestr = types.some((t) => /#Restriction$/.test(t));
+    const isIndividual = types.some((t) => /#NamedIndividual$/.test(t));
 
-  // owl:ObjectProperty
-  const propRe = /<owl:ObjectProperty[^>]*?(?:rdf:about|rdf:ID)=["']([^"']+)["'][^>]*?>([\s\S]*?)<\/owl:ObjectProperty>/g;
-  for (const m of text.matchAll(propRe)) {
-    const uri = m[1];
-    const body = m[2];
-    const key = localName(uri);
+    // 匿名约束节点（rdf:nodeID）：收集 constraint 说明
+    if (isRestr) {
+      const onProp = resourceOf(body, 'owl:onProperty');
+      const card = (body.match(/<owl:(?:minCardinality|maxCardinality|cardinality)[^>]*>(\d+)</) || [])[1];
+      const hasValRes = resourceOf(body, 'owl:hasValue');
+      const hasValLit = (body.match(/<owl:hasValue[^>]*>([^<]+)</) || [])[1];
+      const some = resourceOf(body, 'owl:someValuesFrom');
+      if (onProp) {
+        let desc = `${localName(onProp)} 约束`;
+        if (card) desc += `，基数=${card}`;
+        if (hasValRes || hasValLit) desc += `，值=${localName(hasValRes || hasValLit)}`;
+        if (some) desc += `，取值范围=${localName(some)}`;
+        constraints.push(desc);
+      }
+      continue;
+    }
+    if (!about) continue; // 其余匿名节点（Datatype/列表 nodeID 等）跳过
+    const key = localName(about);
     if (!key) continue;
-    const p = { key, label: key, domain: '', range: '', features: [], desc: '', code: uri };
-    const lbl = body.match(/<rdfs:label[^>]*>([^<]+)<\/rdfs:label>/);
-    if (lbl) p.label = lbl[1].trim();
-    const cmt = body.match(/<rdfs:comment[^>]*>([^<]+)<\/rdfs:comment>/);
-    if (cmt) p.desc = cmt[1].trim();
-    const dom = body.match(/<rdfs:domain\s+rdf:resource=["']([^"']+)["']/);
-    if (dom) p.domain = localName(dom[1]);
-    const rng = body.match(/<rdfs:range\s+rdf:resource=["']([^"']+)["']/);
-    if (rng) p.range = localName(rng[1]);
-    if (/<rdf:type\s+rdf:resource=["'][^"']*TransitiveProperty["']/.test(body)) p.features.push('transitive');
-    if (/<rdf:type\s+rdf:resource=["'][^"']*SymmetricProperty["']/.test(body)) p.features.push('symmetric');
-    if (/<rdf:type\s+rdf:resource=["'][^"']*FunctionalProperty["']/.test(body)) p.features.push('functional');
-    if (/<rdf:type\s+rdf:resource=["'][^"']*InverseFunctionalProperty["']/.test(body)) p.features.push('inverseFunctional');
-    predicates.set(key, p);
-  }
 
-  // owl:Restriction
-  const restRe = /<owl:Restriction[^>]*?>([\s\S]*?)<\/owl:Restriction>/g;
-  for (const m of text.matchAll(restRe)) {
-    const body = m[1];
-    const onProp = body.match(/<owl:onProperty\s+rdf:resource=["']([^"']+)["']/);
-    const card = body.match(/<owl:(?:minC|c)?ardinality[^>]*>(\d+)</);
-    const hasVal = body.match(/<owl:hasValue\s+rdf:resource=["']([^"']+)["']/);
-    if (onProp) {
-      const propKey = localName(onProp[1]);
-      let desc = `${propKey} 约束`;
-      if (card) desc += `，基数=${card[1]}`;
-      if (hasVal) desc += `，值=${localName(hasVal[1])}`;
-      constraints.push(desc);
+    // 实例（NamedIndividual）：不计入类表，但其 rdf:type 补全类集合（部分本体仅经实例声明类）
+    if (isIndividual && !isClass && !isProp) {
+      for (const t of types) {
+        if (/#(NamedIndividual|Thing)$/.test(t)) continue;
+        const ck = localName(t);
+        if (ck && !classes.has(ck)) classes.set(ck, { key: ck, label: ck, parent: '', desc: '', code: t });
+      }
+      continue;
+    }
+
+    if (isClass) {
+      if (/<owl:deprecated[^>]*>\s*true\s*<\/owl:deprecated>/.test(body)) continue;
+      if (!classes.has(key)) classes.set(key, { key, label: key, parent: '', desc: '', code: about });
+      const c = classes.get(key);
+      const lbl = pickLabel(body);
+      if (lbl) c.label = lbl;
+      const cmt = pickComment(body);
+      if (cmt) c.desc = cmt;
+      const sub = resourceOf(body, 'rdfs:subClassOf');
+      if (sub) c.parent = localName(sub);
+      continue;
+    }
+
+    if (isProp) {
+      if (!predicates.has(key)) predicates.set(key, { key, label: key, domain: '', range: '', features: [], desc: '', code: about });
+      const p = predicates.get(key);
+      const lbl = pickLabel(body);
+      if (lbl) p.label = lbl;
+      const cmt = pickComment(body);
+      if (cmt) p.desc = cmt;
+      const dom = resourceOf(body, 'rdfs:domain');
+      if (dom) p.domain = localName(dom);
+      const rng = resourceOf(body, 'rdfs:range');
+      if (rng) p.range = localName(rng);
+      for (const t of types) {
+        if (/TransitiveProperty$/.test(t)) p.features.push('transitive');
+        else if (/SymmetricProperty$/.test(t)) p.features.push('symmetric');
+        else if (/InverseFunctionalProperty$/.test(t)) p.features.push('inverseFunctional');
+        else if (/FunctionalProperty$/.test(t)) p.features.push('functional');
+      }
     }
   }
 

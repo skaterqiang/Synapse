@@ -12,6 +12,7 @@ const NUM_SETTING_FIELDS = {
   maxConcurrentJobs: ['set-maxconcurrent', 1, 8],
   graphConcurrency: ['set-graphconc', 1, 8],
   urlFetchTimeout: ['set-urltimeout', 1, 600],
+  llmRequestTimeout: ['set-llmreqtimeout', 60, 86400],
   sourceMaxChars: ['set-sourcechars', 1000, 1000000],
   rawDirMaxFiles: ['set-rawdirmax', 10, 100000],
   maxToolRounds: ['set-toolrounds', 1, 12],

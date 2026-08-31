@@ -9,15 +9,19 @@ const TRASH_DIR = 'trash';
 const TRASH_FOLDER_ID = '__trash__';
 
 // ---------- 原始文件领域 ----------
-// MinerU 官方支持的文件类型（来源：mineru/cli/common.py：pdf/docx/pptx/xlsx + 图片 png,jpeg,jp2,webp,gif,bmp,jpg,tiff）。
-// 内置解析只覆盖文本型文档；这些二进制/图片类型在配置了 MinerU 命令后由插件转换，未配置时导入后读取会报「不支持」并引导去设置
-const MINERU_SUPPORTED_EXTS = ['pdf', 'docx', 'pptx', 'xlsx', 'png', 'jpg', 'jpeg', 'jp2', 'webp', 'gif', 'bmp', 'tiff'];
-// 文件选择对话框支持的扩展名（文档类 + MinerU 支持类型）
-const FILE_EXTENSIONS = [...new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'md', 'markdown', 'txt', 'csv', 'html', 'htm', ...MINERU_SUPPORTED_EXTS])];
-// 笔记导入默认白名单：文档类 + MinerU 支持类型（含图片）。不包含 .java/.xml/.py/.sh 等代码/配置文件——
-// 它们虽然能当纯文本读，但会把大量工程文件灌进笔记、淡化真正的知识内容。
+// MinerU 严格接受的扩展名：产品定位 MinerU 只接 PDF（扫描件 PDF 的高质量解析），
+// 其它二进制类型（docx/pptx/xlsx/图片）不交给 MinerU；图片无内置解析器，
+// 由「技能解析」（设置→文档解析，默认开启）经模型多模态直读解析；关闭开关时报「不支持」
+const MINERU_SUPPORTED_EXTS = ['pdf'];
+// 图片类型集合：文件选择器可添加为引用，无内置解析器、MinerU 也不接；
+// 技能解析开启时经模型直读解析，关闭时报「不支持」并如实说明现状（用于错误提示与文档口径）
+const MINERU_IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.jp2', '.webp', '.gif', '.bmp', '.tiff']);
+// 文件选择对话框支持的扩展名（文档类 + 图片类：图片可选入引用，但解析需有解析器）
+const FILE_EXTENSIONS = [...new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'md', 'markdown', 'txt', 'csv', 'html', 'htm', 'png', 'jpg', 'jpeg', 'jp2', 'webp', 'gif', 'bmp', 'tiff'])];
+// 笔记导入默认白名单：文档类（文本型 + 常规 PDF/Office，内置解析直接支持）。不含图片与代码/配置文件——
+// 图片没有内置解析器（MinerU 严格只接 PDF）；代码文件虽然能当纯文本读，但会把大量工程文件灌进笔记、淡化真正的知识内容。
 // 用户可在设置里改（settings.noteImportExts），但默认不替他做这个选择
-const DEFAULT_NOTE_IMPORT_EXTS = [...new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'md', 'markdown', 'txt', 'csv', 'html', 'htm', ...MINERU_SUPPORTED_EXTS])];
+const DEFAULT_NOTE_IMPORT_EXTS = ['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'md', 'markdown', 'txt', 'csv', 'html', 'htm'];
 // 原始文件引用的 kv 存储键（单文件 / 目录 / 目录内排除项 / 网页链接）
 const RAW_REFS_KEY = 'raw_refs';
 const RAW_DIRS_KEY = 'raw_dir_refs';
@@ -302,14 +306,6 @@ const GENERAL_TEMPLATE = {
     { name: '术语', desc: '专业名词及其定义' },
     { name: '原则', desc: '观点、结论、原则' },
   ],
-  mustExtract: ['核心概念定义', '关键事实与数据', '结论与要点'],
-  ignoreContent: ['广告与推广内容', '页面导航等无关文本'],
-  quality: '信息准确、要点完整、语言凝练，保留来源中的关键数据与结论。',
-  skeleton: [
-    { title: '概览', desc: '主题背景与核心内容摘要' },
-    { title: '核心概念', desc: '关键概念与术语解释' },
-    { title: '要点清单', desc: '重要事实、结论与待办' },
-  ],
   builtin: true,
 };
 
@@ -339,6 +335,7 @@ module.exports = {
   TRASH_DIR,
   TRASH_FOLDER_ID,
   MINERU_SUPPORTED_EXTS,
+  MINERU_IMAGE_EXTS,
   FILE_EXTENSIONS,
   DEFAULT_NOTE_IMPORT_EXTS,
   RAW_REFS_KEY,

@@ -22,6 +22,17 @@ function bindEvents() {
     persist();
     renderAll();
   });
+  $('btn-fav').addEventListener('click', () => {
+    const note = currentNote();
+    if (!note) return;
+    toggleFavNote(note);
+  });
+  // 笔记列表头部 ⭐：切换「我的收藏」筛选视图（再点回到全部笔记）
+  $('btn-fav-filter').addEventListener('click', () => {
+    state.view = state.view.type === 'fav' ? { type: 'all', id: null, query: '' } : { type: 'fav', id: null, query: '' };
+    $('btn-fav-filter').classList.toggle('active', state.view.type === 'fav');
+    renderAll();
+  });
   $('btn-export').addEventListener('click', async () => {
     const note = currentNote();
     if (!note) return;
@@ -210,6 +221,13 @@ function bindEvents() {
   // 编辑器工具栏按钮统一在此绑定
   $('btn-ai-assist').addEventListener('click', aiAssistNote);
   $('btn-versions').addEventListener('click', openVersionsDrawer);
+  // AI 优化进度弹窗：停止 / 关闭 / 手动滚动暂停自动跟随
+  $('btn-ai-assist-stop').addEventListener('click', stopAiAssist);
+  $('btn-ai-assist-close').addEventListener('click', closeAiAssistModal);
+  $('ai-assist-body').addEventListener('scroll', () => {
+    const box = $('ai-assist-body');
+    aiAssistAutoScroll = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+  });
 
   // 作业管理页
   $('nav-jobs').addEventListener('click', showJobsView);
@@ -230,6 +248,7 @@ function bindEvents() {
 
   // AI 数据源多选
   loadAiSources();
+  loadAiGraphScopes(); // 图谱源范围（两级：体系 → 具体知识图谱，'all' 或多选）
   loadAiExt();
   loadAiModel();
   loadAiHistory();
@@ -332,8 +351,8 @@ async function init() {
   try { state.folderCollapsed = JSON.parse(localStorage.getItem('kb.folderCollapsed') || '{}') || {}; } catch (_) { state.folderCollapsed = {}; }
   syncSidebarVisibility();
   initResizers();
-  // 默认编辑器模式读设置（缺省分屏）
-  state.editorMode = EDITOR_MODES.includes(state.settings.defaultEditorMode) ? state.settings.defaultEditorMode : 'split';
+  // 默认编辑器模式读设置（缺省预览：点击笔记默认以预览方式呈现）
+  state.editorMode = EDITOR_MODES.includes(state.settings.defaultEditorMode) ? state.settings.defaultEditorMode : 'preview';
   // 预选一篇笔记：首页虽然是 AI 问答，但之后点「全部笔记」能直接看到内容而不是空白
   if (state.notes.length) state.selectedNoteId = getFilteredNotes()[0]?.id || state.notes[0].id;
   renderAll();

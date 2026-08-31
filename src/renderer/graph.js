@@ -6,11 +6,38 @@
 const graphSim = { nodes: [], edges: [], zoom: 1, ox: 0, oy: 0, drag: null, selected: null, raf: 0, running: false, alpha: 1 };
 
 // 实体类列表（key/展示名/颜色）：以本体定义为准，用户自定义的实体类也能正确显示名称与配色
+// 多体系共存：图谱节点带 profile，可能来自不同体系（如 BFO-Lite / ISO 15926 / OWL 导入）；
+// 类型表取「图里实际出现的所有体系」的类表并集 ∪ 当前浏览体系，否则非当前体系的节点类型会因查不到而全灰
 function graphTypes() {
-  const cls = (state.kg && state.kg.onto && state.kg.onto.classes) || [];
-  const list = cls.length ? cls.map((c) => ({ key: c.key, name: c.label || c.key })) : Object.entries(GRAPH_TYPE_NAMES).map(([k, name]) => ({ key: k, name }));
-  // 固定色优先；其余按黄金角生成，确保任意数量类型颜色互不重复
+  // 收集图里出现的体系 id（节点 profile），并始终并入当前浏览体系（保证类型下拉/图例覆盖当前体系可筛）
+  const pids = new Set();
+  (state.graph && state.graph.nodes || []).forEach((n) => { if (n.profile) pids.add(String(n.profile)); });
+  const browsing = state.kg && state.kg.onto && state.kg.onto.profileId;
+  if (browsing) pids.add(String(browsing));
+  // 按体系顺序合并各类（保留体系内类顺序），同 key 去重（先出现的体系优先）
+  const seen = new Set();
+  const list = [];
+  const pushCls = (cls) => (cls || []).forEach((c) => {
+    if (!c || !c.key || seen.has(c.key)) return;
+    seen.add(c.key);
+    list.push({ key: c.key, name: c.label || c.key });
+  });
+  pids.forEach((pid) => pushCls((state.kg.profileClasses && state.kg.profileClasses[pid]) || (browsing === pid ? (state.kg.onto && state.kg.onto.classes) : null)));
+  if (!list.length) Object.entries(GRAPH_TYPE_NAMES).forEach(([key, name]) => list.push({ key, name }));
+  // 固定色优先；其余按黄金角生成（索引确定 → 同 key 跨会话同色），确保任意数量类型颜色互不重复
   return list.map((t, i) => ({ ...t, color: GRAPH_COLORS[t.key] || graphGenColor(i) }));
+}
+
+// 预加载图里出现的所有体系的类表到 state.kg.profileClasses（同步渲染期不 await，故先拉齐）
+async function ensureGraphProfileClasses() {
+  if (!state.kg) state.kg = {};
+  if (!state.kg.profileClasses) state.kg.profileClasses = {};
+  const pids = new Set();
+  (state.graph && state.graph.nodes || []).forEach((n) => { if (n.profile) pids.add(String(n.profile)); });
+  await Promise.all([...pids].map(async (pid) => {
+    if (state.kg.profileClasses[pid]) return;
+    try { const o = await window.kb.graphOntology(pid); state.kg.profileClasses[pid] = (o && o.classes) || []; } catch (_) { state.kg.profileClasses[pid] = []; }
+  }));
 }
 
 function graphTypeColor(key) {
@@ -46,6 +73,8 @@ async function loadGraph() {
     state.graph = g || { nodes: [], edges: [], updatedAt: Date.now() };
   // 图例/类型下拉的名称与配色以本体定义为准，故先取一次本体（本地 kv 读取，开销可忽略）
   if (!state.kg.onto) state.kg.onto = await window.kb.graphOntology();
+  // 多体系共存：预加载图里出现的所有体系的类表，使非当前浏览体系的节点类型也能正确配色/进图例
+  await ensureGraphProfileClasses();
   // 领域下拉要显示领域中文名，而图谱作业可能刚自动新建了领域模版，故同步刷一次模版列表
   state.templates = (await window.kb.tplList()) || [];
   $('count-graph').textContent = state.graph.nodes.length;
@@ -529,6 +558,7 @@ async function renderKgOntology() {
   if (!state.kg.onto) state.kg.onto = await window.kb.graphOntology();
   const o = state.kg.onto;
   // 体系 tab（内置三体系 + OWL 导入，横排展开，每项带 类/谓词/约束 计数）
+  // 仅浏览/编辑入口：抽取与问答时由 AI 按内容自动选择体系（领域模版绑定优先），此处切换不写全局默认
   const tabs = $('onto-profile-tabs');
   if (tabs && o.profiles) {
     const sig = o.profiles.map((p) => p.id + ':' + JSON.stringify(p.counts || {})).join(',');
@@ -537,12 +567,13 @@ async function renderKgOntology() {
       tabs.innerHTML = o.profiles.map((p) => {
         const c = p.counts || {};
         const cnt = c.classes !== undefined ? `<span class="onto-prof-count">${c.classes}类·${c.predicates}谓·${c.constraints}约</span>` : '';
-        return `<button data-pid="${escapeHtml(p.id)}" class="${p.owl ? 'is-owl' : ''}" title="${escapeHtml(p.desc || p.name)}">${escapeHtml(p.name)}${p.owl ? '<span class="mini-tag onto-prof-owl">OWL</span>' : ''}${cnt}</button>`;
+        const note = `仅浏览/编辑该体系；抽取与问答时由 AI 自动选择合适体系。${p.desc || ''}`;
+        return `<button data-pid="${escapeHtml(p.id)}" class="${p.owl ? 'is-owl' : ''}" title="${escapeHtml(note)}">${escapeHtml(p.name)}${p.owl ? '<span class="mini-tag onto-prof-owl">OWL</span>' : ''}${cnt}</button>`;
       }).join('');
     }
     tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.pid === o.profileId));
     const pd = $('onto-profile-desc');
-    if (pd) pd.textContent = `${o.profileName || ''} · ${o.profileDesc || ''} · ${o.promptMode === 'two-stage' ? '两阶段提取' : '单阶段提取'}`;
+    if (pd) pd.textContent = `${o.profileName || ''} · ${o.profileDesc || ''} · ${o.promptMode === 'two-stage' ? '两阶段提取' : '单阶段提取'} · 仅浏览/编辑，抽取与问答时 AI 自动选择体系`;
     const btnRemoveOwl = $('btn-onto-remove-owl');
     if (btnRemoveOwl) btnRemoveOwl.hidden = !String(o.profileId || '').startsWith('owl:');
   }
@@ -713,7 +744,7 @@ async function removeOntoItem(kind, keyOrIndex) {
   renderKgOntology();
 }
 
-// 体系切换：落 kv + 重新拉取本体并重绘
+// 体系切换：仅切换本页浏览/编辑的体系（落 kv profileId），不影响抽取/问答——后者由 AI 自动选择体系
 async function switchOntoProfile(profileId) {
   const res = await window.kb.ontoSetProfile(profileId);
   if (!res.ok) { toast('切换失败：' + res.error, 4000); return; }
@@ -721,7 +752,6 @@ async function switchOntoProfile(profileId) {
   state.kg.ontoView = 'tree'; // 切换体系后回到结构树视图，直观看到层级
   state.kg.ontoCollapsed = {}; // 新体系重置子树折叠状态
   renderKgOntology();
-  toast('已切换到体系「' + (res.ontology.profileName || profileId) + '」', 2000);
 }
 
 // KG 自然语言问答：抽取实体 → 邻居事实 → 事实约束回答
@@ -1221,8 +1251,9 @@ function bindGraphEvents() {
     document.querySelectorAll('#kg-onto-tabs button').forEach((x) => x.classList.toggle('active', x === b));
     renderKgOntology();
   });
-  // 体系 tabs（横排展开，点击切换）
+  // 体系 tabs（横排展开，点击切换；仅浏览/编辑，不影响抽取/问答的体系选择）
   const profTabs = $('onto-profile-tabs');
+  if (profTabs) profTabs.title = '仅浏览/编辑该体系；抽取与问答时由 AI 自动选择合适体系';
   if (profTabs) profTabs.addEventListener('click', (e) => {
     const b = e.target.closest('button[data-pid]');
     if (!b) return;
@@ -1260,7 +1291,9 @@ function bindGraphEvents() {
     try {
       btnImportOwl.disabled = true;
       // Web 模式（无 Electron dialog）：隐藏文件选择器 → 上传 → 拿服务端路径
-      if (!window.kb.isElectron) {
+      // 判定必须用 window.__KB_WEB__（kb-shim 注入的唯一标记）：window.kb.isElectron 曾两处桥接均未定义，
+      // 导致桌面版误入本分支 fetch('/api/upload') 无服务而报 Failed to fetch
+      if (window.__KB_WEB__) {
         const inp = document.createElement('input');
         inp.type = 'file';
         inp.accept = '.owl,.rdf,.ttl,.xml';

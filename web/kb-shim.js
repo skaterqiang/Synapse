@@ -16,6 +16,9 @@
     'mineru:install-log': [],
     'skill:install-log': [],
     'ai:refs': [],
+    'ai:assist-chunk': [],
+    'tpl:match-chunk': [],
+    'tpl:suggest-profile-chunk': [],
   };
 
   const es = new EventSource('/api/events');
@@ -47,6 +50,8 @@
   }
 
   window.kb = {
+    // 运行环境标识：Web 模式为 false（桌面版 preload 为 true）
+    isElectron: false,
     // 数据
     loadData: () => call('data:load'),
     saveData: (store) => call('data:save', store),
@@ -62,7 +67,11 @@
     onAiStep: on('ai:step'),
 
     onTplGenChunk: on('tpl:gen-chunk'),
+    onTplMatchChunk: on('tpl:match-chunk'),
+    onTplSuggestProfileChunk: on('tpl:suggest-profile-chunk'),
     onAiRefs: on('ai:refs'),
+    onAiAssistChunk: on('ai:assist-chunk'),
+    aiAssistStop: () => call('note:aiAssistStop'),
 
     // 领域模版
     tplList: () => call('tpl:list'),
@@ -72,6 +81,9 @@
     tplSuggest: (payload) => call('tpl:suggest', payload),
     tplMatchPrompt: () => call('tpl:matchPrompt'),
     tplProfileTree: (profileId) => call('tpl:profileTree', profileId),
+    tplMatchFor: (payload) => call('tpl:matchFor', payload),
+    tplSuggestName: (payload) => call('tpl:suggestName', payload),
+    tplSuggestProfile: (payload) => call('tpl:suggestProfile', payload),
     promptsDefs: () => call('prompts:defs'),
 
     // 原始文件管理（目录选择在浏览器不可用，返回 canceled 由前端提示）
@@ -115,6 +127,7 @@
     jobsRemove: (id) => call('jobs:remove', id),
     jobsClear: () => call('jobs:clear'),
     jobsRetry: (payload) => call('jobs:retry', payload),
+    jobsCancel: (id) => call('jobs:cancel', id),
     onJobsUpdate: on('jobs:update'),
     onJobsLog: on('jobs:log'),
     jobsLogs: (id) => call('jobs:logs', { id }),
@@ -129,6 +142,7 @@
     graphClear: () => call('graph:clear'),
     graphOntology: (profileId) => call('graph:ontology', profileId),
     graphProfiles: () => call('graph:profiles'),
+    graphScopes: () => call('graph:scopes'),
     graphResolveSources: (payload) => call('graph:resolveSources', payload),
     ontoSave: (payload) => call('onto:save', payload),
     ontoRemove: (payload) => call('onto:remove', payload),

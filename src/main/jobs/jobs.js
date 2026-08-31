@@ -187,6 +187,32 @@ function setStage(job, key, status, detail) {
   emitJobs();
 }
 
+// ---------- 作业停止 ----------
+// cancel(id)：排队中 → 直接移出队列标失败；执行中 → 触发 AbortController，
+// 正在进行的模型请求/MinerU 子进程被中断，runner 抛 AbortError 由 runJob 标失败（合并存图不会执行，不污染产物）
+const jobCancel = new Map();
+const mkAbortErr = () => Object.assign(new Error('用户手动停止作业'), { name: 'AbortError' });
+function cancel(id) {
+  const job = jobs.find((j) => j.id === id);
+  if (!job) return { ok: false, error: '作业不存在' };
+  if (job.status !== 'running' && job.status !== 'queued') return { ok: false, error: '仅执行中/排队中的作业可停止' };
+  if (job.status === 'queued') {
+    for (let i = jobQueue.length - 1; i >= 0; i--) if (jobQueue[i] === id) jobQueue.splice(i, 1);
+    job.status = 'failed';
+    job.error = '用户手动停止作业';
+    job.finishedAt = Date.now();
+    const st = job.stages.find((s) => s.status === 'running' || s.status === 'pending');
+    if (st) { st.status = 'failed'; st.detail = '已停止'; }
+    persistJobs();
+    emitJobs();
+    return { ok: true };
+  }
+  let ctrl = jobCancel.get(id);
+  if (!ctrl) { ctrl = new AbortController(); jobCancel.set(id, ctrl); }
+  ctrl.abort();
+  return { ok: true };
+}
+
 // ---------- 队列执行（可配置并发） ----------
 function pumpJobQueue() {
   while (runningIds.size < maxConcurrent() && jobQueue.length) {
@@ -196,6 +222,9 @@ function pumpJobQueue() {
     runningIds.add(id);
     job.status = 'running';
     job.startedAt = Date.now();
+    // 启动时预建中止控制器：runner 在启动瞬间取 signal 传给模型请求/子进程，
+    // 若等 cancel() 懒建则 runner 已持有 null，停止将无法中断在途请求
+    jobCancel.set(id, new AbortController());
     runJob(job);
   }
   persistJobs();
@@ -208,10 +237,11 @@ async function runJob(job) {
     job.status = 'success';
   } catch (err) {
     job.status = 'failed';
-    job.error = err.message;
+    job.error = (err && err.name === 'AbortError') ? '用户手动停止作业' : err.message;
     const st = job.stages.find((s) => s.status === 'running');
-    if (st) { st.status = 'failed'; st.detail = err.message; }
+    if (st) { st.status = 'failed'; st.detail = job.error; }
   }
+  jobCancel.delete(job.id);
   job.finishedAt = Date.now();
   clearJobLogs(job);
   runningIds.delete(job.id);
@@ -248,6 +278,9 @@ function submitJob(type, title, stageDefs, payload) {
     finishedAt: 0,
     stages: stageDefs.map((s) => ({ key: s.key, name: s.name, status: 'pending', detail: '' })),
     payload,
+    // 提取范围（raw 路径）随 raw_paths 列持久化：payload 不入库（含敏感配置），
+    // 重启后重试需据此恢复范围，避免静默回退「全部笔记」
+    rawPaths: Array.isArray(payload && payload.rawPaths) ? payload.rawPaths.filter(Boolean) : null,
     result: null,
     error: '',
   };
@@ -275,6 +308,8 @@ const EXTRACT_NOTE_STAGES = [
 const JOB_RUNNERS = {
   async 'extract-note'(job) {
     const { settings, rawPaths = [], forceMineru } = job.payload;
+    const cancelCtrl = jobCancel.get(job.id);
+    const cancelSignal = cancelCtrl ? cancelCtrl.signal : null;
     const tracker = makeTaskTracker(job, () => { persistJobs(); emitJobs(); });
     tracker.init(rawPaths.map((p) => String(p).replace(/^raw\//, '')));
     const records = raws.listRaws(settings);
@@ -293,14 +328,14 @@ const JOB_RUNNERS = {
     // 解析方式说明（设置→文档解析）：mineruMode 非 builtin 且配置了转换命令时启用 MinerU，失败自动回退内置
     const mineruOn = String((settings && settings.mineruMode) || 'auto') !== 'builtin'
       && !!String((settings && settings.mineruConvertCmd) || '').trim();
-    const BUILTIN_EXTS = ['.md', '.markdown', '.txt', '.csv', '.json', '.log', '.html', '.htm'];
-    // 该来源是否会实际尝试 MinerU：文本型扩展（含 html）按设计固定走内置解析，不会调用 MinerU，
-    // 也不存在「回退」一说；文案须如实区分，避免用户误以为 MinerU 失败
-    const usesMineru = (name) => mineruOn && !BUILTIN_EXTS.includes(path.extname(String(name)).toLowerCase());
+    // 该来源是否会实际尝试 MinerU：MinerU 严格只接 PDF，文本型（含 html）与其它二进制类型按设计固定走内置解析，
+    // 不会调用 MinerU，也不存在「回退」一说；文案须如实区分，避免用户误以为 MinerU 失败
+    const usesMineru = (name) => mineruOn && path.extname(String(name)).toLowerCase() === '.pdf';
     // 解析方式如实标注：缓存命中时带上「缓存」字样，避免用户以为本次重新跑了 MinerU
     const parseLabel = (name, used, fromCache) => {
       const suffix = fromCache ? '（缓存命中，未重跑）' : '';
       if (used === 'mineru') return `MinerU 解析${suffix}`;
+      if (used === 'skill') return `技能解析${suffix}`;
       return usesMineru(name) ? `内置解析（MinerU 失败回退）${suffix}` : '内置解析';
     };
     // 回退记录：MinerU 失败静默回退内置是「笔记质量与 MinerU 测试不一致」的根因，
@@ -310,6 +345,9 @@ const JOB_RUNNERS = {
     // 避免「解析方式：MinerU 解析」这类笼统表述让用户误以为文本型来源也该经 MinerU
     let mineruFiles = 0;
     let builtinOnlyFiles = 0;
+    let skillFiles = 0; // 技能解析（内置解析的技能扩展层）成功产出的来源数
+    // 技能解析是否就绪（设置→文档解析开关，默认开启 + 已启用技能 + 模型可用）：仅用于执行中提示
+    const skillsOn = require('../skills/parse').skillParseReady(settings);
     let cursor = 0;
     let started = 0;
     const processOne = async (i) => {
@@ -326,9 +364,11 @@ const JOB_RUNNERS = {
       }
       tracker.setRunning(i);
       const no = ++started;
-      // 执行中需说明采用的解析方式（内置 / MinerU），便于用户判断进度与质量预期；
+      // 执行中需说明采用的解析方式（内置 / MinerU / 技能），便于用户判断进度与质量预期；
       // 文本型扩展（含 html）按设计固定内置解析，文案如实标注，避免误以为 MinerU 失败
-      const fileMethod = forceMineru ? '强制 MinerU 解析（不回退）' : (usesMineru(record.name) ? 'MinerU 解析' : '内置解析（该类型不走 MinerU）');
+      const fileMethod = forceMineru
+        ? '强制 MinerU 解析（不回退）'
+        : (usesMineru(record.name) ? 'MinerU 解析' : (skillsOn ? '内置解析 + 技能解析' : '内置解析（该类型不走 MinerU）'));
       setStage(job, 'extract', 'running', `解析 ${record.name}（${no}/${rawPaths.length}，并发 ${CONC}，${fileMethod}）`);
       try {
         const info = {}; // extractFileContent 经此交还本次 MinerU 转换暂存的图片目录与解析方式（并发安全，不用全局静态字段）
@@ -338,11 +378,16 @@ const JOB_RUNNERS = {
           forceMineru: !!forceMineru,
           noCache: true,
           info,
+          signal: cancelSignal,
           onLog: (line, replace) => jobLog(job, `[${record.name}] ${line}`, replace),
         });
         const used = info.parseMethod || 'builtin';
         // 按来源类型计数（阶段摘要用）：二进制/图片型会经 MinerU（含缓存命中的 MinerU 产物），文本型（含 html）按设计固定内置
-        if (!forceMineru) { if (used === 'mineru' || usesMineru(record.name)) mineruFiles++; else builtinOnlyFiles++; }
+        if (!forceMineru) {
+          if (used === 'skill') skillFiles++;
+          else if (used === 'mineru' || usesMineru(record.name)) mineruFiles++;
+          else builtinOnlyFiles++;
+        }
         if (!String(text || '').trim()) throw new Error('来源内容为空');
         setStage(job, 'save', 'running', `写入笔记 ${record.name}（${no}/${rawPaths.length}）`);
         // 目录归属：仅「按目录添加」（record.root 非空）保留来源目录结构（根目录名 + 子目录）；
@@ -359,13 +404,14 @@ const JOB_RUNNERS = {
         const imgCount = filesMod.attachMineruImages(res.path, info.imagesDir);
         notes.push(res);
         writtenPaths.push(relNotePath(res.path));
-        // MinerU 失败回退内置：记录原因并在子任务输出中明确警示（产物质量低于 MinerU 解析）
-        const fbReason = used !== 'mineru' && mineruOn && !BUILTIN_EXTS.includes(path.extname(record.name).toLowerCase())
+        // MinerU 失败回退内置：记录原因并在子任务输出中明确警示（产物质量低于 MinerU 解析）；
+        // 技能解析成功（used=skill）不算「回退内置」——它本身就是编排后的正式产物
+        const fbReason = used !== 'mineru' && used !== 'skill' && mineruOn && path.extname(record.name).toLowerCase() === '.pdf'
           ? (info.externalError || 'MinerU 转换失败')
           : '';
         if (fbReason) fallbacks.push({ path: relPath, name: record.name, reason: fbReason, note: relNotePath(res.path) });
         // 子任务输出带上笔记落盘的具体位置，便于用户直接定位文件；回退时附原因警示
-        tracker.setOutput(i, `${res.updated ? '已更新已有笔记' : '已新建笔记'} · ${parseLabel(record.name, used, info.fromCache)} → ${relNotePath(res.path)}${imgCount ? `（含 ${imgCount} 张图）` : ''}${fbReason ? `\n⚠ MinerU 失败已回退内置解析（${fbReason}），笔记质量可能低于 MinerU 解析，可在作业上「用 MinerU 重跑」` : ''}`);
+        tracker.setOutput(i, `${res.updated ? '已更新已有笔记' : '已新建笔记'} · ${parseLabel(record.name, used, info.fromCache)} → ${relNotePath(res.path)}${imgCount ? `（含 ${imgCount} 张图）` : ''}${fbReason ? `\n⚠ MinerU 失败已回退内置解析（${fbReason}），笔记质量可能低于 MinerU 解析，可在作业上「用 MinerU 重跑」` : ''}${used === 'skill' && info.externalError ? `\n（MinerU 失败：${info.externalError}，已改用技能解析产出）` : ''}`);
         tracker.setDone(i);
       } catch (err) {
         failed.push({ path: relPath, name: record.name, error: err.message });
@@ -376,11 +422,15 @@ const JOB_RUNNERS = {
     // 并发 worker 池：单线程内 await 切换，cursor 自增同步无竞态
     const workers = Array.from({ length: Math.max(1, Math.min(CONC, rawPaths.length)) }, async () => {
       while (cursor < rawPaths.length) {
+        if (cancelSignal && cancelSignal.aborted) throw mkAbortErr();
         const i = cursor++;
         await processOne(i);
       }
     });
     await Promise.all(workers);
+    // 中止兜底：processOne 会吞掉单文件错误（含被停止触发的），若最后一个文件恰被中止，
+    // worker 池会正常退出——这里统一判定，确保停止的作业不会误标成功
+    if (cancelSignal && cancelSignal.aborted) throw mkAbortErr();
     // 没有任何来源成功写入笔记、且存在失败来源时，作业整体应记为失败（status=failed），
     // 否则 runJob 见 runner 正常返回就标 success，出现「作业成功、子任务失败」的矛盾展示
     // （强制 MinerU 重跑失败不回退内置时尤其明显）
@@ -389,12 +439,14 @@ const JOB_RUNNERS = {
     }
     const skipNote = skipped.length ? `，按类型跳过 ${skipped.length} 个` : '';
     // 解析方式如实汇总：文本型来源（md/txt/csv/html 等）按设计固定内置解析，不属于「MinerU 失败回退」；
-    // 只有二进制型（pdf/docx/pptx/xlsx/图片）才经 MinerU，失败才回退。笼统写「MinerU 解析」会误导
+    // 只有二进制型（pdf/docx/pptx/xlsx/图片）才经 MinerU，失败才回退。笼统写「MinerU 解析」会误导；
+    // 技能解析（内置解析的技能扩展层）单独计数，用户可看出哪些来源由技能产出
+    const skillNote = skillFiles ? `，技能解析 ${skillFiles} 个（技能指令 + 模型直读）` : '';
     const methodNote = forceMineru
       ? '解析方式：强制 MinerU 解析（不回退内置）'
       : (mineruOn
-        ? `解析方式：MinerU 解析 ${mineruFiles} 个（二进制/图片型），内置解析 ${builtinOnlyFiles} 个（文本型按设计不走 MinerU），MinerU 失败自动回退内置`
-        : '解析方式：内置解析');
+        ? `解析方式：MinerU 解析 ${mineruFiles} 个（仅 PDF），内置解析 ${builtinOnlyFiles} 个（非 PDF 类型按设计不走 MinerU），MinerU 失败自动回退内置${skillNote}`
+        : `解析方式：内置解析${skillFiles || builtinOnlyFiles ? ` ${builtinOnlyFiles} 个${skillNote}` : ''}`);
     // 回退警示：有来源因 MinerU 失败回退内置时，阶段摘要明确提示，避免用户误以为产物与 MinerU 测试一致
     const fbNote = fallbacks.length ? `，⚠ ${fallbacks.length} 个来源 MinerU 失败回退内置` : '';
     setStage(job, 'extract', 'success', `已解析 ${notes.length} 个来源${skipNote}（${methodNote}${fbNote}，启用类型：${[...allowed].join('/')}，并发 ${CONC}）`);
@@ -408,7 +460,17 @@ const JOB_RUNNERS = {
   },
   // 知识图谱作业：收集语料 → AI 本体抽取 → 合并存图
   async graph(job) {
-    const { settings, rawPaths, inlineSources, typeHints, domainId, domainLabel, ontologyProfile } = job.payload;
+    const p = job.payload || {};
+    // 重启/重试后 payload 不入库：从持久化的 raw_paths 列恢复提取范围，防止静默回退「全部笔记」
+    if (!Array.isArray(p.inlineSources) && !(Array.isArray(p.rawPaths) && p.rawPaths.length) && Array.isArray(job.rawPaths) && job.rawPaths.length) {
+      p.rawPaths = job.rawPaths;
+      job.payload = p;
+    }
+    const { settings, rawPaths, inlineSources, typeHints, domainId, domainLabel, ontologyProfile } = p;
+    // 守卫：卡片声明了原始文件范围但 payload/raw_paths 均无（历史数据异常）→ 明确失败，绝不静默扩大到全部笔记
+    if (!rawPaths && !inlineSources && job.source && job.source.kind === '原始文件') {
+      throw new Error('提取范围信息丢失（应用重启所致），请从「原始文件」页重新选择范围提取');
+    }
     setStage(job, 'collect', 'running', inlineSources && inlineSources.length ? `读取 ${inlineSources.length} 个笔记来源…` : (rawPaths && rawPaths.length ? `读取 ${rawPaths.length} 个原始来源…` : '读取全部笔记…'));
     const res = await graph.extractGraph(settings, {
       rawPaths,
@@ -417,6 +479,7 @@ const JOB_RUNNERS = {
       domainId,
       domainLabel,
       ontologyProfile,
+      signal: (jobCancel.get(job.id) || {}).signal || null,
       // 领域：只有选了“自动”时才在作业内找/建领域；用户显式指定领域（含通用）时 autoDomain=false，按其选择执行
       resolveDomain: job.payload.autoDomain === false ? undefined : (raws) => resolveAutoDomain(job, raws, 'collect'),
       readRaw: (rel) => filesMod.readRawText(settings, rel).catch(() => ''),
@@ -458,6 +521,27 @@ async function resolveAutoDomain(job, raws, stageKey) {
   if ((hints.entity || []).length || (hints.concept || []).length) {
     return { domainId: p.domainId || p.domain, domainLabel: p.domainLabel || p.templateName, typeHints: p.typeHints };
   }
+  // 重试场景：job.source.domain 已存有上一轮归纳好的领域（对象含 id/label/typeHints，或旧版字符串 id），
+  // 直接复用，不再向慢模型发 suggestTemplateName 重复归纳（此前重试一直卡「寻找领域模版」即此因）
+  const sd = job.source && job.source.domain;
+  const prevId = typeof sd === 'string' ? sd : (sd && sd.id);
+  if (prevId) {
+    const tpl = templates.listTemplates().find((t) => t.id === prevId);
+    if (tpl) {
+      const classes = Array.isArray(tpl.domainClasses) ? tpl.domainClasses : [];
+      const th = classes.length
+        ? { entity: classes.filter((c) => c.parent !== 'information').map((c) => c.label || c.key).filter(Boolean),
+            concept: classes.filter((c) => c.parent === 'information').map((c) => c.label || c.key).filter(Boolean) }
+        : { entity: (tpl.entityTypes || []).map((x) => x.name).filter(Boolean),
+            concept: (tpl.conceptTypes || []).map((x) => x.name).filter(Boolean) };
+      const label = tpl.name || (typeof sd === 'object' && sd.label) || prevId;
+      p.typeHints = th; p.domainId = tpl.id; p.domainLabel = label;
+      if (tpl.ontologyProfile) p.ontologyProfile = tpl.ontologyProfile;
+      persistJobs();
+      setStage(job, stageKey, 'running', `复用上次归纳的领域「${label}」（${tpl.id}），直接开始抽取`);
+      return { domainId: tpl.id, domainLabel: label, typeHints: th, ontologyProfile: tpl.ontologyProfile || undefined };
+    }
+  }
   // 领域信息回写作业卡片（source.domain），使徽标展示最终生效的领域而不是提交时的“通用”
   const writeBack = (domainId, domainLabel, typeHints, tplProfile) => {
     job.source = { ...(job.source || {}), domain: domainId, domainLabel, typeHints, ...(tplProfile ? { tplProfile } : {}) };
@@ -465,21 +549,33 @@ async function resolveAutoDomain(job, raws, stageKey) {
     emitJobs();
   };
   try {
-    setStage(job, stageKey, 'running', '未命中特定领域模版，正按来源内容归纳更贴合的领域…');
-    const sug = await templates.suggestTemplateName(p.settings, raws);
-    const exist = templates.listTemplates().find((t) => t.id !== 'general' && t.name === sug.name);
-    let tpl = exist;
+    // 第一步：在已有领域模版中找最相似的（带相似度评分），命中阈值即复用，避免重复建模版
+    setStage(job, stageKey, 'running', '正在已有领域模版中匹配最相似的一个…');
+    let pickReason = '';
+    let similarity = 0;
+    let tpl = await templates.matchTemplate(p.settings, raws, { onPick: (r, s) => { pickReason = r || ''; similarity = s || 0; } });
+    if (tpl && tpl.id === 'general') tpl = null; // general 不算命中特定领域
+    let exist = !!tpl;
     if (tpl) {
-      setStage(job, stageKey, 'running', `归纳为领域「${sug.name}」，命中已有领域模版，直接复用…`);
+      setStage(job, stageKey, 'running', `命中领域模版「${tpl.name}」（相似度 ${similarity}%）：${pickReason || '内容主题吻合'}`);
     } else {
-      setStage(job, stageKey, 'running', `归纳为领域「${sug.name}」，正在生成该领域的实体/概念类型…`);
-      const gen = await templates.generateTemplate(p.settings, { name: sug.name, desc: sug.desc });
-      // 模型可能给出与已有模版重名的 id：同名不同领域时加后缀，避免覆盖别人的模版
-      let id = gen.id;
-      if (templates.listTemplates().some((t) => t.id === id && t.name !== sug.name)) id = `${id}_${Date.now().toString(36)}`;
-      tpl = templates.saveTemplate({ ...gen, id, name: sug.name, desc: sug.desc });
+      setStage(job, stageKey, 'running', '已有模版均不贴合，正按来源内容归纳新领域…');
+      const sug = await templates.suggestTemplateName(p.settings, raws);
+      // 归纳出的新名与已有模版精确重名时直接复用
+      tpl = templates.listTemplates().find((t) => t.id !== 'general' && t.name === sug.name);
+      exist = !!tpl;
+      if (tpl) {
+        setStage(job, stageKey, 'running', `归纳为领域「${sug.name}」，与已有模版重名，直接复用…`);
+      } else {
+        setStage(job, stageKey, 'running', `归纳为领域「${sug.name}」，正在生成该领域的领域类…`);
+        const gen = await templates.generateTemplate(p.settings, { name: sug.name, desc: sug.desc });
+        // 模型可能给出与已有模版重名的 id：同名不同领域时加后缀，避免覆盖别人的模版
+        let id = gen.id;
+        if (templates.listTemplates().some((t) => t.id === id && t.name !== sug.name)) id = `${id}_${Date.now().toString(36)}`;
+        tpl = templates.saveTemplate({ ...gen, id, name: sug.name, desc: sug.desc });
+      }
     }
-    // v2：typeHints 从 domainClasses 派生（parent!==information→entity，=information→concept）；同时携带体系绑定
+    // v2：typeHints 从 domainClasses 派生（parent!==information→entity，=information→concept）
     const classes = Array.isArray(tpl.domainClasses) ? tpl.domainClasses : [];
     const typeHints = classes.length
       ? {
@@ -490,10 +586,20 @@ async function resolveAutoDomain(job, raws, stageKey) {
           entity: (tpl.entityTypes || []).map((x) => x.name).filter(Boolean),
           concept: (tpl.conceptTypes || []).map((x) => x.name).filter(Boolean),
         };
-    const tplProfile = tpl.ontologyProfile || '';
+    // 第二步：体系不盲从模版绑定，而是从已有本体定义中按来源内容选最合适的（带相似度与理由）
+    setStage(job, stageKey, 'running', '正在从本体定义中选择最贴合的体系…');
+    const prof = await templates.suggestOntologyProfile(p.settings, raws);
+    const tplProfile = prof.id;
     writeBack(tpl.id, tpl.name, typeHints, tplProfile);
-    setStage(job, stageKey, 'running', `${exist ? '复用' : '已新建'}领域「${tpl.name}」（${tpl.id}）${tplProfile ? `，绑定体系「${tplProfile}」` : ''}，本次产物将挂到该领域下`);
-    return { domainId: tpl.id, domainLabel: tpl.name, typeHints, ontologyProfile: tplProfile || undefined };
+    // 同步写回 payload：重试（retry 用 {...base} 重排）直接携带已归纳的领域与类型约束，
+    // 不再重复走 suggestTemplateName 的 LLM 归纳（避免重试又卡在「寻找领域模版」等本地慢模型响应）
+    p.typeHints = typeHints;
+    p.domainId = tpl.id;
+    p.domainLabel = tpl.name;
+    if (tplProfile) p.ontologyProfile = tplProfile;
+    persistJobs();
+    setStage(job, stageKey, 'running', `${exist ? '复用' : '已新建'}领域「${tpl.name}」（相似度 ${similarity}%）；体系选「${prof.name}」（相似度 ${prof.similarity}%）：${prof.reason}，本次产物将挂到该领域下`);
+    return { domainId: tpl.id, domainLabel: tpl.name, typeHints, ontologyProfile: tplProfile || undefined, profileReason: prof.reason, profileSimilarity: prof.similarity, domainSimilarity: similarity, domainReason: pickReason };
   } catch (err) {
     setStage(job, stageKey, 'running', `自动建域未完成（${err.message}），本次按通用模版处理`);
     return null;
@@ -579,12 +685,26 @@ function retry({ id, settings }) {
   if (src.status !== 'failed') return { ok: false, error: '只能重试失败的作业' };
   const base = src.payload || {};
   if (src.type === 'extract-note') {
-    const rawPaths = Array.isArray(base.rawPaths) ? base.rawPaths : [];
+    const rawPaths = Array.isArray(base.rawPaths) ? base.rawPaths
+      : (Array.isArray(src.rawPaths) ? src.rawPaths
+      : (src.source && Array.isArray(src.source.items) ? src.source.items : []));
     if (!rawPaths.length) return { ok: false, error: '来源信息丢失，无法重试，请从原始文件页重新提取' };
     return { ok: true, id: requeueJob(src, EXTRACT_NOTE_STAGES, { ...base, settings, rawPaths }).id };
   }
   if (src.type === 'graph') {
-    return { ok: true, id: requeueJob(src, GRAPH_STAGES, { ...base, settings }).id };
+    // 恢复提取范围：payload 不入库，重启后 base 为空；
+    // 回退链：payload.rawPaths → raw_paths 列 → source.items（存量作业仅 source 列持久化了范围）；
+    // 恢复不了且作业原本声明了范围 → 拒绝重试，绝不静默回退「全部笔记」
+    const baseRaw = Array.isArray(base.rawPaths) ? base.rawPaths
+      : (Array.isArray(src.rawPaths) ? src.rawPaths
+      : (src.source && src.source.kind === '原始文件' && Array.isArray(src.source.items) ? src.source.items : []));
+    const hadScope = (src.source && src.source.kind === '原始文件') || (Array.isArray(src.rawPaths) && src.rawPaths.length);
+    if (!baseRaw.length && hadScope) {
+      return { ok: false, error: '提取范围信息丢失（应用重启所致），请从「原始文件」页重新选择范围提取' };
+    }
+    const gpayload = { ...base, settings };
+    if (baseRaw.length) gpayload.rawPaths = baseRaw;
+    return { ok: true, id: requeueJob(src, GRAPH_STAGES, gpayload).id };
   }
   return { ok: false, error: '未知作业类型：' + src.type };
 }
@@ -593,4 +713,4 @@ function getJobLogs(id) {
   return jobLogs.get(id) || [];
 }
 
-module.exports = { init, loadJobs, list, submit, remove, clear, retry, importLegacyJobs, getJobLogs };
+module.exports = { init, loadJobs, list, submit, remove, clear, retry, cancel, importLegacyJobs, getJobLogs };

@@ -166,7 +166,9 @@ function collectSources() {
 // 逐批调用模型抽取节点/边，合并去重后持久化；onStage 回调用于作业阶段进度展示
 // resolveDomain(raws)：未命中特定领域时由作业层决定最终领域（可新建/复用领域模版），
 // 返回 { domainId, domainLabel, typeHints }；graph 层不直接依赖 templates
-async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile }, onStage, onProgress, onTasks) {
+async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile, signal }, onStage, onProgress, onTasks) {
+  // 作业停止信号：批次开始前检查 + 透传给 chatOnce 中断在途模型请求
+  const mkAbort = () => Object.assign(new Error('用户手动停止作业'), { name: 'AbortError' });
   // 生效体系优先级：弹窗显式指定 > 命中模板的体系绑定（resolveDomain 回填）> settings 全局默认 > bfo-lite
   const explicitPid = ontologyProfile || '';
   let sources;
@@ -191,8 +193,11 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
   // 领域归属：命中特定领域则直接用；否则交由作业层自动建域/复用已有领域，抽取出的节点随之挂到该领域下
   let hints = typeHints;
   let domLabel = domainLabel;
-  let domainTag = domainId && domainId !== 'general' ? domainId : (domain && domain !== 'general' ? domain : '');
+  let domainTag = domainId && domainId !== 'general' ? domainId : '';
   let tplProfile = '';
+  let profileReason = '';
+  let profileSimilarity = 0;
+  let domainSimilarity = 0;
   if (resolveDomain) {
     const r = await resolveDomain(sources.map((s) => ({ rawPath: s.label, content: s.text })));
     if (r) {
@@ -200,6 +205,9 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
       if (r.domainLabel) domLabel = r.domainLabel;
       if (r.domainId && r.domainId !== 'general') domainTag = r.domainId;
       if (r.ontologyProfile) tplProfile = r.ontologyProfile;
+      if (r.profileReason) profileReason = r.profileReason;
+      if (r.profileSimilarity) profileSimilarity = r.profileSimilarity;
+      if (r.domainSimilarity) domainSimilarity = r.domainSimilarity;
     }
   }
   // 指定已有领域（不走 resolveDomain）时，主动读取该领域模版绑定的体系，否则模版的 ontologyProfile 不会生效
@@ -222,7 +230,9 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
     const domText = ent.length || con.length
       ? `领域「${domLabel || domainTag}」（实体〔${ent.join('、')}〕；概念〔${con.join('、')}〕）`
       : `领域「${domLabel || domainTag || '通用'}」（未附加实体/概念类型约束）`;
-    onStage('collect', `共 ${sources.length} 个来源，${domText}，体系「${onto.name}」${twoStage ? '（两阶段）' : ''}，开始分批抽取…`);
+    const domSim = domainSimilarity ? `（相似度 ${domainSimilarity}%）` : '';
+    const profSim = profileReason ? `（相似度 ${profileSimilarity}%，${profileReason}）` : '';
+    onStage('collect', `共 ${sources.length} 个来源，${domText}${domSim}，体系「${onto.name}」${profSim}${twoStage ? '（两阶段）' : ''}，开始分批抽取…`);
   }
 
   // 分批：每个来源独立一批（一个任务），便于逐任务展示当前进度与独立输出
@@ -257,12 +267,14 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
   // 并发池：默认同时执行 3 个抽取任务（settings.graphConcurrency 可调，1–8）
   const CONC = num(settings, 'graphConcurrency', 3, 1, 8);
   const runBatch = async (i) => {
+    if (signal && signal.aborted) throw mkAbort();
     const curTask = tasks[batches[i][0]._i];
     const taskHead = curTask ? `任务 ${curTask.no}/${tasks.length}「${curTask.label}」` : `批次 ${i + 1}/${batches.length}`;
     if (onStage) onStage('extract', `AI 本体抽取（${taskHead}）…`);
     // 本批来源标记为处理中，实时上报任务状态
     for (const s of batches[i]) if (tasks[s._i]) tasks[s._i].status = 'running';
     if (onTasks) onTasks(tasks);
+    try {
     const batchText = batches[i].map((s) => `=== 来源: ${s.label} ===\n${s.text}`).join('\n\n');
     // 已抽取节点（供后续任务建立跨来源关系）
     const existing = [...nodes.values()].slice(0, 60).map((n) => `${n.name}(${n.type})`).join('、');
@@ -308,9 +320,15 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
           `输出 JSON：{"nodes":[{"name":"","type":"","desc":""}],"edges":[{"from":"","to":"","rel":""}]}\n\n` +
           batchText,
       },
-    ], undefined, report);
-    // 本批来源已处理，更新任务状态（解析失败也视为已处理）
+    ], undefined, report, signal);
+    // 本批来源已处理，更新任务状态（解析失败也视为已处理）。
+    // 任务完成时把该任务完整的思考+输出写入 output（此前流式仅 600ms 节流写尾部预览，
+    // 快速完成的任务可能从未触发节流而导致展开后看不到详情），确保每个任务都可独立展开查看运行详情
     for (const s of batches[i]) if (tasks[s._i]) tasks[s._i].status = 'done';
+    if (curTask) {
+      const full = ((think ? `【思考】\n${think}\n\n` : '') + (out ? `【输出】\n${out}` : '')).trim();
+      if (full) curTask.output = full;
+    }
     if (onTasks) onTasks(tasks);
     let parsed;
     try {
@@ -345,7 +363,7 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
                 `节点：${names.join('、')}。\n` +
                 `输出 JSON：{"nodes":[{"name":"","type":""}]}，只输出这些节点的细分结果。`,
             },
-          ]);
+          ], undefined, undefined, signal);
           const r = extractJson(ans2);
           for (const x of r.nodes || []) refined.push(x);
         } catch (_) { /* 单组细分失败则沿用粗分类 */ }
@@ -372,6 +390,13 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
           if (sDomain && !node.domain) node.domain = sDomain;
         }
       }
+    }
+    } catch (err) {
+      // 单任务失败（网络中断/连接被关闭/超时等）：标记该任务失败并把错误抛给 worker，
+      // 让作业整体失败而不是永远停在「进行中」（此前连接被静默关闭时任务停在 running 拖死作业）
+      for (const s of batches[i]) if (tasks[s._i]) { tasks[s._i].status = 'failed'; tasks[s._i].output = (tasks[s._i].output || '') + `\n[失败] ${err.message || err}`; }
+      if (onTasks) onTasks(tasks);
+      throw err;
     }
   };
 
@@ -423,14 +448,27 @@ function questionTokens(q) {
   return [...tokens];
 }
 
+// 体系展示名（内置/OWL 均从 listProfiles 查；查不到回退 id 本身）
+function profileNameOf(pid) {
+  const p = (listProfiles() || []).find((x) => x.id === pid);
+  return p ? (p.name || pid) : pid;
+}
+
 // 依据问题关键词召回相关节点及其关系边，返回上下文文本与命中实体名单
-function recallFor(question, maxNodes = 8) {
+// profileId：可选，指定后只召回该体系下抽取的节点（多体系共存时按体系隔离问答上下文）
+// scope：可选，二级范围（'all' | 'profile|*' | 'profile|domain'，多选逗号分隔），优先级高于 profileId
+function recallFor(question, maxNodes = 8, profileId, scope) {
   const g = getGraph();
   if (!g.nodes.length) return { context: '', hits: [] };
   const q = String(question || '').toLowerCase();
   if (!q.trim()) return { context: '', hits: [] };
+  let pool = g.nodes;
+  const scopePred = scopeFilter(scope);
+  if (scopePred) pool = pool.filter(scopePred);
+  else if (profileId) pool = pool.filter((n) => n.profile === profileId);
+  if (!pool.length) return { context: '', hits: [] };
   const tokens = questionTokens(q);
-  const scored = g.nodes
+  const scored = pool
     .map((n) => {
       const name = n.name.toLowerCase();
       const desc = (n.desc || '').toLowerCase();
@@ -451,6 +489,13 @@ function recallFor(question, maxNodes = 8) {
   if (!scored.length) return { context: '', hits: [] };
 
   const byId = new Map(g.nodes.map((n) => [n.id, n]));
+  // 按节点自身 profile 取该体系的类表，避免混合体系时类型标签错配（本体体系 + 图谱 结合的关键）
+  const typeMaps = new Map(); // profile -> {typeKey: true}
+  const typeMapFor = (prof) => {
+    if (!typeMaps.has(prof)) typeMaps.set(prof, nodeTypesMap(prof));
+    return typeMaps.get(prof);
+  };
+  const fbTypeOf = (prof) => { try { return fallbackType(prof); } catch (_) { return 'object'; } };
   const lines = scored.map(({ n }) => {
     const rels = g.edges
       .filter((e) => e.from === n.id || e.to === n.id)
@@ -461,17 +506,25 @@ function recallFor(question, maxNodes = 8) {
       })
       .filter(Boolean)
       .join('；');
-    return `- [${nodeTypesMap()[n.type] ? n.type : fallbackType()}] ${n.name}${n.desc ? `：${n.desc}` : ''}${rels ? `（关系：${rels}）` : ''}`; // 上下文注入用当前编辑体系
+    const prof = n.profile || 'bfo-lite';
+    const tm = typeMapFor(prof);
+    const typeKey = tm[n.type] ? n.type : fbTypeOf(prof);
+    // 标签形如 [体系·类型]，让模型清楚每个实体属于哪个本体体系、是什么类（本体+图谱结合的体现）
+    return `- [${profileNameOf(prof)}·${typeKey}] ${n.name}${n.desc ? `：${n.desc}` : ''}${rels ? `（关系：${rels}）` : ''}`;
   });
+  // 头部：区分 全部 / 单体系 / 二级具体图谱范围
+  let head = '【知识图谱·本体层】';
+  if (scope && scope !== 'all') head = '【知识图谱·本体层·指定图谱范围】';
+  else if (profileId) head = `【知识图谱·本体层·体系：${profileNameOf(profileId)}】`;
   return {
-    context: `【知识图谱·本体层】\n${lines.join('\n')}\n回答时可结合上述实体与关系。`,
+    context: `${head}\n${lines.join('\n')}\n回答时可结合上述实体与关系（标签为「本体体系·实体类型」）。`,
     hits: scored.map(({ n }) => n.name),
   };
 }
 
 // 兼容旧调用：只要上下文文本
-function contextFor(question, maxNodes = 8) {
-  return recallFor(question, maxNodes).context;
+function contextFor(question, maxNodes = 8, profileId) {
+  return recallFor(question, maxNodes, profileId).context;
 }
 
 // ---------- 本体定义（Ontology）查询与增删改查（v3：基座 + 用户层） ----------
@@ -786,4 +839,65 @@ function removeOwlProfile(profileId, clearGraphNodes) {
   return { ok: true, removed: { id: removed.id, name: removed.name }, clearedNodes };
 }
 
-module.exports = { getGraph, saveGraph, clearGraph, extractGraph, contextFor, recallFor, getOntology, setOntologyProfile, saveOntologyItem, removeOntologyItem, listProfiles, resolveOntology, kgAsk, resolveSources, importOwl, removeOwlProfile };
+// ---------- 两级范围：体系 → 具体知识图谱 ----------
+// 列出「有抽取节点」的具体知识图谱分组，供问答范围二级选择。
+// 维度：profile（体系）→ 其下按 domain（领域/图谱）分组；domain 为空归入 (general)。
+// 返回 [{ id: `${profile}|${domain}`, profile, profileName, domain, label, nodeCount, edgeCount }]
+function listGraphScopes() {
+  const g = getGraph();
+  const profiles = listProfiles();
+  const nameOf = (pid) => { const p = profiles.find((x) => x.id === pid); return p ? (p.name || pid) : pid; };
+  // 领域中文名映射：domain 存的是模版 id（如 ev_charger_application），需要查模版的 name（如「充电桩报装」）
+  // 惰性 require 避免循环依赖（templates 依赖本模块的 resolveOntology）
+  let tplNameOf = (id) => id;
+  try {
+    const templates = require('./templates');
+    const tpls = templates.listTemplates();
+    const byId = new Map(tpls.map((t) => [t.id, t.name || t.id]));
+    tplNameOf = (id) => byId.get(id) || id;
+  } catch (_) { /* 模版模块不可用时回退到 id */ }
+  const groups = new Map(); // key -> scope
+  const nodeIds = new Map(); // key -> Set(nodeId) 用于数边
+  for (const n of g.nodes || []) {
+    if (!n) continue;
+    const profile = n.profile || 'bfo-lite';
+    const domain = (n.domain && String(n.domain).trim()) || 'general';
+    const key = `${profile}|${domain}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        id: key, profile, profileName: nameOf(profile), domain,
+        label: domain === 'general' ? '未分类' : tplNameOf(domain),
+        nodeCount: 0, edgeCount: 0,
+      });
+      nodeIds.set(key, new Set());
+    }
+    groups.get(key).nodeCount += 1;
+    nodeIds.get(key).add(n.id);
+  }
+  for (const e of g.edges || []) {
+    if (!e) continue;
+    for (const [key, ids] of nodeIds) {
+      if (ids.has(e.from) && ids.has(e.to)) { groups.get(key).edgeCount += 1; }
+    }
+  }
+  return [...groups.values()].sort((a, b) => b.nodeCount - a.nodeCount);
+}
+
+// 把二级范围 id（profile|domain 或 profile|* 或 all）解析成节点过滤谓词
+// 返回 { profiles:Set|null, pred(node)=>bool }；all/空 = 不过滤
+function scopeFilter(scope) {
+  if (!scope || scope === 'all') return null;
+  const s = String(scope);
+  // 多选：逗号分隔若干 scope id
+  const parts = s.split(',').map((x) => x.trim()).filter(Boolean);
+  if (!parts.length || parts.includes('all')) return null;
+  const conds = parts.map((p) => {
+    const [profile, domain] = p.split('|');
+    if (!domain || domain === '*') return (n) => (n.profile || 'bfo-lite') === profile;
+    if (domain === 'general') return (n) => (n.profile || 'bfo-lite') === profile && !(n.domain && String(n.domain).trim());
+    return (n) => (n.profile || 'bfo-lite') === profile && String(n.domain || '') === domain;
+  });
+  return (n) => conds.some((c) => c(n));
+}
+
+module.exports = { getGraph, saveGraph, clearGraph, extractGraph, contextFor, recallFor, getOntology, setOntologyProfile, saveOntologyItem, removeOntologyItem, listProfiles, resolveOntology, kgAsk, resolveSources, importOwl, removeOwlProfile, listGraphScopes, scopeFilter };

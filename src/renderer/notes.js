@@ -14,6 +14,9 @@ function getFilteredNotes() {
   if (type === 'all') {
     // 目录浏览模式：只看根目录直属笔记（未分类），子目录笔记进入目录后逐层浏览；被删除的笔记不在此列
     list = list.filter((n) => !n.folderId && !n.trashed);
+  } else if (type === 'fav') {
+    // ⭐ 我的收藏：全部已收藏笔记（不含垃圾桶内）
+    list = list.filter((n) => !!n.favorited && !n.trashed);
   } else if (type === 'folder') {
     if (id === '__trash__') {
       // 🗑 垃圾桶是虚拟目录：真正被删除（trashed）的笔记归它，根目录未分类笔记不再混入
@@ -58,6 +61,7 @@ function getViewTitle() {
     return f.id === '__trash__' ? f.name : f.name; // 垃圾桶名称由主进程给定
   }
   if (type === 'tag') return `标签：${id}`;
+  if (type === 'fav') return '⭐ 我的收藏';
   if (type === 'search') return `搜索"${query}"`;
   return '笔记';
 }
@@ -65,6 +69,8 @@ function getViewTitle() {
 // ================= 渲染：笔记列表 =================
 function renderNoteList() {
   if (state.view.type === 'search') { renderSearchResults(); return; }
+  // 列表头部 ⭐ 收藏筛选按钮激活态与当前视图保持一致
+  $('btn-fav-filter').classList.toggle('active', state.view.type === 'fav');
   const list = getFilteredNotes();
   $('note-list-title').textContent = getViewTitle();
   $('note-list-count').textContent = list.length ? `${list.length} 篇` : '';
@@ -76,11 +82,15 @@ function renderNoteList() {
   if (state.view.type === 'all') { renderBrowseList(); return; }
 
   if (list.length === 0) {
-    container.innerHTML = '<div class="list-empty">暂无笔记<br>点击「笔记」或目录旁的 ＋ 开始记录</div>';
+    container.innerHTML = state.view.type === 'fav'
+      ? '<div class="list-empty">暂无收藏笔记<br>打开一篇笔记，点工具栏 ☆ 加入收藏</div>'
+      : '<div class="list-empty">暂无笔记<br>点击「笔记」或目录旁的 ＋ 开始记录</div>';
     return;
   }
 
-  list.forEach((note) => container.appendChild(buildNoteCard(note, '', subPathOf(note))));
+  // 收藏视图跨目录：显示目录归属徽标（folderPathOf 全路径），便于区分来历
+  const sub = state.view.type === 'fav' ? (n) => folderPathOf(n) : subPathOf;
+  list.forEach((note) => container.appendChild(buildNoteCard(note, '', sub(note))));
 }
 
 // 笔记卡片：全部笔记/目录/标签视图共用（q 为高亮词，sub 为目录归属徽标）
@@ -92,7 +102,7 @@ function buildNoteCard(note, q, sub) {
   const tagsHtml = (note.tags || []).slice(0, 3)
     .map((t) => `<span class="mini-tag">${highlight(t, q)}</span>`).join('');
   card.innerHTML = `
-    <div class="note-card-title">${note.pinned ? icoSvg('pin', 12) : ''}${highlight(note.title || '无标题笔记', q)}</div>
+    <div class="note-card-title">${note.pinned ? icoSvg('pin', 12) : ''}${note.favorited ? icoSvg('star', 12) : ''}${highlight(note.title || '无标题笔记', q)}</div>
     <div class="note-card-snippet">${highlight(snippet, q) || '<span style="opacity:.5">（空笔记）</span>'}</div>
     <div class="note-card-footer">${sub ? `<span class="nc-sub" title="位于目录 ${escapeHtml(sub)}">${icoSvg('folder-open', 11)} ${escapeHtml(sub)}</span>` : ''}<span class="nc-time" title="${formatDate(note.updatedAt)}">${formatRelDate(note.updatedAt)}</span><span class="nc-words">${words} 字</span>${tagsHtml}</div>`;
   card.addEventListener('click', () => selectNote(note.id));
@@ -105,6 +115,7 @@ function buildNoteCard(note, q, sub) {
     // 垃圾桶视图内所有笔记可还原；其他视图中带 trashed 标记（曾被移入垃圾桶）的也可还原
     if (inTrash || note.trashed) items.push({ label: '还原到原来的位置', action: () => restoreNoteFromTrash(note) }, { sep: true });
     items.push(
+      { label: note.favorited ? '取消收藏' : '⭐ 收藏', action: () => toggleFavNote(note) },
       { label: '提取知识图谱', action: () => { selectNote(note.id); noteToGraph(); } },
       { label: '移动到目录…', action: () => openMoveFolderMenu(note, e.clientX, e.clientY) },
     );
@@ -188,6 +199,13 @@ function restoreNoteFromTrash(note) {
   persist();
   renderAll();
   toast(folderId ? `已还原到「${folderPathOf(note)}」` : '已还原到根目录', 2500);
+}
+
+// 切换笔记收藏状态（工具栏 ☆ 与卡片右键菜单共用）
+function toggleFavNote(note) {
+  note.favorited = !note.favorited;
+  persist();
+  renderAll();
 }
 
 // 右键「移动到目录」：先选顶级目录，含子目录则弹二级菜单；🗑 垃圾桶=被删除的笔记
@@ -424,7 +442,12 @@ function renderEditor() {
   $('note-time').title = formatDate(note.updatedAt);
   const words = wordCount(note.content);
   $('note-date').textContent = note.updatedAt ? `${words} 字` : '';
-  $('btn-pin').style.opacity = note.pinned ? '1' : '0.45';
+  // 置顶按钮两态：未置顶=灰调图钉，已置顶=琥珀实底+「已置顶」标签
+  $('btn-pin').classList.toggle('pinned', !!note.pinned);
+  $('btn-pin').title = note.pinned ? '取消置顶' : '置顶：固定到笔记列表顶部';
+  // 收藏按钮两态：未收藏=灰调描边星，已收藏=明黄实底+「已收藏」标签
+  $('btn-fav').classList.toggle('favorited', !!note.favorited);
+  $('btn-fav').title = note.favorited ? '取消收藏' : '收藏：加入我的收藏';
 
   applyEditorMode();
   updatePreview();
@@ -507,6 +530,11 @@ function updateNoteFromEditor() {
 
 function selectNote(id) {
   state.selectedNoteId = id;
+  // 点击笔记默认以预览方式呈现（用户手动切过编辑/分屏也会被重置为预览，符合「打开即预览」预期）
+  if (EDITOR_MODES.includes('preview')) {
+    state.editorMode = 'preview';
+    applyEditorMode();
+  }
   hideMainViews();
   renderNoteList();
   renderEditor();
@@ -729,7 +757,61 @@ async function attachAction(act) {
   else toast('Web 模式仅支持插入图片', 3000);
 }
 
-// AI 辅助：有选区润色选区，无选区润色全文；结果替换目标范围
+// ---------------- AI 优化执行过程弹窗：实时展示思考/正文流式输出 ----------------
+let aiAssistRunning = false;   // 是否有进行中的 AI 优化（控制增量是否写入弹窗）
+let aiAssistAutoScroll = true; // 用户手动上滚后暂停自动滚动，回到底部恢复
+const AI_ASSIST_MAX_CHARS = 20000; // 过程展示字符上限，防长文撑爆 DOM
+
+function openAiAssistModal() {
+  $('ai-assist-body').innerHTML = '';
+  aiAssistAutoScroll = true;
+  $('ai-assist-title').textContent = 'AI 优化执行中…';
+  $('btn-ai-assist-stop').hidden = false;
+  $('btn-ai-assist-close').hidden = true;
+  $('ai-assist-modal').hidden = false;
+  // 开场状态：AI 优化固定使用默认模型，直接告知当前所用模型与即将执行的动作
+  const s = state.settings || {};
+  const prov = typeof providerLabel === 'function' ? providerLabel(s.apiProvider) : (s.apiProvider || '默认');
+  const model = (s.model || '').trim() || '默认模型';
+  appendAiAssistChunk({ type: 'status', text: `当前使用 ${prov} · ${model} 模型，开始优化笔记内容…\n` });
+}
+
+// 流式增量写入弹窗：同类型增量合并进同一段，思考/正文/状态分色展示
+function appendAiAssistChunk(chunk) {
+  const box = $('ai-assist-body');
+  if (!box) return;
+  const cls = chunk.type === 'think' ? 'ai-assist-think' : chunk.type === 'status' ? 'ai-assist-status' : 'ai-assist-text';
+  let span = box.lastElementChild;
+  if (!span || !span.classList.contains(cls)) {
+    span = document.createElement('span');
+    span.className = cls;
+    box.appendChild(span);
+  }
+  span.textContent += chunk.text || '';
+  // 超长时丢弃最旧片段，保留最新过程
+  if (box.textContent.length > AI_ASSIST_MAX_CHARS) {
+    const first = box.firstElementChild;
+    if (first && first !== span) first.remove();
+  }
+  if (aiAssistAutoScroll) box.scrollTop = box.scrollHeight;
+}
+
+function setAiAssistStatus(text) {
+  appendAiAssistChunk({ type: 'status', text: '\n' + text + '\n' });
+}
+
+function closeAiAssistModal() {
+  $('ai-assist-modal').hidden = true;
+  aiAssistRunning = false;
+}
+
+async function stopAiAssist() {
+  $('btn-ai-assist-stop').disabled = true;
+  setAiAssistStatus('正在停止…');
+  try { await window.kb.aiAssistStop(); } catch (_) { /* 忽略停止失败 */ }
+}
+
+// AI 辅助：有选区润色选区，无选区润色全文；结果替换目标范围；执行过程在进度弹窗实时呈现
 async function aiAssistNote() {
   const note = currentNote();
   if (!note) { toast('请先选择一篇笔记', 2500); return; }
@@ -742,21 +824,45 @@ async function aiAssistNote() {
   if (!target.trim()) { toast('没有可处理的内容', 2500); return; }
   const btn = $('btn-ai-assist');
   btn.disabled = true;
-  toast('AI 正在处理…');
+  aiAssistRunning = true;
+  openAiAssistModal();
+  const offChunk = window.kb.onAiAssistChunk ? window.kb.onAiAssistChunk((chunk) => { if (aiAssistRunning) appendAiAssistChunk(chunk); }) : null;
   try {
     // 历史版本：AI 改动前先存一版（版本号 = 日期+时间精确到秒）
     await window.kb.noteSaveVersion({ noteId: note.id, content: v, label: 'AI 改动前' });
     const res = await window.kb.noteAiAssist({ settings: state.settings, text: target, prompt: state.settings.aiAssistPrompt || '' });
-    if (!res.ok) { toast('AI 辅助失败：' + res.error, 4000); return; }
+    aiAssistRunning = false;
+    if (!res.ok) {
+      if (res.aborted) {
+        setAiAssistStatus('⏹ 已停止，笔记内容未改动，可再次点击 AI 重试');
+        $('ai-assist-title').textContent = 'AI 优化已停止';
+      } else {
+        setAiAssistStatus('❌ AI 辅助失败：' + res.error);
+        $('ai-assist-title').textContent = 'AI 优化失败';
+        toast('AI 辅助失败：' + res.error, 4000);
+      }
+      return;
+    }
     ta.value = hasSel ? v.slice(0, s) + res.text + v.slice(e) : res.text;
     updateNoteFromEditor();
     updatePreview();
     renderNoteList();
     // 历史版本：AI 改动成功后再存一版
     await window.kb.noteSaveVersion({ noteId: note.id, content: ta.value, label: 'AI 改动后' });
+    setAiAssistStatus('✅ 处理完成，结果已应用到笔记（已存历史版本）');
+    $('ai-assist-title').textContent = 'AI 优化完成';
     toast(hasSel ? 'AI 已处理所选内容（已存历史版本）' : 'AI 已润色全文（已存历史版本）');
+  } catch (err) {
+    aiAssistRunning = false;
+    setAiAssistStatus('❌ ' + (err && err.message ? err.message : err));
+    $('ai-assist-title').textContent = 'AI 优化失败';
   } finally {
     btn.disabled = false;
+    $('btn-ai-assist-stop').disabled = false;
+    if (offChunk) offChunk();
+    // 结束态：停止按钮收起，展示关闭按钮供回看过程后手动关闭
+    $('btn-ai-assist-stop').hidden = true;
+    $('btn-ai-assist-close').hidden = false;
   }
 }
 
@@ -935,15 +1041,17 @@ async function restoreVersion(noteId, version) {
   await loadVersionList(noteId);
 }
 
-// 从当前笔记抽取知识图谱（内联语料模式，提交前选领域）
+// 从当前笔记抽取知识图谱（内联语料模式，AI 自主判定领域与体系）
 async function noteToGraph() {
   const note = currentNote();
   if (!note) { toast('请先选择一篇笔记', 2500); return; }
   if (!(note.content || '').trim()) { toast('笔记内容为空，无法生成图谱', 2500); return; }
-  const extras = await pickDomainForExtract({ kind: 'graph', label: '笔记·' + (note.title || note.id), texts: [`# ${note.title || ''}\n${note.content || ''}`] });
-  if (!extras) return;
-  const res = await window.kb.jobsSubmit({ type: 'graph', payload: { settings: state.settings, inlineSources: [{ label: '笔记·' + (note.title || note.id), text: `# ${note.title || ''}\n${note.content || ''}` }], ...extras } });
-  if (!res.ok) { toast('提交失败：' + res.error, 4000); return; }
+  const ok = await autoDomainAndExtract({
+    label: '笔记·' + (note.title || note.id),
+    texts: [`# ${note.title || ''}\n${note.content || ''}`],
+    inlineSources: [{ label: '笔记·' + (note.title || note.id), text: `# ${note.title || ''}\n${note.content || ''}` }],
+  });
+  if (!ok) return;
   toast('已提交「生成图谱」作业');
   showJobsView();
 }
@@ -961,15 +1069,17 @@ function folderDescendantNotes(folderId) {
   return state.notes.filter((n) => ids.has(n.folderId));
 }
 
-// 集合级（全部笔记/目录）生成图谱：内联语料模式（过滤空内容，提交前选领域）
+// 集合级（全部笔记/目录）生成图谱：内联语料模式（过滤空内容，AI 自主判定领域与体系）
 async function notesToGraph(notes, label) {
   const list = notes.filter((n) => (n.content || '').trim());
   if (!list.length) { toast('该范围内没有可抽取的笔记内容', 2500); return; }
   if (!confirmRegen('graph')) return;
-  const extras = await pickDomainForExtract({ kind: 'graph', label, texts: list.map((n) => `# ${n.title || ''}\n${n.content || ''}`) });
-  if (!extras) return;
-  const res = await window.kb.jobsSubmit({ type: 'graph', payload: { settings: state.settings, inlineSources: list.map((n) => ({ label: '笔记·' + (n.title || n.id), text: `# ${n.title || ''}\n${n.content || ''}` })), ...extras } });
-  if (!res.ok) { toast('提交失败：' + res.error, 4000); return; }
+  const ok = await autoDomainAndExtract({
+    label,
+    texts: list.map((n) => `# ${n.title || ''}\n${n.content || ''}`),
+    inlineSources: list.map((n) => ({ label: '笔记·' + (n.title || n.id), text: `# ${n.title || ''}\n${n.content || ''}` })),
+  });
+  if (!ok) return;
   toast(`已提交「${label}」生成图谱作业`);
   showJobsView();
 }

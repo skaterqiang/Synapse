@@ -27,7 +27,7 @@ function appendMineruFallbackLog(absPath, reason) {
 }
 
 // MINERU_SUPPORTED_EXTS / FILE_EXTENSIONS / DEFAULT_NOTE_IMPORT_EXTS 等常量统一定义于 common/constants.js
-const { MINERU_SUPPORTED_EXTS, FILE_EXTENSIONS, DEFAULT_NOTE_IMPORT_EXTS, MINERU_TIMEOUT_SEC, PLUGINS_DIR, MINERU_PLUGIN_DIR, MINERU_INSTALL_TIMEOUT_MS, MINERU_DEFAULT_VLM_MODEL, MINERU_DEFAULT_OLLAMA_URL, MINERU_ASCII_ALIAS_CANDIDATES, MINERU_EXTRA_PACKAGES } = require('../common/constants');
+const { MINERU_SUPPORTED_EXTS, MINERU_IMAGE_EXTS, FILE_EXTENSIONS, DEFAULT_NOTE_IMPORT_EXTS, MINERU_TIMEOUT_SEC, PLUGINS_DIR, MINERU_PLUGIN_DIR, MINERU_INSTALL_TIMEOUT_MS, MINERU_DEFAULT_VLM_MODEL, MINERU_DEFAULT_OLLAMA_URL, MINERU_ASCII_ALIAS_CANDIDATES, MINERU_EXTRA_PACKAGES } = require('../common/constants');
 
 // 解析配置为扩展名集合：容许逗号/空格/分号/换行分隔，容许带不带前导点、大小写不敏感；
 // 未配置或配成空则回退默认白名单（避免误操作把导入能力整个关死）
@@ -43,6 +43,9 @@ function canImportAsNote(settings, fileName) {
   if (!ext) return false;
   return noteImportExts(settings).has(ext);
 }
+
+// MinerU 是否可路由（严格只接 PDF）：其它二进制类型走内置解析或报不支持
+function isMineruRoutable(ext) { return String(ext || '').toLowerCase() === '.pdf'; }
 
 // ============ 子进程日志解码 ============
 // Windows 下 pip/python 等子进程默认按控制台代码页（中文环境为 GBK）输出，直接按 UTF-8 解码
@@ -288,6 +291,12 @@ async function convertWithMineru(settings, absPath, opts = {}) {
         spawnArgv = ['cmd', '/c', ...argv];
       }
       const child = spawn(spawnArgv[0], spawnArgv.slice(1), { timeout: timeoutMs, env: childUtf8Env() });
+      // 作业停止：外部 signal 触发时立即 kill MinerU 子进程（否则 PDF 转换会继续跑完，停止形同虚设）
+      if (opts.signal) {
+        const onAb = () => { try { child.kill('SIGTERM'); } catch (_) { /* 忽略 */ } };
+        if (opts.signal.aborted) onAb();
+        else opts.signal.addEventListener('abort', onAb, { once: true });
+      }
       let tail = '';
       // 保留尾部若干非空行（stderr 报错通常在末尾），失败时拼进错误信息，
       // 否则回退日志只有「退出码 1」，用户无从知道是 Ollama 没起还是模型缺失
@@ -587,10 +596,11 @@ async function extractFileContentRaw(absPath, settings, opts = {}) {
   const setInfo = (k, v) => { if (opts && opts.info) opts.info[k] = v; };
   setInfo('externalError', '');
   setInfo('parseMethod', '');
-  // 配置了外部转换（本地 MinerU 等）时，二进制文档优先走插件：扫描件 PDF/图片等内置解析拿不到
-  // 文本，插件产出结构化 Markdown 质量更高；插件失败再回退内置解析。纯文本类仍走内置（快且稳）
+  // 配置了外部转换（本地 MinerU 等）时，PDF 优先走插件：扫描件 PDF 内置解析拿不到
+  // 文本，插件产出结构化 Markdown 质量更高；插件失败再回退内置解析。纯文本类仍走内置（快且稳）；
+  // MinerU 严格只接 PDF：其它二进制类型（docx/pptx/xlsx/图片）直接走内置解析或报不支持
   const external = mineruCmdParts(settings);
-  const preferExternal = !TEXTUAL_EXTS.includes(ext);
+  const preferExternal = isMineruRoutable(ext) && !TEXTUAL_EXTS.includes(ext);
   // 强制 MinerU 模式（作业「用 MinerU 重跑」）：未配置转换命令直接报错，不做内置回退
   if (opts.forceMineru && preferExternal && !(external && external.length)) {
     throw new Error('未配置 MinerU 转换命令（设置→文档解析），无法强制 MinerU 解析');
@@ -598,7 +608,7 @@ async function extractFileContentRaw(absPath, settings, opts = {}) {
   if (external && external.length && preferExternal) {
     try {
       // opts.onLog：调用方（作业）注入的日志回调，MinerU 子进程输出逐行上抛，实现解析过程实时展示
-      const md = await convertWithMineru(settings, absPath, { info: opts.info, onLog: opts.onLog });
+      const md = await convertWithMineru(settings, absPath, { info: opts.info, onLog: opts.onLog, signal: opts.signal });
       if (md && md.trim()) {
         extractFileContentRaw.lastParseMethod = 'mineru';
         setInfo('parseMethod', 'mineru');
@@ -616,9 +626,77 @@ async function extractFileContentRaw(absPath, settings, opts = {}) {
     // 强制 MinerU 模式：不回退内置解析，直接失败，避免再次静默产出低质量内置文本
     if (opts.forceMineru) throw new Error(extractFileContentRaw.lastExternalError);
   }
-  // 走到这里即内置解析分支（default 抛错不计）
+  // 走到这里即内置解析 + 技能解析编排（MinerU 仅处理 PDF，已在上面按严格口径路由）
+  // 编排策略（设置→文档解析「技能解析」开关，默认开启，需已启用技能 + 已配置模型）：
+  //   ① 图片：内置无解析器 → 技能解析（多模态直读），失败报不支持并说明技能解析未生效原因
+  //   ② 内置支持的类型：先内置取文本，再交技能解析按技能指令重组为高质量 Markdown；
+  //      技能解析失败自动回退内置文本（不阻断）。技能产物与回退产物分别落 skill/builtin 缓存
+  const skillParse = require('../skills/parse');
+  const skillsOn = skillParse.skillParseReady(settings);
+  const skillOpts = { buffer, builtinExtract: parseBuiltin, onLog: opts.onLog };
+
+  // 图片：技能解析是唯一解析途径，未就绪/失败时报不支持并如实说明原因
+  if (MINERU_IMAGE_EXTS.has(ext)) {
+    if (!skillsOn) {
+      const hint = extractFileContentRaw.lastExternalError
+        ? `（${extractFileContentRaw.lastExternalError}）`
+        : '（图片无内置解析器，MinerU 严格只接 PDF；技能解析未生效：请在 设置→文档解析 开启「技能解析」并确认已启用技能且模型可用）';
+      throw new Error(`不支持的文件格式：${ext || '无扩展名'}${hint}`);
+    }
+    const r = await skillParse.parseWithSkills(absPath, settings, skillOpts);
+    if (r.ok) {
+      extractFileContentRaw.lastParseMethod = 'skill';
+      setInfo('parseMethod', 'skill');
+      return r.text;
+    }
+    throw new Error(`不支持的文件格式：${ext || '无扩展名'}（技能解析失败：${r.error}）`);
+  }
+
+  // 内置支持的类型：先取内置文本（失败也记录，供技能解析失败时的报错兜底）
+  let builtinText = '';
+  let builtinError = '';
+  try {
+    builtinText = String((await parseBuiltin(ext, buffer)) || '');
+  } catch (err) {
+    builtinError = err.message;
+  }
+
+  if (skillsOn) {
+    // 已提取的内置文本直接带入，技能解析层不再重复跑内置解析
+    const r = await skillParse.parseWithSkills(absPath, settings, { ...skillOpts, builtinText: builtinError ? undefined : builtinText });
+    if (r.ok) {
+      extractFileContentRaw.lastParseMethod = 'skill';
+      setInfo('parseMethod', 'skill');
+      return r.text;
+    }
+    // 技能解析失败：有内置文本则静默回退（与 MinerU 失败回退同语义），并在 info 里留痕
+    if (builtinText.trim()) {
+      extractFileContentRaw.lastParseMethod = 'builtin';
+      setInfo('parseMethod', 'builtin');
+      setInfo('skillError', r.error);
+      if (opts.onLog) { try { opts.onLog(`技能解析失败，已回退内置解析（${r.error}）`); } catch (_) { /* 日志失败不影响解析 */ } }
+      return builtinText;
+    }
+  }
+
   extractFileContentRaw.lastParseMethod = 'builtin';
   setInfo('parseMethod', 'builtin');
+  if (builtinText.trim() || (!builtinError && builtinText === '')) {
+    // 内置解析成功（含提取结果为空字符串的合法情形，如空 PDF）
+    return builtinText;
+  }
+  // 内置解析抛错且技能解析未兜底：按原口径报不支持；
+  // builtinError 本身已是「不支持的文件格式」时不再重复拼接，其余解析错误附在提示后
+  const hint = extractFileContentRaw.lastExternalError
+    ? `（${extractFileContentRaw.lastExternalError}）`
+    : '（可在 设置→文档解析 配置本地 MinerU 转换命令处理该格式）';
+  const extra = builtinError && !builtinError.startsWith('不支持的文件格式') ? `：${builtinError}` : '';
+  throw new Error(`不支持的文件格式：${ext || '无扩展名'}${hint}${extra}`);
+}
+
+// 内置解析器：按扩展名把 buffer 转为文本/Markdown；不支持的格式抛错。
+// 从 extractFileContentRaw 抽出独立成函数，供技能解析编排复用（技能解析需先取内置文本再交模型）
+async function parseBuiltin(ext, buffer) {
   switch (ext) {
     case '.md':
     case '.markdown':
@@ -670,13 +748,8 @@ async function extractFileContentRaw(absPath, settings, opts = {}) {
       }
       return parts.join('\n\n');
     }
-    default: {
-      // 内置解析不支持的格式：若配置了外部插件，上面已尝试过并回退到此；带上失败原因便于定位
-      const hint = extractFileContentRaw.lastExternalError
-        ? `（${extractFileContentRaw.lastExternalError}）`
-        : '（可在 设置→文档解析 配置本地 MinerU 转换命令处理该格式）';
-      throw new Error(`不支持的文件格式：${ext || '无扩展名'}${hint}`);
-    }
+    default:
+      throw new Error('不支持的文件格式：' + (ext || '无扩展名'));
   }
 }
 
@@ -706,18 +779,29 @@ function readExtractCache(absPath, settings) {
   try {
     const j = JSON.parse(fs.readFileSync(extractCachePath(key.id), 'utf-8'));
     if (j && j.size === key.size && j.mtime === key.mtime) {
-      const textual = TEXTUAL_EXTS.includes(path.extname(String(absPath)).toLowerCase());
+      const extNow = path.extname(String(absPath)).toLowerCase();
+      const textual = TEXTUAL_EXTS.includes(extNow);
       const mineruOn = !!(mineruCmdParts(settings) || []).length;
       const out = { text: String(j.text || ''), reason: String(j.reason || '') };
-      if (j.method === 'mineru') return { ...out, method: 'mineru' };
+      // MinerU 严格只接 PDF：非 PDF 类型的历史 mineru 缓存（旧版图片/docx 转换产物）视为过期重提
+      if (j.method === 'mineru') return isMineruRoutable(extNow) ? { ...out, method: 'mineru' } : null;
+      // 技能解析产物：开关未显式关闭即复用（产物本身是有效 Markdown，技能/模型变更不强制重跑）；
+      // 关闭「技能解析」后视为未命中，重新提取（图片类型将回到报不支持的口径）；
+      // PDF 且 MinerU 开启时与内置口径一致：视为未命中重试 MinerU（技能产物只是 MinerU 失败的兜底）
+      if (j.method === 'skill') {
+        if (settings.skillParse === false) return null;
+        if (mineruOn && isMineruRoutable(extNow)) return null;
+        return { ...out, method: 'skill' };
+      }
       if (j.method === 'fallback') {
         // MinerU 已不再配置：回退文本即正确结果；仍在 TTL 内：复用避免反复跑必失败的转换
         if (!mineruOn || Date.now() - (j.at || 0) <= FALLBACK_CACHE_TTL_MS) return { ...out, method: 'builtin' };
         return null; // TTL 过期：重试 MinerU
       }
       if (j.method === 'builtin') {
-        // 文本型或未配 MinerU：内置结果一直有效；二进制型后来配置了 MinerU 则应重试 MinerU
-        if (textual || !mineruOn) return { ...out, method: 'builtin' };
+        // 文本型、未配 MinerU、或类型不路由 MinerU（非 PDF）：内置结果一直有效；
+        // 仅 PDF 在后来配置了 MinerU 时应重试 MinerU
+        if (textual || !mineruOn || !isMineruRoutable(extNow)) return { ...out, method: 'builtin' };
         return null;
       }
       // 无解析方式标记的旧条目（可能是失败回退的低质量文本）：视为未命中，重新提取并覆盖
@@ -773,10 +857,15 @@ async function extractFileContent(absPath, settings, opts = {}) {
   // 二进制型在配了 MinerU 时的失败回退产物只缓存 TTL 期（reason 一并落盘，命中时作业能展示真实失败原因），
   // 过期自动重试 MinerU，避免低质量文本被永久固化
   const method = (opts.info && opts.info.parseMethod) || extractFileContentRaw.lastParseMethod || 'builtin';
-  const textual = TEXTUAL_EXTS.includes(path.extname(String(absPath)).toLowerCase());
+  const extNow = path.extname(String(absPath)).toLowerCase();
+  const textual = TEXTUAL_EXTS.includes(extNow);
   const mineruOn = !!(mineruCmdParts(settings) || []).length;
-  if (method === 'mineru') writeExtractCache(absPath, text, 'mineru');
-  else if (!mineruOn || textual) writeExtractCache(absPath, text, 'builtin');
+  if (method === 'mineru' && isMineruRoutable(extNow)) writeExtractCache(absPath, text, 'mineru');
+  else if (method === 'skill') {
+    // 技能解析产物：长期复用；但 PDF 且 MinerU 开启时按回退口径落盘（TTL），过期重试 MinerU
+    if (mineruOn && isMineruRoutable(extNow)) writeExtractCache(absPath, text, 'fallback', (opts.info && opts.info.externalError) || extractFileContentRaw.lastExternalError || 'MinerU 转换失败');
+    else writeExtractCache(absPath, text, 'skill');
+  } else if (!mineruOn || textual || !isMineruRoutable(extNow)) writeExtractCache(absPath, text, 'builtin');
   else writeExtractCache(absPath, text, 'fallback', (opts.info && opts.info.externalError) || extractFileContentRaw.lastExternalError || 'MinerU 转换失败');
   return text;
 }

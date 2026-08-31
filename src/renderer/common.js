@@ -4,11 +4,11 @@
 // ================= 状态 =================
 const state = {
   folders: [],   // {id, name, parentId}
-  notes: [],     // {id, title, content, tags[], folderId, pinned, createdAt, updatedAt}
+  notes: [],     // {id, title, content, tags[], folderId, pinned, favorited, createdAt, updatedAt}
   settings: {},  // {apiBaseUrl, apiKey, model, maxJobsHistory, chatRetries, urlFetchTimeout, sourceMaxChars, logTailLines, defaultEditorMode}
-  view: { type: 'all', id: null, query: '' }, // type: all | folder | tag | search
+  view: { type: 'all', id: null, query: '' }, // type: all | folder | tag | fav | search
   selectedNoteId: null,
-  editorMode: 'split',
+  editorMode: 'preview',
   settingsTab: 'ai',                // 设置页当前 Tab 分类
   currentDbPath: '',                // 当前 SQLite 数据文件路径（设置页回填用）
   aiBusy: false,
@@ -19,6 +19,7 @@ const state = {
   graph: { nodes: [], edges: [], updatedAt: 0 }, // 知识图谱（本体层）
   noteListHidden: false,              // 笔记列表栏是否被用户收起
   aiSources: { notes: false, graph: false, raws: false }, // AI 问答数据源
+  aiGraphProfile: 'all', // 知识图谱源的体系范围：'all'=全部体系，或具体体系 id（多体系共存时按体系隔离召回）
   kg: { tab: 'overview', onto: null, ontoTab: 'classes', entitySel: null, focus: null }, // 知识图谱模块子视图状态；focus = 邻居视图中心节点
   templates: [],                      // 领域模版列表
   raws: [],                           // raw/ 原始来源列表
@@ -1792,7 +1793,6 @@ function showSettingsView() {
     window.kb.dataRoot().then((p) => { state.currentRoot = p; $('set-dataroot').value = p; });
     const fillNum = (id, v) => { $(id).value = Number.isFinite(v) ? String(v) : ''; };
     for (const [key, [id]] of Object.entries(NUM_SETTING_FIELDS)) fillNum(id, s[key]);
-    $('set-noteexts').value = typeof s.noteImportExts === 'string' ? s.noteImportExts : '';
     $('set-minerucmd').value = typeof s.mineruConvertCmd === 'string' ? s.mineruConvertCmd : '';
     // 解析方式：显式设置优先；旧数据无该键时按是否已配置命令推断
     const mineruMode = s.mineruMode === 'mineru' || s.mineruMode === 'builtin'
@@ -1800,9 +1800,11 @@ function showSettingsView() {
       : (s.mineruConvertCmd ? 'mineru' : 'builtin');
     $('set-minerumode-builtin').checked = mineruMode !== 'mineru';
     $('set-minerumode-mineru').checked = mineruMode === 'mineru';
+    // 技能解析开关：未显式保存过的旧数据按默认开启（与主进程 skillParseReady 口径一致）
+    $('set-skillparse').checked = s.skillParse !== false;
     applyMineruModeUI();
     renderMineruModelOptions();
-    $('set-editormode').value = EDITOR_MODES.includes(s.defaultEditorMode) ? s.defaultEditorMode : 'split';
+    $('set-editormode').value = EDITOR_MODES.includes(s.defaultEditorMode) ? s.defaultEditorMode : 'preview';
     $('set-aiassist').value = s.aiAssistPrompt || '';
     // 知识图谱：全局默认本体体系（独立异步，不阻塞其余字段填充）
     window.kb.graphProfiles().then((profiles) => {
@@ -1943,7 +1945,7 @@ async function applyMineruModelSelection() {
       markSettingsSaved();
       renderMineruModelOptions();
       toast(`MinerU 已切换模型：${res.vlmModel}`, 3000);
-      if (!$('set-minerumode-mineru').checked) toast('提示：当前解析方式仍为「内置解析」，如需 MinerU 解析请切换上方开关', 5000);
+      if (!$('set-minerumode-mineru').checked) toast('提示：当前解析方式仍为「内置解析」，如需 MinerU 解析 PDF 请切换上方开关', 5000);
     } else {
       toast('应用失败：' + ((res && res.error) || '未知错误'), 5000);
     }
@@ -2202,15 +2204,15 @@ function saveSettingsFields() {
     const v = readNumInput(id, min, max);
     if (v === null) delete s[key]; else s[key] = v;
   }
-  // 笔记导入文件类型：归一为“小写、无前导点、逗号分隔”再存，避免同一类型写法不一而重复；留空则删除、主进程回退默认
-  const extsRaw = ($('set-noteexts').value || '').trim();
-  if (!extsRaw) delete s.noteImportExts;
-  else s.noteImportExts = [...new Set(extsRaw.split(/[,;\s]+/).map((x) => x.trim().replace(/^\./, '').toLowerCase()).filter(Boolean))].join(', ');
+  // 笔记导入文件类型输入框已移除：始终使用默认名单，并清理历史保存值
+  delete s.noteImportExts;
   // MinerU 解析方式与转换命令：方式决定开关语义；命令留空删除
   const mineruMode = $('set-minerumode-mineru').checked ? 'mineru' : 'builtin';
   s.mineruMode = mineruMode;
   const mineruCmd = ($('set-minerucmd').value || '').trim();
   if (!mineruCmd) delete s.mineruConvertCmd; else s.mineruConvertCmd = mineruCmd;
+  // 技能解析开关：勾选即默认态，删除键（主进程按「未显式关闭」处理），仅取消勾选时落 false
+  if ($('set-skillparse').checked) delete s.skillParse; else s.skillParse = false;
   const mode = $('set-editormode').value;
   if (EDITOR_MODES.includes(mode)) {
     s.defaultEditorMode = mode;

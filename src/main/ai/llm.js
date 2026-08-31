@@ -5,6 +5,23 @@ const { num } = require('../common/config');
 // 默认模型 / API 基础 URL 统一引用单一配置源（defaults.js）
 const { DEFAULTS, normalizeModel } = require('./defaults');
 
+// 本地/慢推理模型（如 qwen3.8:27b 并发抽取）首字节可能远超 undici 默认 headersTimeout(≈300s)，
+// 触发 UND_ERR_HEADERS_TIMEOUT 致作业整体失败。用自定义 Agent 放大响应头/正文超时（默认一天，可在设置→作业→模型请求超时调整）。
+const DAY_MS = 24 * 60 * 60 * 1000;
+let undici = null;
+try { undici = require('undici'); } catch (_) { /* undici 不可用时沿用内置 fetch 默认 */ }
+const agentCache = {}; // ms → Agent，按超时值缓存复用连接池
+function llmDispatcher(settings) {
+  if (!undici) return undefined;
+  let ms = DAY_MS;
+  try {
+    const v = Number((settings || {}).llmRequestTimeout);
+    if (Number.isFinite(v) && v >= 60 && v <= 86400) ms = v * 1000;
+  } catch (_) {}
+  if (!agentCache[ms]) agentCache[ms] = new undici.Agent({ headersTimeout: ms, bodyTimeout: ms, connectTimeout: 60000 });
+  return agentCache[ms];
+}
+
 // 可选模型参数：仅当设置中填写时才透传（留空走接口默认值），供设置页调参
 function withModelParams(body, settings) {
   const s = settings || {};
@@ -57,8 +74,26 @@ async function consumeSseStream(resp, onDelta) {
   const reader = resp.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
+  // 读流停滞保护：本地慢模型排队时 read() 可能长时间不返回，但若连接被静默关闭，
+  // read() 既不 done 也不抛错会永远挂起（曾致单任务 stuck「进行中」拖死作业）。
+  // 单次 read 最长等待 60 分钟无数据视为连接已死（本地 27B 排队也很少超过 60 分钟无响应），
+  // 超时主动判失败抛错，交给上层重试/标记失败。若仍有疑虑可把超时调更大（上限由设置项 llmRequestTimeout 控制）。
+  const stallMs = 60 * 60 * 1000; // 60 分钟
   while (true) {
-    const { done, value } = await reader.read();
+    let readResult;
+    let stallTimer;
+    try {
+      readResult = await Promise.race([
+        reader.read(),
+        new Promise((_, rej) => { stallTimer = setTimeout(() => rej(new Error('流式响应停滞超时（60 分钟无数据，连接可能已被对端关闭）')), stallMs); }),
+      ]);
+    } catch (e) {
+      try { reader.cancel(); } catch (_) {}
+      throw e;
+    } finally {
+      clearTimeout(stallTimer);
+    }
+    const { done, value } = readResult;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split('\n');
@@ -118,6 +153,7 @@ async function streamChat(event, settings, messages) {
       },
       body: JSON.stringify(withModelParams({ model, messages, stream: true }, settings)),
       signal,
+      dispatcher: llmDispatcher(settings),
     });
   } catch (err) {
     if (signal.aborted) { if (isMine()) event.sender.send('ai:error', '已停止回答。'); return; }
@@ -163,6 +199,7 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
         body: JSON.stringify(withModelParams({ model: normalizeModel(settings.model), messages, stream: true }, settings)),
+        dispatcher: llmDispatcher(settings),
         ...(signal ? { signal } : {}),
       });
     } catch (err) {
@@ -292,6 +329,7 @@ async function agenticChat(event, settings, messages, tools, toolRouter) {
         // 剔除内部标记字段（_toolResume），避免严格网关拒绝未知属性
         body: JSON.stringify(withModelParams({ model: normalizeModel(settings.model), messages: msgs.map((m) => { const { _toolResume, ...rest } = m; return rest; }), stream: true, ...(openaiTools ? { tools: openaiTools } : {}) }, settings)),
         signal,
+        dispatcher: llmDispatcher(settings),
       });
     } catch (err) {
       if (signal.aborted || isAbortErr(err)) { stopped(); return; }

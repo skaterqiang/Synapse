@@ -16,7 +16,16 @@ function renderAiHistory() {
   const box = $('ai-messages'); box.innerHTML = '';
   aiHistory.forEach((m) => {
     if (m.role === 'user') addAiMessage('user', escapeHtml(m.content || ''));
-    else if (m.role === 'assistant') addAiMessage('assistant', renderMarkdown(m.content || ''));
+    else if (m.role === 'assistant') {
+      // 恢复执行过程（思考/检索/工具调用等步骤），插在答案气泡之前
+      if (Array.isArray(m.steps) && m.steps.length) {
+        const g = createStepsGroup();
+        m.steps.forEach((x) => g.addStep(x));
+        g.finish();
+        box.appendChild(g.el);
+      }
+      addAiMessage('assistant', renderMarkdown(m.content || ''));
+    }
   });
 }
 
@@ -205,7 +214,19 @@ async function loadAiSessions() {
   state.aiSessions = merged;
   renderAiSessionList();
 }
-function saveAiSessions() { try { window.kb.chatSaveSessions(state.aiSessions || []); } catch (_) {} }
+function saveAiSessions() {
+  try {
+    // 净化：step 里的 detailEl 等 DOM 引用不可序列化，落盘前剥离，只留纯数据
+    const clean = (state.aiSessions || []).map((s) => ({
+      ...s,
+      messages: (s.messages || []).map((m) => ({
+        ...m,
+        steps: Array.isArray(m.steps) ? m.steps.map((x) => ({ kind: x.kind, name: x.name, args: x.args, text: x.text, result: x.result, links: x.links })) : m.steps,
+      })),
+    }));
+    window.kb.chatSaveSessions(clean);
+  } catch (_) {}
+}
 // 没有 updatedAt 的旧会话回退用 id 里的创建时间戳（id 形如 's1699…'）
 function sessionTime(s) {
   if (s && s.updatedAt) return s.updatedAt;
@@ -316,6 +337,7 @@ async function showAiView() {
   // 必须先 await loadAiSessions，否则 openAiSession 用旧数组重建后
   // loadAiSessions 异步完成会覆盖 state.aiSessions，导致视图与数据不一致
   await loadAiSessions();
+  loadGraphProfiles(); // 刷新可选体系清单（OWL 导入/删除后同步），图谱源子选择用
   refreshAiExtTitles();
   if (state.aiBusy) {
     // 回答中切回：若活 DOM 还在则原位恢复，否则保持当前 DOM 不动
@@ -462,9 +484,9 @@ async function sendAiViewQuestion(presetText) {
   let offStep = () => {};
   try {
     offStep = window.kb.onAiStep((step) => {
-      // 思考内容只在答案气泡里实时打印一处；不再同时入步骤组，
-      // 否则“💭 思考过程”折叠块与气泡实时思考两处重复展示（正文开始后气泡思考自然被答案覆盖）
-      if (step.kind !== 'thinking') group.addStep(step);
+      // 思考内容同时入步骤组（供历史回看）与气泡实时打印；addStep 内部把增量合并进同一条 thinking 折叠块，
+      // 气泡里的实时思考在正文开始后被答案覆盖，步骤组里的思考则随消息持久化
+      group.addStep(step);
       if (step.kind === 'thinking') {
         thinkText += step.text || '';
         if (!answer) {
@@ -768,6 +790,172 @@ async function loadKnowledgeSourceDefs() {
   } catch (e) { console.warn('知识源清单获取失败，暂用内置默认：', e); }
 }
 
+// ---------- 知识图谱源的范围（两级：体系 → 具体知识图谱；仅勾选「知识图谱」时生效） ----------
+// state.aiGraphScopes: string[] —— 'all' 或若干具体图谱 id（`profile|domain` / `profile|*`）
+function loadAiGraphScopes() {
+  try {
+    const raw = localStorage.getItem('kb.aiGraphScopes');
+    if (raw) {
+      const arr = JSON.parse(raw);
+      state.aiGraphScopes = Array.isArray(arr) && arr.length ? arr : ['all'];
+      return;
+    }
+    // 兼容旧单选 aiGraphProfile
+    const old = localStorage.getItem('kb.aiGraphProfile');
+    state.aiGraphScopes = old && old !== 'all' ? [`${old}|*`] : ['all'];
+  } catch (_) { state.aiGraphScopes = ['all']; }
+}
+function saveAiGraphScopes() {
+  try { localStorage.setItem('kb.aiGraphScopes', JSON.stringify(state.aiGraphScopes || ['all'])); } catch (_) {}
+}
+// 拉取体系清单 + 具体图谱分组（进入 AI 问答页时刷新）
+async function loadGraphProfiles() {
+  try {
+    const [list, scopes] = await Promise.all([
+      window.kb.graphProfiles(),
+      window.kb.graphScopes ? window.kb.graphScopes() : Promise.resolve([]),
+    ]);
+    if (Array.isArray(list)) state.graphProfiles = list;
+    state.graphScopes = Array.isArray(scopes) ? scopes : [];
+    // 已选范围失效（体系/图谱被删）时清理，留空回退 all
+    const valid = new Set(['all']);
+    (state.graphProfiles || []).forEach((p) => valid.add(`${p.id}|*`));
+    (state.graphScopes || []).forEach((s) => valid.add(s.id));
+    state.aiGraphScopes = (state.aiGraphScopes || ['all']).filter((x) => valid.has(x));
+    if (!state.aiGraphScopes.length) state.aiGraphScopes = ['all'];
+    saveAiGraphScopes();
+    renderAiSrcBar();
+  } catch (e) { console.warn('图谱范围清单获取失败：', e); }
+}
+// 范围展示名（按钮文本）
+function graphScopeLabel() {
+  const sel = state.aiGraphScopes || ['all'];
+  if (sel.includes('all')) return '全部';
+  const names = sel.map((id) => {
+    if (id.endsWith('|*')) {
+      const pid = id.slice(0, -2);
+      const p = (state.graphProfiles || []).find((x) => x.id === pid);
+      return (p ? (p.name || pid) : pid);
+    }
+    const s = (state.graphScopes || []).find((x) => x.id === id);
+    return s ? s.label : id;
+  });
+  if (names.length <= 2) return names.join('、');
+  return `${names[0]} 等${names.length}项`;
+}
+// 构造传给后端的 graphScope 字符串（all 或多选逗号分隔）
+function graphScopeParam() {
+  const sel = state.aiGraphScopes || ['all'];
+  return sel.includes('all') ? 'all' : sel.join(',');
+}
+
+// 级联范围菜单：一级=「全部」+ 各体系；体系有图谱时 hover 右侧飞出二级子菜单（整个体系 + 各具体图谱）
+function renderGraphProfileMenu(menu) {
+  if (!menu) return;
+  menu.innerHTML = '';
+  const sel = new Set(state.aiGraphScopes || ['all']);
+  // 搜索过滤框（搜到时平铺显示，搜空回到级联结构）
+  const search = document.createElement('input');
+  search.type = 'text';
+  search.className = 'ai-src-sub-search';
+  search.placeholder = '搜索体系 / 图谱…';
+  search.addEventListener('click', (e) => e.stopPropagation());
+  menu.appendChild(search);
+  const list = document.createElement('div');
+  list.className = 'ai-src-sub-list';
+  menu.appendChild(list);
+
+  const apply = () => {
+    state.aiGraphScopes = sel.has('all') || !sel.size ? ['all'] : [...sel];
+    saveAiGraphScopes();
+    // 只更新按钮文本，不重建整条 bar（避免菜单被销毁）
+    const btn = menu.closest('.ai-src-sub')?.querySelector('.ai-src-sub-btn');
+    if (btn) btn.innerHTML = `${escapeHtml(graphScopeLabel())} ▾`;
+  };
+  const refreshBoxes = () => {
+    [...menu.querySelectorAll('.gp-row')].forEach((row) => {
+      const on = sel.has(row.dataset.id) || (sel.has('all') && row.dataset.id === 'all');
+      row.classList.toggle('cur', on);
+      const box = row.querySelector('.gp-box'); if (box) box.textContent = on ? '✓' : '';
+    });
+  };
+  // 单个可勾选行（一级/二级共用）
+  const mkRow = ({ id, label, desc }) => {
+    const d = document.createElement('div');
+    d.className = 'ext-item gp-row' + (sel.has(id) ? ' cur' : '');
+    d.dataset.id = id;
+    d.dataset.q = `${label} ${desc || ''}`.toLowerCase();
+    d.innerHTML = `<span class="gp-box">${sel.has(id) ? '✓' : ''}</span><span class="gp-txt">${escapeHtml(label)}${desc ? `<i class="gp-desc">${escapeHtml(desc)}</i>` : ''}</span>`;
+    d.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (id === 'all') { sel.clear(); sel.add('all'); }
+      else {
+        sel.delete('all');
+        if (sel.has(id)) sel.delete(id); else sel.add(id);
+      }
+      apply();
+      refreshBoxes();
+    });
+    return d;
+  };
+  // 体系行：本身可勾「整个体系」；有图谱时右侧飞出二级菜单勾具体图谱
+  const mkProfileRow = (p, kids) => {
+    const cls = (p.counts && p.counts.classes) || 0;
+    const total = kids.reduce((a, b) => a + b.nodeCount, 0);
+    const wrap = document.createElement('div');
+    wrap.className = 'gp-prof';
+    const hasKids = kids.length > 0;
+    const rowId = `${p.id}|*`;
+    const row = document.createElement('div');
+    row.className = 'ext-item gp-row gp-prof-row' + (sel.has(rowId) ? ' cur' : '');
+    row.dataset.id = rowId;
+    row.dataset.q = `${p.name || p.id}`.toLowerCase();
+    row.innerHTML =
+      `<span class="gp-box">${sel.has(rowId) ? '✓' : ''}</span>` +
+      `<span class="gp-txt">${escapeHtml(p.name || p.id)}<i class="gp-desc">${hasKids ? `${total} 节点` : `${cls} 类·无节点`}</i></span>` +
+      (hasKids ? '<span class="gp-caret">›</span>' : '');
+    row.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sel.delete('all');
+      if (sel.has(rowId)) sel.delete(rowId); else sel.add(rowId);
+      apply();
+      refreshBoxes();
+    });
+    wrap.appendChild(row);
+    if (hasKids) {
+      // 二级飞出菜单：整个体系 + 各具体图谱
+      const fly = document.createElement('div');
+      fly.className = 'gp-fly';
+      fly.appendChild(mkRow({ id: rowId, label: '整个体系', desc: `${total} 节点` }));
+      kids.forEach((s) => fly.appendChild(mkRow({ id: s.id, label: s.label, desc: `${s.nodeCount} 节点` })));
+      wrap.appendChild(fly);
+      // 同步一级行的选中态：勾「整个体系」或任一子图谱都让体系行高亮
+      fly.addEventListener('click', () => setTimeout(() => {
+        const any = sel.has(rowId) || kids.some((s) => sel.has(s.id));
+        row.classList.toggle('cur', any);
+      }));
+    }
+    return wrap;
+  };
+
+  // 一级：全部
+  list.appendChild(mkRow({ id: 'all', label: '全部知识图谱', desc: '不区分体系/图谱' }));
+  const scopesByProfile = {};
+  (state.graphScopes || []).forEach((s) => { (scopesByProfile[s.profile] = scopesByProfile[s.profile] || []).push(s); });
+  (state.graphProfiles || []).forEach((p) => {
+    list.appendChild(mkProfileRow(p, scopesByProfile[p.id] || []));
+  });
+  // 搜索：匹配的行平铺展示（体系行命中或子图谱命中）；搜空恢复级联
+  search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    [...menu.querySelectorAll('.gp-row')].forEach((row) => {
+      row.style.display = !q || (row.dataset.q || '').includes(q) ? '' : 'none';
+    });
+    menu.classList.toggle('gp-flat', !!q); // 平铺模式：子菜单不再飞出，统一平铺便于过滤
+  });
+  setTimeout(() => search.focus(), 0);
+}
+
 // 知识源选择条（输入框上方平铺）：点一下即勾选/取消，与侧边面板的复选框共用 state.aiSources
 function renderAiSrcBar() {
   const bar = $('ai-src-bar');
@@ -790,6 +978,29 @@ function renderAiSrcBar() {
       applyAiSources();
     });
     bar.appendChild(chip);
+    // 知识图谱源：勾选后追加体系范围子选择（可选全部知识图谱，也可指定某个体系）
+    if (k === 'graph' && on) {
+      const pick = document.createElement('div');
+      pick.className = 'ai-src-sub';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ai-src-sub-btn';
+      btn.title = '选择知识图谱范围：全部，或指定体系 / 具体图谱（可多选）';
+      btn.innerHTML = `${escapeHtml(graphScopeLabel())} ▾`;
+      const menu = document.createElement('div');
+      menu.className = 'ai-ext-menu ai-src-sub-menu';
+      menu.hidden = true;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (menu.hidden) { renderGraphProfileMenu(menu); menu.hidden = false; } else menu.hidden = true;
+      });
+      document.addEventListener('click', (e) => {
+        if (!menu.hidden && !menu.contains(e.target) && !btn.contains(e.target)) menu.hidden = true;
+      });
+      pick.appendChild(btn);
+      pick.appendChild(menu);
+      bar.appendChild(pick);
+    }
   });
 }
 
@@ -886,6 +1097,9 @@ function buildAskPayload(messages, question) {
     settings: aiSettings(),
     messages,
     sources: { ...(state.aiSources || {}) },
+    // 知识图谱源的范围（未勾选图谱时主进程不检索，此字段无副作用）
+    graphProfile: 'all',
+    graphScope: graphScopeParam(),
     skillNames: effectiveSkills().map((k) => k.name),
     extHint: extHint(question),
     extMcp: selectedMcpCfgs(),
