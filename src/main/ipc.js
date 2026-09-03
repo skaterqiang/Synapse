@@ -264,7 +264,9 @@ function registerIpc(getWindow) {
     try {
       const raws = await buildMatchRaws(settings, rawPaths, texts);
       if (!raws.length) return { ok: false, error: '来源内容为空，无法归纳领域名称' };
-      return { ok: true, ...(await templates.suggestTemplateName(settings, raws)) };
+      // 流式增量（含思考过程）实时推给渲染层，弹窗逐步打印归纳思路
+      const onDelta = (delta, isReasoning) => { try { _e.sender.send('tpl:suggest-name-chunk', { text: delta, reasoning: !!isReasoning }); } catch (_) { /* 窗口已关闭 */ } };
+      return { ok: true, ...(await templates.suggestTemplateName(settings, raws, onDelta)) };
     } catch (err) {
       return { ok: false, error: err.message };
     }

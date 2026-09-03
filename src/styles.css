@@ -1055,16 +1055,16 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 /* 解析方式行的短提示不换行，避免「仅支持 PDF」折成两行 */
 .mineru-mode-row .radio-hint { flex: 0 0 auto; white-space: nowrap; }
 /* 提取知识图谱 · AI 自主判定进度流 */
-.domain-progress { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin: 6px 0 4px; padding: 10px 12px; background: var(--bg-soft, #f7f8fa); border-radius: 8px; font-size: 13px; line-height: 1.6; }
+.domain-progress { max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; margin: 8px 0 6px; padding: 14px 16px; background: var(--bg-soft, #f7f8fa); border-radius: 10px; font-size: 14px; line-height: 1.7; }
 .domain-step { color: var(--text-main, #1f2329); white-space: pre-wrap; word-break: break-all; }
 .domain-step.run { color: var(--text-sub, #8a9099); }
 .domain-step.dim { color: var(--text-sub, #8a9099); opacity: .85; }
 .domain-step.ok { color: var(--primary, #1a7f4b); }
 .domain-step.err { color: #c0392b; }
-.domain-pick { margin-left: 6px; padding: 3px 6px; font-size: 13px; border: 1px solid var(--border, #d8dce1); border-radius: 6px; background: var(--panel, #fff); color: var(--text-main, #1f2329); max-width: 320px; }
-.domain-progress-hint { flex: 1; font-size: 12px; color: var(--text-sub, #8a9099); align-self: center; }
+.domain-pick { margin-left: 6px; padding: 4px 8px; font-size: 14px; border: 1px solid var(--border, #d8dce1); border-radius: 6px; background: var(--panel, #fff); color: var(--text-main, #1f2329); max-width: 360px; }
+.domain-progress-hint { flex: 1; font-size: 13px; color: var(--text-sub, #8a9099); align-self: center; }
 /* 判定思考过程流：缩进、斜体、左侧细边，逐字追加 */
-.domain-think { margin: 2px 0 2px 18px; padding: 4px 8px; font-size: 12px; font-style: italic; color: var(--text-sub, #8a9099); opacity: .9; border-left: 2px solid var(--border, #d8dce1); white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow-y: auto; }
+.domain-think { margin: 4px 0 4px 20px; padding: 6px 10px; font-size: 13px; font-style: italic; color: var(--text-sub, #8a9099); opacity: .9; border-left: 2px solid var(--border, #d8dce1); white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
 .wiki-group-toggle { cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none; }
 .wiki-group-toggle:hover { color: var(--primary); }
 .wiki-group-toggle .chevron { display: inline-block; font-size: 10px; transition: transform 0.15s; }

@@ -124,10 +124,11 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     const box = $('domain-progress');
     if (box) box.scrollTop = box.scrollHeight;
   };
-  // 订阅两个判定步骤的思考流（领域匹配 / 体系匹配），函数结束时解绑
+  // 订阅三个判定步骤的思考流（领域匹配 / 体系匹配 / 领域归纳），函数结束时解绑
   const unbindMatch = (window.kb.onTplMatchChunk ? window.kb.onTplMatchChunk(feedThink) : null);
   const unbindProfile = (window.kb.onTplSuggestProfileChunk ? window.kb.onTplSuggestProfileChunk(feedThink) : null);
-  const unbindThink = () => { if (unbindMatch) unbindMatch(); if (unbindProfile) unbindProfile(); };
+  const unbindName = (window.kb.onTplSuggestNameChunk ? window.kb.onTplSuggestNameChunk(feedThink) : null);
+  const unbindThink = () => { if (unbindMatch) unbindMatch(); if (unbindProfile) unbindProfile(); if (unbindName) unbindName(); };
 
   const submitJob = async (extras) => {
     const payload = { settings: state.settings, ...extras };
@@ -205,6 +206,7 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
   // 前置建域：未命中已有领域时，直接在本流程内归纳并新建（不回退通用、不人工确认），随后纳入下拉供用户复核
   const autoCreateDomainNow = async () => {
     domainStep('② 未命中已有领域，按内容归纳并新建领域…', 'run');
+    mkThink(); // 换领域归纳的思考流容器
     const sug = await window.kb.tplSuggestName({ settings: state.settings, rawPaths, texts });
     if (!sug.ok || !sug.name) { domainStep('✖ 领域归纳失败：' + (sug.error || '未归纳出名称'), 'err'); return null; }
     state.templates = (await window.kb.tplList()) || [];
@@ -251,22 +253,30 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
       if (finalDomain.reason) {
         domainStep(`　判定理由：${finalDomain.reason}`, 'dim');
       }
-      // 体系：不读模版绑定，而是按来源内容从全部可用体系（内置三体系+导入 OWL）实时匹配最贴合的一个；设置无全局默认时同样走匹配
-      domainStep('② 按内容匹配本体体系…', 'run');
-      mkThink(); // 换体系匹配的思考流容器（后续 chunk 追加到新容器）
-      try {
-        const prof = await window.kb.tplSuggestProfile({ settings: state.settings, rawPaths, texts });
-        if (prof && prof.ok && prof.id) {
-          sel.profileId = prof.id;
-          const simTxt = (typeof prof.similarity === 'number' && prof.similarity > 0) ? `（匹配度 ${prof.similarity}%）` : '';
-          domainStep(`✔ 体系匹配「${prof.name || prof.id}」${simTxt}${prof.reason ? '：' + prof.reason : ''}`, 'ok');
-        } else {
+      // 体系：优先使用模版绑定的体系；未绑定时才按内容实时匹配
+      const tplProfile = sel.tpl && sel.tpl.ontologyProfile ? String(sel.tpl.ontologyProfile).trim() : '';
+      if (tplProfile) {
+        sel.profileId = tplProfile;
+        const profName = profileNameOf(tplProfile);
+        domainStep(`② 体系「${profName}」（复用领域模版绑定）`, 'ok');
+      } else {
+        // 模版未绑定体系：按来源内容实时匹配最贴合者
+        domainStep('② 按内容匹配本体体系…', 'run');
+        mkThink(); // 换体系匹配的思考流容器（后续 chunk 追加到新容器）
+        try {
+          const prof = await window.kb.tplSuggestProfile({ settings: state.settings, rawPaths, texts });
+          if (prof && prof.ok && prof.id) {
+            sel.profileId = prof.id;
+            const simTxt = (typeof prof.similarity === 'number' && prof.similarity > 0) ? `（匹配度 ${prof.similarity}%）` : '';
+            domainStep(`✔ 体系匹配「${prof.name || prof.id}」${simTxt}${prof.reason ? '：' + prof.reason : ''}`, 'ok');
+          } else {
+            sel.profileId = (state.settings && state.settings.ontologyProfile) || 'bfo-lite';
+            domainStep('↷ 体系匹配不可用，回退默认体系（可下拉更改）', 'dim');
+          }
+        } catch (_) {
           sel.profileId = (state.settings && state.settings.ontologyProfile) || 'bfo-lite';
-          domainStep('↷ 体系匹配不可用，回退默认体系（可下拉更改）', 'dim');
+          domainStep('↷ 体系匹配失败，回退默认体系（可下拉更改）', 'dim');
         }
-      } catch (_) {
-        sel.profileId = (state.settings && state.settings.ontologyProfile) || 'bfo-lite';
-        domainStep('↷ 体系匹配失败，回退默认体系（可下拉更改）', 'dim');
       }
       if (cancelled) return false; // 等待体系匹配期间用户已取消
       unbindThink(); // 判定完成，解绑思考订阅（弹窗仍开着等用户确认，但不再接收增量）

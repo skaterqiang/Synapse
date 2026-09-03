@@ -329,7 +329,8 @@ async function generateTemplate(settings, { name, desc }, onDelta) {
 }
 
 // 吸收前自动建模第一步：根据来源内容归纳领域名称与简述，供「新建领域模版」弹窗自动填充（随后由弹窗内 AI 生成补全其余字段）
-async function suggestTemplateName(settings, raws) {
+// onDelta(delta, isReasoning) 可选：流式增量回调，供渲染层实时打印 AI 思考过程
+async function suggestTemplateName(settings, raws, onDelta) {
   const text = (raws || []).map((r) => r.content).join('\n').slice(0, 3000);
   if (!text.trim()) throw new Error('来源内容为空，无法归纳领域名称');
   const prompt = [
@@ -346,7 +347,7 @@ async function suggestTemplateName(settings, raws) {
   const answer = await chatOnce(settings, [
     { role: 'system', content: getPrompt(settings, 'tplGenPrompt') },
     { role: 'user', content: prompt },
-  ]);
+  ], undefined, onDelta);
   const raw = extractJson(answer);
   const name = trimStr(raw.name, 100);
   if (!name) throw new Error('未能从来源内容归纳出领域名称');

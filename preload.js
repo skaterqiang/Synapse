@@ -54,8 +54,11 @@ contextBridge.exposeInMainWorld('kb', {
     const handler = (_event, chunk) => callback(chunk);
     ipcRenderer.on('tpl:suggest-profile-chunk', handler);
     return () => ipcRenderer.removeListener('tpl:suggest-profile-chunk', handler);
-  },
-  // AI 问答引用事件：知识检索完成后一次回传 笔记/图谱/原始文件 引用（与 web/kb-shim.js 对齐）
+  },  onTplSuggestNameChunk: (callback) => {
+    const handler = (_e, chunk) => callback(chunk);
+    ipcRenderer.on('tpl:suggest-name-chunk', handler);
+    return () => ipcRenderer.removeListener('tpl:suggest-name-chunk', handler);
+  },  // AI 问答引用事件：知识检索完成后一次回传 笔记/图谱/原始文件 引用（与 web/kb-shim.js 对齐）
   onAiRefs: (callback) => {
     const handler = (_event, refs) => callback(refs);
     ipcRenderer.on('ai:refs', handler);
