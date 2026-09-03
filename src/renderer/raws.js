@@ -124,11 +124,12 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     const box = $('domain-progress');
     if (box) box.scrollTop = box.scrollHeight;
   };
-  // 订阅三个判定步骤的思考流（领域匹配 / 体系匹配 / 领域归纳），函数结束时解绑
+  // 订阅四个判定步骤的思考流（领域匹配 / 体系匹配 / 领域归纳 / 领域类生成），函数结束时解绑
   const unbindMatch = (window.kb.onTplMatchChunk ? window.kb.onTplMatchChunk(feedThink) : null);
   const unbindProfile = (window.kb.onTplSuggestProfileChunk ? window.kb.onTplSuggestProfileChunk(feedThink) : null);
   const unbindName = (window.kb.onTplSuggestNameChunk ? window.kb.onTplSuggestNameChunk(feedThink) : null);
-  const unbindThink = () => { if (unbindMatch) unbindMatch(); if (unbindProfile) unbindProfile(); if (unbindName) unbindName(); };
+  const unbindGen = (window.kb.onTplGenChunk ? window.kb.onTplGenChunk(feedThink) : null);
+  const unbindThink = () => { if (unbindMatch) unbindMatch(); if (unbindProfile) unbindProfile(); if (unbindName) unbindName(); if (unbindGen) unbindGen(); };
 
   const submitJob = async (extras) => {
     const payload = { settings: state.settings, ...extras };
@@ -216,6 +217,7 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
       return { id: exist.id, name: exist.name, tpl: exist, reason: '同名已有领域，复用' };
     }
     domainStep(`✔ 归纳出新领域「${sug.name}」，AI 正在生成领域类并从 bfo-lite / bfo / iso15926 中选定本体体系…`, 'run');
+    mkThink(); // 为「生成领域类」步骤新建思考流容器，否则增量仍追加到上一步的旧容器
     const gen = await window.kb.tplGenerate({ settings: state.settings, name: sug.name, desc: sug.desc || '' });
     if (!gen.ok || !gen.template) { domainStep('✖ 生成领域类失败：' + (gen.error || '未知错误'), 'err'); return null; }
     let g = gen.template;
