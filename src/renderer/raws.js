@@ -104,7 +104,7 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
   let decided = false; // 是否已提交（避免重复提交）
   let cancelled = false; // 是否已点「取消」（取消后不再展示可确认的下拉/按钮）
 
-  // 判定思考过程流：当前活动步骤的思考容器（reasoning 增量逐字追加；正文增量不显示，属最终 JSON 判定）
+  // 判定思考过程流：当前活动步骤的思考容器（reasoning 增量逐字追加；正文增量也显示，属最终 JSON 判定）
   let curThink = null;
   const mkThink = () => {
     const el = document.createElement('div');
@@ -115,10 +115,12 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     return el;
   };
   const feedThink = (chunk) => {
-    if (!curThink || !chunk || !chunk.reasoning || !chunk.text) {
+    if (!curThink || !chunk || !chunk.text) {
       return;
     }
-    curThink.textContent += chunk.text;
+    // 思考增量（reasoning）直接显示；正文增量也显示但加上前缀区分
+    const text = chunk.reasoning ? chunk.text : `　[输出] ${chunk.text}`;
+    curThink.textContent += text;
     const box = $('domain-progress');
     if (box) box.scrollTop = box.scrollHeight;
   };

@@ -139,6 +139,7 @@ contextBridge.exposeInMainWorld('kb', {
   jobsRemove: (id) => ipcRenderer.invoke('jobs:remove', id),
   jobsClear: () => ipcRenderer.invoke('jobs:clear'),
   jobsRetry: (payload) => ipcRenderer.invoke('jobs:retry', payload),
+  jobsRetryTask: (payload) => ipcRenderer.invoke('jobs:retryTask', payload),
   jobsCancel: (id) => ipcRenderer.invoke('jobs:cancel', id),
   onJobsUpdate: (callback) => {
     const handler = (_event, list) => callback(list);

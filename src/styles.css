@@ -2230,6 +2230,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .job-status.running { background: rgba(16, 185, 129, 0.12); color: var(--primary); }
 .job-status.success { background: rgba(82, 196, 26, 0.14); color: #389e0d; }
 .job-status.failed { background: rgba(245, 74, 69, 0.1); color: var(--danger); }
+.job-status.warning { background: rgba(230, 162, 60, 0.12); color: #e6a23c; }
 .job-time { font-size: 11px; color: #b0b6bf; white-space: nowrap; }
 .job-dur { font-size: 11px; color: var(--text-sub); white-space: nowrap; min-width: 52px; text-align: right; }
 .job-actions { display: inline-flex; gap: 4px; margin-left: 4px; }
@@ -2253,12 +2254,22 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .job-task .task-ico { flex: none; width: 14px; text-align: center; font-size: 11px; }
 .job-task-no { flex: none; min-width: 16px; text-align: center; font-size: 10.5px; color: var(--text-sub); background: rgba(0, 0, 0, 0.06); border-radius: var(--radius); padding: 0 4px; }
 .job-task .task-ico.done { color: #389e0d; }
+.job-task .task-ico.failed { color: var(--danger); }
 .job-task .task-ico.pend { color: #b0b6bf; }
 .job-task .task-ico.run { color: var(--primary); animation: pulse 1.2s infinite; }
 .job-task-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 任务输出复制按钮 */
 .task-copy { flex: none; margin-left: 6px; font-size: 11px; color: var(--primary); background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: var(--radius-sm); padding: 1px 8px; cursor: pointer; }
 .task-copy:hover { background: rgba(16, 185, 129, 0.16); }
+/* 任务重跑按钮（失败任务） */
+.task-retry { flex: none; margin-left: 6px; font-size: 11px; color: #b45309; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: var(--radius-sm); padding: 1px 8px; cursor: pointer; }
+.task-retry:hover { background: rgba(245, 158, 11, 0.2); }
+/* 作业卡片警告状态 */
+.job-row-card.warning { border-left: 3px solid #e6a23c; }
+.job-row-card.warning .job-status { background: rgba(230, 162, 60, 0.12); color: #e6a23c; }
+/* 阶段警告状态 */
+.job-stage.warning { color: #b45309; }
+.job-stage.warning .stage-ico { color: #e6a23c; }
 /* 提示词管理页（主区域） */
 .prompts-view { display: flex; flex-direction: column; height: 100%; }
 .prompts-cards { flex: 1; overflow-y: auto; padding: 16px 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; align-content: start; }
@@ -2284,6 +2295,10 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .job-stage .stage-name { min-width: 96px; font-weight: 500; }
 .job-stage .stage-detail { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-error { margin-top: 8px; font-size: 12px; color: var(--danger); word-break: break-all; }
+/* 作业警告框（部分任务失败） */
+.job-warning { margin-top: 8px; padding: 8px 10px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: var(--radius-sm); }
+.job-warning .warn-head { font-size: 12.5px; font-weight: 600; color: #b45309; margin-bottom: 4px; }
+.job-warning .warn-item { font-size: 11.5px; color: #b45309; margin-top: 2px; }
 /* MinerU 回退警告框（提取笔记作业：有来源 MinerU 失败回退内置时展示） */
 .job-fallback-warn { margin: 0 0 10px; padding: 8px 10px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: var(--radius-sm); }
 .job-fallback-warn .fb-head { font-size: 12.5px; font-weight: 600; color: #b45309; }

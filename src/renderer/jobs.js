@@ -34,7 +34,7 @@ function hideJobsView() {
 }
 
 function jobStatusMeta(status) {
-  return { queued: ['排队中', ''], running: ['执行中', 'running'], success: ['成功', 'success'], failed: ['失败', 'failed'] }[status] || [status, ''];
+  return { queued: ['排队中', ''], running: ['执行中', 'running'], success: ['成功', 'success'], failed: ['失败', 'failed'], warning: ['警告', 'warning'] }[status] || [status, ''];
 }
 
 // 作业类型图标：统一使用 index.html 顶部 SVG sprite 中的线性图标（JOB_TYPE_ICONS 定义于 renderer/constants.js）
@@ -54,7 +54,9 @@ function fmtDuration(ms) {
 function renderJobs() {
   const hasActive = state.jobs.some((j) => j.status === 'running' || j.status === 'queued');
   const activeCount = state.jobs.filter((j) => j.status === 'running' || j.status === 'queued').length;
+  const warningCount = state.jobs.filter((j) => j.status === 'warning').length;
   $('nav-jobs').classList.toggle('jobs-active', hasActive);
+  $('nav-jobs').classList.toggle('jobs-warning', !hasActive && warningCount > 0);
   $('count-jobs').textContent = activeCount || '';
   if (!$('jobs-view').hidden) renderJobsView();
 }
@@ -62,7 +64,7 @@ function renderJobs() {
 function filteredJobs() {
   const f = state.jobsFilter;
   if (f === 'active') return state.jobs.filter((j) => j.status === 'running' || j.status === 'queued');
-  if (f === 'success' || f === 'failed') return state.jobs.filter((j) => j.status === f);
+  if (f === 'success' || f === 'failed' || f === 'warning') return state.jobs.filter((j) => j.status === f);
   return state.jobs;
 }
 
@@ -83,10 +85,10 @@ function hydrateJobLogs() {
 
 function renderJobsView() {
   hydrateJobLogs();
-  const c = { queued: 0, running: 0, success: 0, failed: 0 };
+  const c = { queued: 0, running: 0, success: 0, failed: 0, warning: 0 };
   state.jobs.forEach((j) => { if (c[j.status] !== undefined) c[j.status]++; });
   // 计数徽章直接挂在筛选按钮上：进行中 = 运行 + 排队
-  const counts = { all: state.jobs.length, active: c.running + c.queued, success: c.success, failed: c.failed };
+  const counts = { all: state.jobs.length, active: c.running + c.queued, success: c.success, failed: c.failed, warning: c.warning };
   document.querySelectorAll('#jobs-filter button').forEach((b) => {
     b.classList.toggle('active', b.dataset.filter === state.jobsFilter);
     const badge = b.querySelector('.jf-count');
@@ -163,12 +165,17 @@ function buildJobCard(job) {
   if (job.status === 'failed' && (job.type === 'lint' || job.type === 'graph' || job.type === 'extract-note' || hasRaw)) {
     actions.appendChild(jobActionBtn(icoSvg('refresh', 12) + ' 重试', '', () => retryJob(job), '重新提交该作业'));
   }
+  // 警告状态（部分任务失败）：重跑失败任务（仅对失败任务重新执行，不影响成功任务产物）
+  const failedTaskNos = (job.result && Array.isArray(job.result.failedTasks)) ? job.result.failedTasks.map((f) => f.taskNo) : [];
+  if (job.status === 'warning' && failedTaskNos.length && job.type === 'graph') {
+    actions.appendChild(jobActionBtn(icoSvg('refresh', 12) + ' 重跑失败任务', 'warn', () => retryFailedTasks(job), `重跑 ${failedTaskNos.length} 个失败任务：仅对这些来源重新抽取，成功任务产物保留`));
+  }
   // MinerU 失败回退内置：提供「用 MinerU 重跑」，强制 MinerU 解析（不回退），原地更新笔记产物
   const fbList = job.result && Array.isArray(job.result.fallbacks) ? job.result.fallbacks : [];
   if (job.type === 'extract-note' && fbList.length && (job.status === 'success' || job.status === 'failed')) {
     actions.appendChild(jobActionBtn(icoSvg('refresh', 12) + ' 用 MinerU 重跑', 'warn', () => rerunWithMineru(job), '对回退的来源强制 MinerU 解析（失败直接报错，不回退内置），原地更新已有笔记'));
   }
-  if (job.status === 'success' || job.status === 'failed') {
+  if (job.status === 'success' || job.status === 'failed' || job.status === 'warning') {
     actions.appendChild(jobActionBtn(icoSvg('delete', 12), 'danger', () => removeJob(job), '删除该条作业'));
   }
   head.appendChild(actions);
@@ -249,15 +256,17 @@ function buildJobDetail(job) {
   // 任务列表：每个来源一个独立 task，展示处理状态（点击任务行可收起/展开输出）
   if (Array.isArray(job.tasks) && job.tasks.length) {
     const doneN = job.tasks.filter((t) => t.status === 'done').length;
+    const failedN = job.tasks.filter((t) => t.status === 'failed').length;
     const box = document.createElement('div');
     box.className = 'job-source job-tasks';
-    box.innerHTML = `<div class="job-source-head"><span class="job-source-kind">任务</span><span class="job-source-label">已处理 ${doneN}/${job.tasks.length}</span></div>`;
+    box.innerHTML = `<div class="job-source-head"><span class="job-source-kind">任务</span><span class="job-source-label">已处理 ${doneN}/${job.tasks.length}${failedN ? `，${failedN} 个失败` : ''}</span></div>`;
     const list = document.createElement('div');
     list.className = 'job-task-list';
     job.tasks.forEach((t) => {
       const key = job.id + ':' + t.no;
       const collapsed = !!taskCollapsed[key];
       const ico = t.status === 'done' ? '<span class="task-ico done">✓</span>'
+        : t.status === 'failed' ? '<span class="task-ico failed">✗</span>'
         : t.status === 'running' ? '<span class="task-ico run">◐</span>'
         : '<span class="task-ico pend">○</span>';
       const wrap = document.createElement('div');
@@ -266,6 +275,15 @@ function buildJobDetail(job) {
       row.className = 'job-task ' + (t.status || '') + (t.output ? ' has-out' : '');
       const chev = t.output ? `<span class="task-chev">${collapsed ? '▸' : '▾'}</span>` : '';
       row.innerHTML = `${t.no ? `<span class="job-task-no">${t.no}</span>` : ''}${chev}${ico}<span class="job-task-label">${escapeHtml(t.label)}</span>`;
+      // 失败任务：重跑按钮（仅图谱作业、非进行中状态）
+      if (t.status === 'failed' && job.type === 'graph' && job.status !== 'running' && job.status !== 'queued') {
+        const rt = document.createElement('button');
+        rt.className = 'task-retry';
+        rt.textContent = '重跑';
+        rt.title = '重新执行该任务（仅对该来源重新抽取，不影响其他任务产物）';
+        rt.addEventListener('click', (e) => { e.stopPropagation(); retryTask(job, t.no); });
+        row.appendChild(rt);
+      }
       if (t.output) {
         const cp = document.createElement('button');
         cp.className = 'task-copy';
@@ -323,7 +341,7 @@ function buildJobDetail(job) {
   detail.appendChild(stages);
 
   // 模型流式输出实时预览（仅执行中/失败时展示，自动滚到尾部）
-  if (job.livePreview && (job.status === 'running' || job.status === 'failed')) {
+  if (job.livePreview && (job.status === 'running' || job.status === 'failed' || job.status === 'warning')) {
     const live = document.createElement('pre');
     live.className = 'job-live';
     live.textContent = job.livePreview;
@@ -336,6 +354,16 @@ function buildJobDetail(job) {
     err.className = 'job-error';
     err.textContent = '错误：' + job.error;
     detail.appendChild(err);
+  }
+  // 警告状态：展示失败任务列表及原因
+  if (job.status === 'warning' && job.result && Array.isArray(job.result.failedTasks) && job.result.failedTasks.length) {
+    const warn = document.createElement('div');
+    warn.className = 'job-warning';
+    const items = job.result.failedTasks.slice(0, 10).map((f) =>
+      `<div class="warn-item">任务 ${f.taskNo}「${escapeHtml(f.label)}」：${escapeHtml(f.error)}</div>`).join('');
+    const more = job.result.failedTasks.length > 10 ? `<div class="warn-item">… 共 ${job.result.failedTasks.length} 个</div>` : '';
+    warn.innerHTML = `<div class="warn-head">⚠ ${job.result.failedTasks.length} 个任务失败</div>${items}${more}`;
+    detail.appendChild(warn);
   }
   if (job.type === 'ingest' && job.status === 'success' && job.result && job.result.summary) {
     const sum = document.createElement('div');
@@ -371,6 +399,27 @@ async function retryJob(job) {
     const res = await window.kb.jobsRetry({ id: job.id, settings: state.settings });
   if (res.ok) { toast('已在原作业上重试'); return; }
   toast('重试失败：' + res.error, 4000);
+}
+
+// 单任务重跑：仅对失败的图谱任务重新执行抽取
+async function retryTask(job, taskNo) {
+  const res = await window.kb.jobsRetryTask({ id: job.id, taskNo, settings: state.settings });
+  if (res.ok) { toast(`已提交任务 ${taskNo} 重跑`); return; }
+  toast('重跑失败：' + res.error, 4000);
+}
+
+// 批量重跑失败任务：对作业中所有失败任务逐个提交重跑
+async function retryFailedTasks(job) {
+  const failedTasks = (job.result && Array.isArray(job.result.failedTasks)) ? job.result.failedTasks : [];
+  if (!failedTasks.length) { toast('没有可重跑的失败任务'); return; }
+  if (!confirm(`将对 ${failedTasks.length} 个失败任务逐个重新执行抽取，成功任务产物保留。继续吗？`)) return;
+  let submitted = 0;
+  for (const f of failedTasks) {
+    const res = await window.kb.jobsRetryTask({ id: job.id, taskNo: f.taskNo, settings: state.settings });
+    if (res.ok) submitted++;
+  }
+  if (submitted) toast(`已提交 ${submitted} 个失败任务重跑`);
+  else toast('提交失败：没有任务被重跑', 4000);
 }
 
 async function stopJob(job) {
@@ -410,7 +459,9 @@ function handleJobsUpdate(list) {
   prevJobStatuses = {};
   for (const j of list) {
     prevJobStatuses[j.id] = j.status;
-    if (j.type === 'extract-note' && j.status === 'success' && prev[j.id] && prev[j.id] !== 'success') {
+    const wasActive = prev[j.id] === 'running' || prev[j.id] === 'queued';
+    const isDone = j.status === 'success' || j.status === 'warning' || j.status === 'failed';
+    if (j.type === 'extract-note' && j.status === 'success' && wasActive) {
       window.kb.loadData().then((data) => {
         state.folders = data.folders || [];
         state.notes = data.notes || [];
@@ -419,9 +470,11 @@ function handleJobsUpdate(list) {
       });
       toast('笔记提取完成');
     }
-    if (j.type === 'graph' && j.status === 'success' && prev[j.id] && prev[j.id] !== 'success') {
+    if (j.type === 'graph' && isDone && wasActive) {
       loadGraph();
-      toast('知识图谱抽取完成');
+      if (j.status === 'success') toast('知识图谱抽取完成');
+      else if (j.status === 'warning') toast('知识图谱抽取完成，部分任务失败', 4000);
+      else if (j.status === 'failed') toast('知识图谱抽取失败：' + (j.error || ''), 4000);
     }
   }
   state.jobs = list;

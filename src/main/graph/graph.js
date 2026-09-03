@@ -166,7 +166,7 @@ function collectSources() {
 // 逐批调用模型抽取节点/边，合并去重后持久化；onStage 回调用于作业阶段进度展示
 // resolveDomain(raws)：未命中特定领域时由作业层决定最终领域（可新建/复用领域模版），
 // 返回 { domainId, domainLabel, typeHints }；graph 层不直接依赖 templates
-async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile, signal }, onStage, onProgress, onTasks) {
+async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile, signal, taskFilter }, onStage, onProgress, onTasks) {
   // 作业停止信号：批次开始前检查 + 透传给 chatOnce 中断在途模型请求
   const mkAbort = () => Object.assign(new Error('用户手动停止作业'), { name: 'AbortError' });
   // 生效体系优先级：弹窗显式指定 > 命中模板的体系绑定（resolveDomain 回填）> settings 全局默认 > bfo-lite
@@ -243,6 +243,18 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
   const tasks = buildTasks(sources.map((s) => s.label));
   if (onTasks) onTasks(tasks);
 
+  // 单任务重跑：仅执行指定批次，其余任务直接标记为跳过
+  const retryTaskNo = (typeof taskFilter === 'number' && taskFilter >= 1) ? taskFilter : null;
+  if (retryTaskNo !== null) {
+    for (let i = 0; i < tasks.length; i++) {
+      if (i !== retryTaskNo - 1) {
+        tasks[i].status = 'done';
+        tasks[i].output = (tasks[i].output || '') + '\n[跳过] 本次为单任务重跑，该来源未重新抽取';
+      }
+    }
+    if (onTasks) onTasks(tasks);
+  }
+
   const nodes = new Map(); // key -> {id,name,type,desc,sources[],domain,profile}
   const edges = new Map(); // key -> {from,to,rel,sources[]}
   const typeMap = nodeTypesMap(profileId);
@@ -266,6 +278,8 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
 
   // 并发池：默认同时执行 3 个抽取任务（settings.graphConcurrency 可调，1–8）
   const CONC = num(settings, 'graphConcurrency', 3, 1, 8);
+  // 单任务失败不拖死整个作业：记录后继续其余批次，作业结束时按部分成功处理
+  const batchFailed = [];
   const runBatch = async (i) => {
     if (signal && signal.aborted) throw mkAbort();
     const curTask = tasks[batches[i][0]._i];
@@ -392,26 +406,50 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
       }
     }
     } catch (err) {
-      // 单任务失败（网络中断/连接被关闭/超时等）：标记该任务失败并把错误抛给 worker，
-      // 让作业整体失败而不是永远停在「进行中」（此前连接被静默关闭时任务停在 running 拖死作业）
+      // 用户手动停止：必须向上传播，让作业标为已停止而非部分成功
+      if (err && err.name === 'AbortError') throw err;
+      // 单任务失败（网络中断/连接被关闭/超时/模型返回为空等）：标记该任务失败并继续其余批次，
+      // 作业结束时按部分成功处理，不再因单个来源失败拖死整个作业
       for (const s of batches[i]) if (tasks[s._i]) { tasks[s._i].status = 'failed'; tasks[s._i].output = (tasks[s._i].output || '') + `\n[失败] ${err.message || err}`; }
+      batchFailed.push({ index: i, label: (batches[i][0] && batches[i][0].label) || `批次 ${i + 1}`, error: err.message || String(err) });
       if (onTasks) onTasks(tasks);
-      throw err;
+      return;
     }
   };
 
   // 启动 N 个 worker 并发消费批次（单线程内 await 切换，Map 变更同步无竞态）
+  // 单任务重跑时仅执行目标批次，其余批次已在上方标记为跳过
   let nextIdx = 0;
   const workers = Array.from({ length: Math.min(CONC, batches.length) }, async () => {
     for (;;) {
       const i = nextIdx++;
       if (i >= batches.length) break;
+      if (retryTaskNo !== null && i !== retryTaskNo - 1) continue;
       await runBatch(i);
     }
   });
   await Promise.all(workers);
 
-  if (!nodes.size) throw new Error('模型未抽取到任何节点，请检查 API 配置或缩小范围重试');
+  // 单任务重跑：只重跑目标批次，其余批次视为成功（沿用已有产物），不做全部失败校验
+  if (retryTaskNo !== null) {
+    // 仅目标批次失败才算失败；其余批次产物已在图谱中，本次未动
+    if (batchFailed.length) {
+      throw new Error(`任务 ${retryTaskNo} 重跑失败：${batchFailed[0].error}`);
+    }
+    // 重跑成功：沿用已有节点/边，仅目标批次新增内容合并进来
+  } else {
+    // 全部任务失败：无产出，作业整体失败
+    if (batchFailed.length && batchFailed.length === batches.length) {
+      throw new Error(`全部 ${batchFailed.length} 个来源抽取失败：${batchFailed[0].error}`);
+    }
+  }
+  // 部分失败：作业整体成功，但结果中携带 failedTasks，作业卡片据此展示警告
+  const failedTasks = batchFailed.length
+    ? batchFailed.map((f) => ({ taskNo: f.index + 1, label: f.label, error: f.error }))
+    : undefined;
+
+  if (!nodes.size && retryTaskNo === null) throw new Error('模型未抽取到任何节点，请检查 API 配置或缩小范围重试');
+  if (!nodes.size && retryTaskNo !== null) throw new Error('重跑未抽取到任何节点，请检查该来源内容或模型配置');
 
   // 多体系共存合并：节点 id 带 profile 前缀（避免跨体系同名撞 id）；
   // 与已有图谱合并——同 profile 同 id 合并 sources/desc，跨 profile 节点保留共存，差的版本可按体系清除
@@ -433,7 +471,7 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
   for (const n of nodes.values()) putNode(n);
   for (const e of edges.values()) putEdge(e);
   saveGraph([...mergedNodes.values()], [...mergedEdges.values()]);
-  return { nodeCount: mergedNodes.size, edgeCount: mergedEdges.size, sourceCount: sources.length, sourceLabels: sources.map((s) => s.label), profileId, profileName: onto.name };
+  return { nodeCount: mergedNodes.size, edgeCount: mergedEdges.size, sourceCount: sources.length, sourceLabels: sources.map((s) => s.label), profileId, profileName: onto.name, failedTasks };
 }
 
 // ---------- 问答上下文注入 ----------

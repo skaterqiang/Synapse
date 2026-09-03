@@ -608,6 +608,15 @@ function registerIpc(getWindow) {
     }
   });
 
+  // 单任务重跑：仅对作业中标记为 failed 的图谱任务重新执行抽取
+  ipcMain.handle('jobs:retryTask', (_e, payload) => {
+    try {
+      return jobs.retryTask(payload);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('jobs:cancel', (_e, id) => jobs.cancel(id));
 
   // ---------- 知识图谱 ----------

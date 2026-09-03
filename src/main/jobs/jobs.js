@@ -236,7 +236,8 @@ function pumpJobQueue() {
 async function runJob(job) {
   try {
     job.result = await JOB_RUNNERS[job.type](job);
-    job.status = 'success';
+    // 部分任务失败：作业整体视为警告（有产出但非全量），便于用户发现并补跑失败任务
+    job.status = (job.result && Array.isArray(job.result.failedTasks) && job.result.failedTasks.length) ? 'warning' : 'success';
   } catch (err) {
     job.status = 'failed';
     job.error = (err && err.name === 'AbortError') ? '用户手动停止作业' : err.message;
@@ -477,6 +478,8 @@ const JOB_RUNNERS = {
       throw new Error('提取范围信息丢失（应用重启所致），请从「原始文件」页重新选择范围提取');
     }
     setStage(job, 'collect', 'running', inlineSources && inlineSources.length ? `读取 ${inlineSources.length} 个笔记来源…` : (rawPaths && rawPaths.length ? `读取 ${rawPaths.length} 个原始来源…` : '读取全部笔记…'));
+    // 单任务重跑：payload 携带 _retryTaskNo，extractGraph 仅执行该批次
+    const taskFilter = typeof p._retryTaskNo === 'number' && p._retryTaskNo >= 1 ? p._retryTaskNo : undefined;
     const res = await graph.extractGraph(settings, {
       rawPaths,
       inlineSources,
@@ -485,9 +488,10 @@ const JOB_RUNNERS = {
       domainLabel,
       ontologyProfile,
       signal: (jobCancel.get(job.id) || {}).signal || null,
-      // 领域：只有选了“自动”时才在作业内找/建领域；用户显式指定领域（含通用）时 autoDomain=false，按其选择执行
+      // 领域：只有选了"自动"时才在作业内找/建领域；用户显式指定领域（含通用）时 autoDomain=false，按其选择执行
       resolveDomain: job.payload.autoDomain === false ? undefined : (raws) => resolveAutoDomain(job, raws, 'collect'),
       readRaw: (rel) => filesMod.readRawText(settings, rel).catch(() => ''),
+      taskFilter,
     }, (key, detail) => {
       setStage(job, key, 'running', detail);
     }, (detail, preview) => {
@@ -496,7 +500,19 @@ const JOB_RUNNERS = {
       setStage(job, 'extract', 'running', detail);
     }, (tasks) => {
       // 任务列表（每个来源一个 task）实时持久化，供作业内展示
-      job.tasks = tasks.map((t) => ({ ...t }));
+      // 单任务重跑时：extractGraph 返回全量 tasks（非目标已标 done），
+      // 但需保留原任务中成功项的历史输出，避免被「跳过」覆盖
+      if (taskFilter !== undefined && Array.isArray(job.tasks) && job.tasks.length === tasks.length) {
+        for (let i = 0; i < tasks.length; i++) {
+          if (tasks[i].no === taskFilter) {
+            // 目标任务：用新输出替换
+            job.tasks[i] = { ...tasks[i] };
+          }
+          // 非目标任务：保留原有状态与输出（不做修改）
+        }
+      } else {
+        job.tasks = tasks.map((t) => ({ ...t }));
+      }
       persistJobs();
       emitJobs();
     });
@@ -505,7 +521,10 @@ const JOB_RUNNERS = {
     job.source = { ...(job.source || {}), ontologyProfile: res.profileId, ontologyProfileName: res.profileName };
     persistJobs();
     emitJobs();
-    setStage(job, 'extract', 'success', `抽取完成：${res.nodeCount} 节点 / ${res.edgeCount} 关系（体系「${res.profileName}」）`);
+    const failNote = res.failedTasks && res.failedTasks.length
+      ? `，⚠ ${res.failedTasks.length} 个来源失败（可在作业详情中单独重跑）`
+      : '';
+    setStage(job, 'extract', 'success', `抽取完成：${res.nodeCount} 节点 / ${res.edgeCount} 关系（体系「${res.profileName}」）${failNote}`);
     setStage(job, 'save', 'success', '图谱已持久化到 SQLite');
     return res;
   },
@@ -714,8 +733,49 @@ function retry({ id, settings }) {
   return { ok: false, error: '未知作业类型：' + src.type };
 }
 
+// 单任务重跑：仅对作业中标记为 failed 的图谱任务重新执行抽取，其余任务跳过
+// 不重置作业状态，不清空已有任务输出，仅重跑失败项并合并结果
+function retryTask({ id, taskNo, settings }) {
+  const src = jobs.find((j) => j.id === id);
+  if (!src) return { ok: false, error: '作业不存在' };
+  if (src.type !== 'graph') return { ok: false, error: '仅知识图谱作业支持单任务重跑' };
+  if (src.status === 'running' || src.status === 'queued') return { ok: false, error: '作业进行中，无法重跑单个任务' };
+  if (!Array.isArray(src.tasks) || !src.tasks.length) return { ok: false, error: '该作业没有任务列表' };
+  const task = src.tasks.find((t) => t.no === taskNo);
+  if (!task) return { ok: false, error: '任务不存在' };
+  if (task.status !== 'failed') return { ok: false, error: '只能重跑失败的任务' };
+  // 恢复提取范围（与 retry 相同回退链）
+  const base = src.payload || {};
+  const baseRaw = Array.isArray(base.rawPaths) ? base.rawPaths
+    : (Array.isArray(src.rawPaths) ? src.rawPaths
+    : (src.source && src.source.kind === '原始文件' && Array.isArray(src.source.items) ? src.source.items : []));
+  const hadScope = (src.source && src.source.kind === '原始文件') || (Array.isArray(src.rawPaths) && src.rawPaths.length);
+  if (!baseRaw.length && hadScope) {
+    return { ok: false, error: '提取范围信息丢失（应用重启所致），请从「原始文件」页重新选择范围提取' };
+  }
+  // 在原作业上重跑：状态改回 queued，仅对失败任务重抽取
+  // payload 中携带 _retryTaskNo 标记，extractGraph 据此只执行该批次
+  const gpayload = { ...base, settings, _retryTaskNo: taskNo };
+  if (baseRaw.length) gpayload.rawPaths = baseRaw;
+  src.status = 'queued';
+  src.startedAt = 0;
+  src.finishedAt = 0;
+  src.error = '';
+  // 保留已有任务列表，仅重置目标任务为 pending
+  task.status = 'pending';
+  task.output = (task.output || '') + '\n[重跑] 等待重新执行…';
+  // 重置阶段为 pending，重新走一遍流程（但仅目标批次真正执行）
+  src.stages = GRAPH_STAGES.map((s) => ({ key: s.key, name: s.name, status: 'pending', detail: '' }));
+  src.payload = gpayload;
+  jobQueue.push(src.id);
+  persistJobs();
+  emitJobs();
+  pumpJobQueue();
+  return { ok: true, id: src.id };
+}
+
 function getJobLogs(id) {
   return jobLogs.get(id) || [];
 }
 
-module.exports = { init, loadJobs, list, submit, remove, clear, retry, cancel, importLegacyJobs, getJobLogs };
+module.exports = { init, loadJobs, list, submit, remove, clear, retry, retryTask, cancel, importLegacyJobs, getJobLogs };
