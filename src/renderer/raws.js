@@ -115,7 +115,9 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     return el;
   };
   const feedThink = (chunk) => {
-    if (!curThink || !chunk || !chunk.reasoning || !chunk.text) return;
+    if (!curThink || !chunk || !chunk.reasoning || !chunk.text) {
+      return;
+    }
     curThink.textContent += chunk.text;
     const box = $('domain-progress');
     if (box) box.scrollTop = box.scrollHeight;

@@ -187,9 +187,11 @@ async function matchTemplate(settings, raws, opts = {}) {
   const list = listTemplates();
   const text = (raws || []).map((r) => r.content).join('\n').slice(0, 3000);
   if (list.length <= 1) return list[0] || null;
+  // 轻量判定场景：限制 thinking 预算避免思考型模型在领域匹配这种一句话判定上耗费分钟级 thinking
+  const matchSettings = { ...(settings || {}), thinkingBudget: (settings && settings.thinkingBudget) || 4000 };
   try {
     const prompt = matchPrompt(list).replace('{{SOURCE_EXCERPT}}', text || '（空）');
-    const answer = await chatOnce(settings, [
+    const answer = await chatOnce(matchSettings, [
       { role: 'system', content: getPrompt(settings, 'matchPrompt') },
       { role: 'user', content: prompt },
     ], opts.retries, opts.onDelta, opts.timeoutMs ? AbortSignal.timeout(opts.timeoutMs) : undefined);

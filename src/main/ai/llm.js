@@ -44,15 +44,24 @@ function withThinking(body, settings) {
   if (body.think !== undefined || body.enable_thinking !== undefined) return body; // 调用方已显式指定（含 false）
   const s = settings || {};
   const provider = String(s.apiProvider || '');
-  console.log('[withThinking] provider=', provider, 'model=', s.model);
   if (provider === 'ollama') {
     body.think = true;
-    console.log('[withThinking] set think=true');
   } else if (provider === 'dashscope' || provider === 'aliyun' || provider === 'bailian') {
     body.enable_thinking = true;
-    console.log('[withThinking] set enable_thinking=true');
-  } else {
-    console.log('[withThinking] no thinking param set for provider');
+  }
+  return body;
+}
+
+// 思考预算：限制 thinking token 上限，避免判定类轻量请求（领域匹配等）被分钟级思考拖到超时
+// （qwen3.8-max 默认思考很长，10s 超时会在首个 content chunk 前就 AbortError）。
+// 传入 settings.thinkingBudget（千级整数，如 2000）时附加到 DashScope 请求体；0/未设不限制。
+function withThinkingBudget(body, settings) {
+  const s = settings || {};
+  const budget = Number(s.thinkingBudget);
+  if (!Number.isFinite(budget) || budget <= 0) return body;
+  const provider = String(s.apiProvider || '');
+  if (provider === 'dashscope' || provider === 'aliyun' || provider === 'bailian') {
+    body.thinking_budget = Math.round(budget);
   }
   return body;
 }
@@ -144,19 +153,17 @@ function emitDataLine(trimmed, onDelta) {
     const delta = parsed.choices?.[0]?.delta;
     const think = reasoningOf(delta);
     if (think) {
-      console.log('[emitDataLine] reasoning:', think.slice(0, 50));
       onDelta(think, true);
     }
     if (delta?.content) {
       const { think: wrappedThink, text } = splitThinkWrapped(delta.content);
       if (wrappedThink) {
-        console.log('[emitDataLine] wrapped think:', wrappedThink.slice(0, 50));
         onDelta(wrappedThink, true);
       }
       if (text) onDelta(text, false);
     }
-  } catch (e) {
-    console.log('[emitDataLine] parse error:', e.message, 'line:', trimmed.slice(0, 100));
+  } catch (_) {
+    // 忽略无法解析的行
   }
 }
 
@@ -239,7 +246,7 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
       resp = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
-        body: JSON.stringify(withThinking(withModelParams({ model: normalizeModel(settings.model), messages, stream: true }, settings), settings)),
+        body: JSON.stringify(withThinkingBudget(withThinking(withModelParams({ model: normalizeModel(settings.model), messages, stream: true }, settings), settings), settings)),
         dispatcher: llmDispatcher(settings),
         ...(signal ? { signal } : {}),
       });
@@ -258,15 +265,11 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
       throw new RetriableError(`接口错误 (${resp.status})：${detail}`);
     }
     let text = '';
-    let chunkCount = 0;
     // text 只累积正文（thinking 不进最终结果），onDelta 透传两类增量供进度展示
-    await consumeSseStream(resp, (delta, isReasoning) => { 
-      chunkCount++;
-      if (chunkCount <= 3 || chunkCount % 50 === 0) console.log('[chatOnce] chunk', chunkCount, 'isReasoning=', isReasoning, 'len=', delta.length);
-      if (!isReasoning) text += delta; 
-      if (onDelta) onDelta(delta, isReasoning); 
+    await consumeSseStream(resp, (delta, isReasoning) => {
+      if (!isReasoning) text += delta;
+      if (onDelta) onDelta(delta, isReasoning);
     });
-    console.log('[chatOnce] total chunks:', chunkCount, 'text len:', text.length);
     if (!text) throw new RetriableError('模型返回为空');
     return text;
   } catch (err) {

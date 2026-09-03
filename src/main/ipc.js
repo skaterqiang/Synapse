@@ -226,11 +226,14 @@ function registerIpc(getWindow) {
   });
 
   // 预匹配/自动建模共用：把 rawPaths（raw/… 或 local:…）与 texts（内联文本）读成来源内容列表
+  // 领域匹配只需粗粒度文本判断主题，禁用技能解析（skillParse:false）避免对每文件跑 LLM 重组 Markdown：
+  // 否则 18 个 docx 会串行触发 18 次 LLM 技能解析（分钟级且不可见），用户看到步骤①长时间无思考过程
   const buildMatchRaws = async (settings, rawPaths, texts) => {
+    const matchSettings = { ...(settings || {}), skillParse: false };
     const raws = [];
     for (const p of rawPaths || []) {
       try {
-        const content = await readRawText(settings, String(p));
+        const content = await readRawText(matchSettings, String(p));
         if (content) raws.push({ rawPath: String(p), content });
       } catch (_) { /* 单个来源提取失败不阻断 */ }
     }
@@ -249,7 +252,8 @@ function registerIpc(getWindow) {
       const budget = num({ n: timeoutMs }, 'n', 25000, 3000, 120000);
       // 流式增量（含思考过程）实时推给渲染层，弹窗逐步打印判定思路
       const onDelta = (delta, isReasoning) => { try { _e.sender.send('tpl:match-chunk', { text: delta, reasoning: !!isReasoning }); } catch (_) { /* 窗口已关闭 */ } };
-      return { ok: true, ...(await templates.preMatchTemplate(settings, raws, { timeoutMs: budget, retries: 0, onDelta })) };
+      const result = await templates.preMatchTemplate(settings, raws, { timeoutMs: budget, retries: 0, onDelta });
+      return { ok: true, ...result };
     } catch (err) {
       return { ok: false, error: err.message };
     }

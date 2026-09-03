@@ -68,5 +68,6 @@ const JOB_TYPE_ICONS = {
 };
 
 // ---------- 原始文件 ----------
-// 提取知识图谱时的目录匹配超时（ms）
-const GRAPH_MATCH_TIMEOUT = 10000;
+// 提取知识图谱时的目录匹配超时（ms）：思考型模型（如 qwen3.8-max 默认开思考）仅 thinking 就需数十秒，
+// 10s 会在 matchTemplate 流式思考阶段就触发 AbortError 静默回退关键词匹配，弹窗看不到任何思考过程
+const GRAPH_MATCH_TIMEOUT = 60000;
