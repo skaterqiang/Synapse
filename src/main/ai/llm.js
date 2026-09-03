@@ -38,13 +38,22 @@ function withModelParams(body, settings) {
   return body;
 }
 
-// Ollama 兼容接口默认不下发推理增量（reasoning 字段）；未显式配置时自动开启，
-// 使判定类请求（领域匹配/体系匹配等）也能把思考过程实时推给进度弹窗。
-function withOllamaThink(body, settings) {
-  if (body.think !== undefined) return body; // 调用方已显式指定（含 false）
+// 推理增量开关：各服务商默认行为不一（Ollama 需 think:true，DashScope/百炼 Qwen3.8 需 enable_thinking:true），
+// 未显式配置时按 provider 自动开启，使判定类请求（领域匹配/体系匹配等）也能把思考过程实时推给进度弹窗。
+function withThinking(body, settings) {
+  if (body.think !== undefined || body.enable_thinking !== undefined) return body; // 调用方已显式指定（含 false）
   const s = settings || {};
-  if (String(s.apiProvider || '') !== 'ollama') return body;
-  body.think = true;
+  const provider = String(s.apiProvider || '');
+  console.log('[withThinking] provider=', provider, 'model=', s.model);
+  if (provider === 'ollama') {
+    body.think = true;
+    console.log('[withThinking] set think=true');
+  } else if (provider === 'dashscope' || provider === 'aliyun' || provider === 'bailian') {
+    body.enable_thinking = true;
+    console.log('[withThinking] set enable_thinking=true');
+  } else {
+    console.log('[withThinking] no thinking param set for provider');
+  }
   return body;
 }
 
@@ -131,16 +140,23 @@ function emitDataLine(trimmed, onDelta) {
   const data = trimmed.slice(5).trim();
   if (!data || data === '[DONE]') return;
   try {
-    const delta = JSON.parse(data).choices?.[0]?.delta;
+    const parsed = JSON.parse(data);
+    const delta = parsed.choices?.[0]?.delta;
     const think = reasoningOf(delta);
-    if (think) onDelta(think, true);
+    if (think) {
+      console.log('[emitDataLine] reasoning:', think.slice(0, 50));
+      onDelta(think, true);
+    }
     if (delta?.content) {
       const { think: wrappedThink, text } = splitThinkWrapped(delta.content);
-      if (wrappedThink) onDelta(wrappedThink, true);
+      if (wrappedThink) {
+        console.log('[emitDataLine] wrapped think:', wrappedThink.slice(0, 50));
+        onDelta(wrappedThink, true);
+      }
       if (text) onDelta(text, false);
     }
-  } catch (_) {
-    // 忽略无法解析的行
+  } catch (e) {
+    console.log('[emitDataLine] parse error:', e.message, 'line:', trimmed.slice(0, 100));
   }
 }
 
@@ -223,7 +239,7 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
       resp = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
-        body: JSON.stringify(withOllamaThink(withModelParams({ model: normalizeModel(settings.model), messages, stream: true }, settings), settings)),
+        body: JSON.stringify(withThinking(withModelParams({ model: normalizeModel(settings.model), messages, stream: true }, settings), settings)),
         dispatcher: llmDispatcher(settings),
         ...(signal ? { signal } : {}),
       });
@@ -242,8 +258,15 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
       throw new RetriableError(`接口错误 (${resp.status})：${detail}`);
     }
     let text = '';
+    let chunkCount = 0;
     // text 只累积正文（thinking 不进最终结果），onDelta 透传两类增量供进度展示
-    await consumeSseStream(resp, (delta, isReasoning) => { if (!isReasoning) text += delta; if (onDelta) onDelta(delta, isReasoning); });
+    await consumeSseStream(resp, (delta, isReasoning) => { 
+      chunkCount++;
+      if (chunkCount <= 3 || chunkCount % 50 === 0) console.log('[chatOnce] chunk', chunkCount, 'isReasoning=', isReasoning, 'len=', delta.length);
+      if (!isReasoning) text += delta; 
+      if (onDelta) onDelta(delta, isReasoning); 
+    });
+    console.log('[chatOnce] total chunks:', chunkCount, 'text len:', text.length);
     if (!text) throw new RetriableError('模型返回为空');
     return text;
   } catch (err) {
