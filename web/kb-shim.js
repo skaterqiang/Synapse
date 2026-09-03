@@ -142,6 +142,8 @@
     graphClear: () => call('graph:clear'),
     graphOntology: (profileId) => call('graph:ontology', profileId),
     graphProfiles: () => call('graph:profiles'),
+    graphProfilePrompts: (profileId) => call('graph:profilePrompts', profileId),
+    graphSaveProfilePrompt: (payload) => call('graph:saveProfilePrompt', payload),
     graphScopes: () => call('graph:scopes'),
     graphResolveSources: (payload) => call('graph:resolveSources', payload),
     ontoSave: (payload) => call('onto:save', payload),

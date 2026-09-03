@@ -225,7 +225,9 @@ function pumpJobQueue() {
     // 启动时预建中止控制器：runner 在启动瞬间取 signal 传给模型请求/子进程，
     // 若等 cancel() 懒建则 runner 已持有 null，停止将无法中断在途请求
     jobCancel.set(id, new AbortController());
-    runJob(job);
+    // 防御：runJob 内部虽有 try-catch，但异步边界（如 AbortError 在 await 链空隙触发）仍可能逃逸，
+    // 这里兜底防止 UnhandledPromiseRejection 打爆日志
+    runJob(job).catch((err) => console.error('[jobs] runJob 未捕获异常:', err));
   }
   persistJobs();
   emitJobs();
@@ -414,6 +416,9 @@ const JOB_RUNNERS = {
         tracker.setOutput(i, `${res.updated ? '已更新已有笔记' : '已新建笔记'} · ${parseLabel(record.name, used, info.fromCache)} → ${relNotePath(res.path)}${imgCount ? `（含 ${imgCount} 张图）` : ''}${fbReason ? `\n⚠ MinerU 失败已回退内置解析（${fbReason}），笔记质量可能低于 MinerU 解析，可在作业上「用 MinerU 重跑」` : ''}${used === 'skill' && info.externalError ? `\n（MinerU 失败：${info.externalError}，已改用技能解析产出）` : ''}`);
         tracker.setDone(i);
       } catch (err) {
+        // AbortError（用户手动停止）必须向上传播让 runJob 捕获标记作业为已停止，
+        // 吞掉会导致 worker 正常退出、Promise.all resolve，AbortError 从未被 await 的 promise 链逃逸为 UnhandledPromiseRejection
+        if (err && err.name === 'AbortError') throw err;
         failed.push({ path: relPath, name: record.name, error: err.message });
         tracker.setOutput(i, '失败：' + err.message);
         tracker.setDone(i);

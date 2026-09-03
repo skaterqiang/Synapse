@@ -615,6 +615,41 @@ function registerIpc(getWindow) {
   ipcMain.handle('graph:clear', () => graph.clearGraph());
   ipcMain.handle('graph:ontology', (_e, profileId) => graph.getOntology(profileId));
   ipcMain.handle('graph:profiles', () => graph.listProfiles());
+  // 本体定义页：按体系读/写「本体抽取 / 实体识别」提示词（覆盖键 baseKey:profileId，存 settings kv）
+  ipcMain.handle('graph:profilePrompts', (_e, profileId) => {
+    try {
+      const settingsMod = require('./common/settings');
+      const s = settingsMod.getSettings();
+      const pid = String(profileId || '');
+      const read = (base) => {
+        const override = typeof s[base + ':' + pid] === 'string' ? s[base + ':' + pid] : '';
+        const baseOverride = typeof s[base] === 'string' ? s[base] : '';
+        const profDef = (prompts.PROFILE_PROMPTS[pid] && prompts.PROFILE_PROMPTS[pid][base]) || '';
+        const def = profDef || ((prompts.PROMPT_DEFS.find((d) => d.key === base) || {}).def) || '';
+        return { value: override || baseOverride || def, def, hasOverride: !!(override || baseOverride) };
+      };
+      return { ok: true, extract: read('graphExtractPrompt'), entity: read('graphEntityPrompt') };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+  ipcMain.handle('graph:saveProfilePrompt', (_e, { profileId, base, value }) => {
+    try {
+      const settingsMod = require('./common/settings');
+      const s = settingsMod.getSettings();
+      const pid = String(profileId || '');
+      const key = base + ':' + pid;
+      const v = String(value || '').trim();
+      const profDef = (prompts.PROFILE_PROMPTS[pid] && prompts.PROFILE_PROMPTS[pid][base]) || '';
+      const def = profDef || ((prompts.PROMPT_DEFS.find((d) => d.key === base) || {}).def) || '';
+      // 与默认一致或为空时删除覆盖键（回到内置默认），否则保存覆盖
+      if (!v || v === def) delete s[key]; else s[key] = v;
+      settingsMod.saveSettings(s);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
   // 二级范围：列出有抽取节点的具体知识图谱分组（体系→图谱），供问答范围二级选择
   ipcMain.handle('graph:scopes', () => graph.listGraphScopes());
   // OWL 导入（Electron：dialog 选文件；web：通过上传接口走后由 body.filePath 传入）

@@ -286,6 +286,12 @@ const PROFILE_LIST = [
   { id: 'bfo', name: 'BFO 2020 标准体系', desc: '严谨推理，two-stage 提取' },
   { id: 'iso15926', name: 'ISO 15926 工业体系', desc: '4D 时空观，two-stage 提取' },
 ];
+// 各体系的适用场景提示（供 suggestOntologyProfile 的 prompt 引导模型选择，避免无依据时一律回退 bfo-lite）
+const PROFILE_SCENARIOS = {
+  'bfo-lite': '适用：日常笔记、会议纪要、通用文档、产品说明、流程步骤、轻量知识组织。特点：分类扁平（物体/性质/过程/事件/信息体），中文谓词，理解门槛低。',
+  bfo: '适用：科研文献、实验报告、学术论文、严谨推理场景。特点：区分持续体/发生体、物质/非物质实体、角色/功能/倾向，推理链完整。',
+  iso15926: '适用：工业设备运维、工厂产线、质量检测流程、设备生命周期管理、工程数据集成。特点：4D 时空观，区分物理对象/活动/事件/时间段，支持设备部件组合关系。',
+};
 // 默认本体：bfo-lite 的兼容投影（供未传 profileId 的旧调用路径回退）
 const DEFAULT_ONTOLOGY = ONTOLOGY_PROFILES['bfo-lite'];
 // 领域模版 kv 键
@@ -358,6 +364,7 @@ module.exports = {
   DEFAULT_ONTOLOGY,
   ONTOLOGY_PROFILES,
   PROFILE_LIST,
+  PROFILE_SCENARIOS,
   DOMAIN_TEMPLATES_KEY,
   GENERAL_TEMPLATE,
   MCP_PROTOCOL,

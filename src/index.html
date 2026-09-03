@@ -251,6 +251,33 @@
             </div>
           </div>
           <div class="onto-tree-wrap" id="onto-tree-wrap"></div>
+          <div class="onto-prompts" id="onto-prompts">
+            <button class="onto-prompts-head" id="onto-prompts-toggle" aria-expanded="false">
+              <span class="onto-prompts-title"><svg class="ico" width="13" height="13"><use href="#i-mcp"/></svg>当前体系提示词</span>
+              <span class="form-hint">仅作用于「<span id="onto-prompts-profile"></span>」；留空/恢复默认即回退到内置体系专属提示词</span>
+              <span class="onto-prompts-caret">展开 ▾</span>
+            </button>
+            <div class="onto-prompts-body" id="onto-prompts-body" hidden>
+            <div class="onto-prompts-grid">
+              <div class="onto-prompt-item">
+                <label class="onto-prompt-label">图谱 · 本体抽取</label>
+                <textarea id="onto-prompt-extract" rows="4" placeholder="（使用内置体系默认）"></textarea>
+                <div class="onto-prompt-actions">
+                  <button class="btn btn-primary" id="btn-onto-prompt-extract-save">保存</button>
+                  <button class="btn btn-ghost" id="btn-onto-prompt-extract-reset">恢复默认</button>
+                </div>
+              </div>
+              <div class="onto-prompt-item">
+                <label class="onto-prompt-label">图谱 · 实体识别</label>
+                <textarea id="onto-prompt-entity" rows="4" placeholder="（使用内置体系默认）"></textarea>
+                <div class="onto-prompt-actions">
+                  <button class="btn btn-primary" id="btn-onto-prompt-entity-save">保存</button>
+                  <button class="btn btn-ghost" id="btn-onto-prompt-entity-reset">恢复默认</button>
+                </div>
+              </div>
+            </div>
+            </div>
+          </div>
           <div class="onto-bar" id="onto-list-bar">
             <div class="kg-tabs" id="kg-onto-tabs">
               <button data-ot="classes" class="active"><svg class="ico" width="13" height="13"><use href="#i-entities"/></svg>实体类</button>

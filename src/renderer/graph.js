@@ -682,6 +682,52 @@ async function renderKgOntology() {
     const typeNames = { DisjointClasses: '不相交类', SubClassOf: '子类于', TransitiveProperty: '传递属性', SymmetricProperty: '对称属性', AsymmetricProperty: '非对称属性', InverseProperties: '互逆属性', PropertyDomain: '属性定义域', PropertyRange: '属性值域', FunctionalProperty: '函数属性', InverseFunctionalProperty: '反函数属性', ReflexiveProperty: '自反属性', IrreflexiveProperty: '反自反属性' };
     body.innerHTML = (o.axioms || []).length ? (o.axioms || []).map((a) => `<div class="kg-class"><div class="kg-class-head"><code class="axiom-type">${escapeHtml(typeNames[a.type] || a.type)}</code><b>${escapeHtml(a.subject || '')}${a.object ? ' ⇄ ' + escapeHtml(a.object) : ''}</b><span>${escapeHtml(a.desc || '')}</span><span class="kg-class-acts"><span class="mini-tag" style="opacity:.55">公理</span></span></div></div>`).join('') : '<div class="gd-desc">当前体系未定义逻辑公理。</div>';
   }
+  renderOntoPrompts(o);
+}
+
+// ---------- 本体定义页：当前体系的「本体抽取 / 实体识别」提示词 ----------
+// 覆盖键 baseKey:profileId 存 settings；留空/恢复默认回退到内置体系专属提示词
+async function renderOntoPrompts(o) {
+  const wrap = $('onto-prompts');
+  if (!wrap) return;
+  const pid = o && o.profileId;
+  if (!pid) { wrap.hidden = true; return; }
+  wrap.hidden = false; // 外层始终显示（折叠条），主体由 onto-prompts-body 的 hidden 控制
+  const nameEl = $('onto-prompts-profile');
+  if (nameEl) nameEl.textContent = o.profileName || pid;
+  let data = null;
+  try { data = await window.kb.graphProfilePrompts(pid); } catch (_) { data = null; }
+  if (!data || !data.ok) return;
+  const fill = (taId, item) => {
+    const ta = $(taId);
+    if (!ta) return;
+    ta.value = (item && item.value) || '';
+    ta.placeholder = '（内置默认）' + ((item && item.def) || '');
+  };
+  fill('onto-prompt-extract', data.extract);
+  fill('onto-prompt-entity', data.entity);
+}
+
+async function saveOntoPrompt(base, taId) {
+  const pid = state.kg.onto && state.kg.onto.profileId;
+  if (!pid) return;
+  const value = $(taId).value;
+  const res = await window.kb.graphSaveProfilePrompt({ profileId: pid, base, value });
+  if (!res || !res.ok) { toast('保存失败：' + ((res && res.error) || '未知错误'), 4000); return; }
+  toast('已保存当前体系提示词，下次抽取/识别时生效');
+}
+
+async function resetOntoPrompt(base, taId) {
+  const pid = state.kg.onto && state.kg.onto.profileId;
+  if (!pid) return;
+  await window.kb.graphSaveProfilePrompt({ profileId: pid, base, value: '' }); // 空值=删除覆盖回退默认
+  const data = await window.kb.graphProfilePrompts(pid);
+  if (data && data.ok) {
+    const item = base === 'graphExtractPrompt' ? data.extract : data.entity;
+    $(taId).value = (item && item.value) || '';
+    $(taId).placeholder = '（内置默认）' + ((item && item.def) || '');
+  }
+  toast('已恢复内置体系默认提示词');
 }
 
 // ---------- 本体增删改查 ----------
@@ -1267,6 +1313,24 @@ function bindGraphEvents() {
     if (!b) return;
     state.kg.ontoView = b.dataset.ov;
     renderKgOntology();
+  });
+  // 当前体系提示词：保存 / 恢复默认
+  const bindOntoPrompt = (saveId, resetId, base, taId) => {
+    const s = $(saveId), r = $(resetId);
+    if (s) s.addEventListener('click', () => saveOntoPrompt(base, taId));
+    if (r) r.addEventListener('click', () => resetOntoPrompt(base, taId));
+  };
+  bindOntoPrompt('btn-onto-prompt-extract-save', 'btn-onto-prompt-extract-reset', 'graphExtractPrompt', 'onto-prompt-extract');
+  bindOntoPrompt('btn-onto-prompt-entity-save', 'btn-onto-prompt-entity-reset', 'graphEntityPrompt', 'onto-prompt-entity');
+  // 提示词区折叠切换（默认收起，避免挤压结构树）
+  const promptToggle = $('onto-prompts-toggle');
+  if (promptToggle) promptToggle.addEventListener('click', () => {
+    const body = $('onto-prompts-body');
+    const caret = promptToggle.querySelector('.onto-prompts-caret');
+    const open = body.hidden;
+    body.hidden = !open;
+    promptToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (caret) caret.textContent = open ? '收起 ▴' : '展开 ▾';
   });
   // 导入 OWL 体系（Electron 走 dialog；Web 走 <input type=file> + /api/upload）
   const btnImportOwl = $('btn-onto-import-owl');

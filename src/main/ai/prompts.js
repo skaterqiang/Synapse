@@ -34,10 +34,41 @@ const PROMPT_DEFS = [
 const DEF_MAP = {};
 PROMPT_DEFS.forEach((d) => { DEF_MAP[d.key] = d.def; });
 
+// 各顶层本体体系专属的默认提示词：贴合该体系的类/谓词特点。
+// 结构：PROFILE_PROMPTS[profileId][baseKey]，baseKey 取 'graphExtractPrompt' | 'graphEntityPrompt'。
+// 查找顺序（getPromptForProfile）：设置覆盖 baseKey:profileId → 设置覆盖 baseKey → 内置体系默认 → 内置通用默认。
+const PROFILE_PROMPTS = {
+  'bfo-lite': {
+    graphExtractPrompt: '你是知识图谱本体抽取引擎（BFO-Lite 轻量体系）。从来源中抽取节点与关系：节点一级类在扁平类表中选择（物体 object / 性质 quality / 角色 role / 功能 function / 过程 process / 事件 event / 信息体 information）。性质、角色、功能必须依附于某个物体承载者；信息体须通过「引用/应用于」关联到其承载的物体或过程。关系使用中文谓词（属于/包含/依赖/相关/引用/应用于/衍生自/矛盾于）。节点名用规范简短名词，同一事物只输出一个节点，关系须有明确文本依据。只输出 JSON；思考与输出均使用中文。',
+    graphEntityPrompt: '你是实体抽取引擎（BFO-Lite 轻量体系）。从问题中抽取可能在知识图谱中存在的实体名（节点名），多为物体、过程、事件或信息体，使用规范简短名词并去重。只输出 JSON；思考与输出均使用中文。',
+  },
+  bfo: {
+    graphExtractPrompt: '你是知识图谱本体抽取引擎（BFO 2020 标准体系，两阶段抽取）。第一步把节点粗分类到顶级类：持续体 continuant（独立持续体/特依存持续体/泛依存持续体）与发生体 occurrent（过程/历程/过程边界/时间区域/时空区域）二选一；第二步再在指定子树内细分到叶子类（如物质实体/物体/物体聚合/性质/角色/倾向/功能）。严格区分持续体与发生体；性质、角色、功能、倾向须经 inheres_in 或 bearer_of 挂靠到独立持续体。关系使用 RO 谓词（is_a/instance_of/part_of/has_part/participates_in/inheres_in/bearer_of/located_in/occurs_in/precedes/realizes/has_role/derives_from/related_to）。节点名用规范简短名词，关系须有明确文本依据。只输出 JSON；思考与输出均使用中文。',
+    graphEntityPrompt: '你是实体抽取引擎（BFO 2020 标准体系）。从问题中抽取可能在知识图谱中存在的实体名（节点名），区分持续体（物质实体/物体）与发生体（过程/事件），使用规范简短名词并去重。只输出 JSON；思考与输出均使用中文。',
+  },
+  iso15926: {
+    graphExtractPrompt: '你是知识图谱本体抽取引擎（ISO 15926 工业体系，4D 时空观，两阶段抽取）。第一步把节点粗分类到顶级类：可能个体 possible_individual（物理对象/活动/事件/时间段）与抽象对象 abstract_object（类/数/关系对象）二选一；第二步再细分（如全生命周期个体/组合个体/个体的类）。设备、仪器、部件归为物理对象（组合个体用 composedOf 表达部件组合）；检测、运维、试验归为活动或事件；标准、规格、类别归为个体的类。关系使用 Part 7 谓词（classifiedBy/hasSuperclass/hasClassMember/temporalPartOf/spatialPartOf/composedOf/startsBefore/endsBefore/existsAt/involvedIn/connectedTo/containedIn/representsIn/relatedTo）。节点名用规范简短名词，关系须有明确文本依据。只输出 JSON；思考与输出均使用中文。',
+    graphEntityPrompt: '你是实体抽取引擎（ISO 15926 工业体系）。从问题中抽取可能在知识图谱中存在的实体名（节点名），多为物理对象（设备/仪器/部件）、活动（检测/运维/试验）或个体的类（标准/规格），使用规范简短名词并去重。只输出 JSON；思考与输出均使用中文。',
+  },
+};
+
 // 设置覆盖优先，否则内置默认
 function getPrompt(settings, key) {
   const override = settings && typeof settings[key] === 'string' ? settings[key].trim() : '';
   return override || DEF_MAP[key] || '';
 }
 
-module.exports = { PROMPT_DEFS, getPrompt };
+// 按体系取提示词：覆盖链 baseKey:profileId → baseKey → 内置体系默认 → 内置通用默认
+function getPromptForProfile(settings, baseKey, profileId) {
+  const pid = String(profileId || '');
+  if (settings && pid) {
+    const specific = typeof settings[baseKey + ':' + pid] === 'string' ? settings[baseKey + ':' + pid].trim() : '';
+    if (specific) return specific;
+  }
+  const base = settings && typeof settings[baseKey] === 'string' ? settings[baseKey].trim() : '';
+  if (base) return base;
+  const profDef = (PROFILE_PROMPTS[pid] && PROFILE_PROMPTS[pid][baseKey]) || '';
+  return profDef || DEF_MAP[baseKey] || '';
+}
+
+module.exports = { PROMPT_DEFS, PROFILE_PROMPTS, getPrompt, getPromptForProfile };

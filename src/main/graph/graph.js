@@ -5,7 +5,7 @@ const notesStore = require('../notes/store');
 const { chatOnce, extractJson, streamChat } = require('../ai/llm');
 const { num } = require('../common/config');
 const { buildTasks } = require('../jobs/tasks');
-const { getPrompt } = require('../ai/prompts');
+const { getPrompt, getPromptForProfile } = require('../ai/prompts');
 
 // ---------- 本体层定义（多体系：内置只读基座 + 用户叠加层，kv schema v3） ----------
 // ONTOLOGY_KEY / DEFAULT_ONTOLOGY / ONTOLOGY_PROFILES / PROFILE_LIST 定义于 common/constants.js
@@ -301,7 +301,7 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
     const promptHead = twoStage
       ? `【第一步·粗分类】本体系为两阶段抽取。节点的一级类只能从以下顶级类中选择：${classLine(topClasses)}。\n`
       : `节点类型只能从：${classLine(onto.classes)} 中选择。\n`;
-    const sysPrompt = getPrompt(settings, 'graphExtractPrompt') + (twoStage
+    const sysPrompt = getPromptForProfile(settings, 'graphExtractPrompt', profileId) + (twoStage
       ? `\n当前使用顶层本体体系「${onto.name}」的两阶段抽取模式：第一步先按顶级类粗分类，第二步再在用户指定的子树内细分到叶子类。`
       : `\n当前使用顶层本体体系「${onto.name}」。`);
     const answer = await chatOnce(settings, [
@@ -643,10 +643,17 @@ async function kgAsk(event, { settings, question, hops, withFacts }) {
     }
     const maxHops = Math.max(1, Math.min(5, Number(hops) || 3));
     event.sender.send('kg:stage', '解析问题并抽取实体…');
+    // 实体识别按图内节点的主导体系取提示词（多体系共存时取节点数最多的体系）
+    let entityPid = '';
+    try {
+      const cnt = {};
+      for (const n of g.nodes) { const p = String(n.profile || ''); if (p) cnt[p] = (cnt[p] || 0) + 1; }
+      entityPid = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0] || '';
+    } catch (_) {}
     let names = [];
     try {
       const ans = await chatOnce(settings, [
-        { role: 'system', content: getPrompt(settings, 'graphEntityPrompt') },
+        { role: 'system', content: getPromptForProfile(settings, 'graphEntityPrompt', entityPid) },
         { role: 'user', content: `从问题中抽取可能在知识图谱中存在的实体名（节点名）。问题：${question}\n输出 JSON：{"names":["..."]}` },
       ]);
       names = extractJson(ans).names || [];

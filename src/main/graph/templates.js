@@ -234,10 +234,19 @@ async function preMatchTemplate(settings, raws, opts = {}) {
 
 // AI 自动生成：按名称与描述补全模版 ID、关键词、体系绑定与领域类
 // onDelta(delta, isReasoning) 可选：流式增量回调，供渲染层实时打印生成过程
+// 领域类 parent 必须是所选体系类树中真实存在的 key（各体系类树差异巨大）：
+// 先生成 ontologyProfile，再用该体系的类树细节做第二次调用生成领域类，避免硬编码 bfo-lite 的 object/information。
+// 各体系的「实体父类 / 概念父类」候选（领域类 parent 从中二选一，取体系内最具概括性的两个挂点）
+const PROFILE_PARENT_HINTS = {
+  'bfo-lite': { entity: 'object', concept: 'information' },
+  bfo: { entity: 'object', concept: 'generically_dependent_continuant' },
+  iso15926: { entity: 'physical_object', concept: 'class_of_individual' },
+};
 async function generateTemplate(settings, { name, desc }, onDelta) {
   if (!trimStr(name, 100)) throw new Error('请先填写名称');
-  const prompt = [
-    '你是知识库领域建模专家。请为下述知识领域设计一个「领域模版」，用于指导 AI 从该领域文档中抽取结构化知识。',
+  // 第一步：选体系 + 生成 id / keywords（不带领域类，体系选择不受类树干扰）
+  const prompt1 = [
+    '你是知识库领域建模专家。请为下述知识领域设计「领域模版」的标识与体系绑定。',
     '',
     `领域名称：${trimStr(name, 100)}`,
     `领域描述：${trimStr(desc) || '（无，请按名称推断）'}`,
@@ -245,33 +254,76 @@ async function generateTemplate(settings, { name, desc }, onDelta) {
     '只输出一个 JSON 对象，不要输出其他任何内容：',
     '{',
     '  "id": "与该领域语义对应的英文标识符（小写字母/数字/下划线，字母开头；应是领域名称的英文翻译或缩写，例如领域“樱桃种植”对应 cherry_planting；严禁照抄本示例）",',
-    '  "ontologyProfile": "建议绑定的顶层本体体系，三选一：bfo-lite（通用轻量，默认）/ bfo（科研严谨）/ iso15926（工业设备）",',
-    '  "keywords": ["用于领域匹配的中文关键词，5-8 个"],',
-    '  "domainClasses": [ { "label": "领域类中文名", "parent": "父类（体系类 key，实物体用 object，信息/概念用 information）", "desc": "一句话说明" } ]',
+    '  "ontologyProfile": "建议绑定的顶层本体体系，三选一：bfo-lite / bfo / iso15926",',
+    '  "keywords": ["用于领域匹配的中文关键词，5-8 个"]',
     '}',
-    '要求：id 必须与领域名称语义一致；domainClasses 5-8 个，parent 只能是 object（具体的人/物/组织/工具）或 information（概念/文档/方法等抽象信息）；全部使用中文（id 除外）。',
+    '要求：id 必须与领域名称语义一致；全部使用中文（id 除外）。',
+    '',
+    'ontologyProfile 选择要点：',
+    '- 日常办公 / 通用文档 / 产品说明 / 流程步骤 / 会议纪要 → bfo-lite',
+    '- 科研文献 / 实验报告 / 学术论文 / 严谨推理 → bfo',
+    '- 工业设备运维 / 工厂产线 / 质量检测流程 / 设备生命周期管理 / 工程数据集成 → iso15926',
+    '- 若领域同时涉及「质量检测/试验方法/工艺流程」与「设备/仪器」，优先 iso15926',
   ].join('\n');
-  const answer = await chatOnce(settings, [
+  const answer1 = await chatOnce(settings, [
     { role: 'system', content: getPrompt(settings, 'tplGenPrompt') },
-    { role: 'user', content: prompt },
+    { role: 'user', content: prompt1 },
   ], undefined, onDelta);
-  const raw = extractJson(answer);
-  // 防模型照抄提示词示例/泛占位：命中时回退为时间戳 id（用户可在弹窗中修改）
-  let id = /^[A-Za-z][A-Za-z0-9_]*$/.test(trimStr(raw.id, 60)) ? trimStr(raw.id, 60) : '';
+  const raw1 = extractJson(answer1);
+  let id = /^[A-Za-z][A-Za-z0-9_]*$/.test(trimStr(raw1.id, 60)) ? trimStr(raw1.id, 60) : '';
   if (!id || /^(rental_service|example|domain|test|demo)$/.test(id)) id = 'domain_' + Date.now().toString(36);
-  const profileId = ['bfo-lite', 'bfo', 'iso15926'].includes(trimStr(raw.ontologyProfile, 60)) ? trimStr(raw.ontologyProfile, 60) : 'bfo-lite';
-  const domainClasses = (Array.isArray(raw.domainClasses) ? raw.domainClasses : [])
-    .map((c) => ({
-      key: trimStr(c.label, 60), label: trimStr(c.label, 100),
-      parent: ['object', 'information'].includes(trimStr(c.parent, 60)) ? trimStr(c.parent, 60) : 'object',
-      desc: trimStr(c.desc, 300), examples: [], from: 'custom',
-    }))
+  const profileId = ['bfo-lite', 'bfo', 'iso15926'].includes(trimStr(raw1.ontologyProfile, 60)) ? trimStr(raw1.ontologyProfile, 60) : 'bfo-lite';
+  const keywords = toList(raw1.keywords);
+
+  // 第二步：把所选体系的类树细节注入 prompt，让领域类 parent 从真实类树中选
+  const onto = resolveOntologyFor(profileId);
+  const hints = PROFILE_PARENT_HINTS[profileId] || PROFILE_PARENT_HINTS['bfo-lite'];
+  const entityOk = (onto.classes || []).some((c) => c.key === hints.entity);
+  const conceptOk = (onto.classes || []).some((c) => c.key === hints.concept);
+  const entityParent = entityOk ? hints.entity : (onto.fallbackType || 'object');
+  // 概念父类：优先提示值，缺失时回退到体系内含 information/class 语义的类，再不行用 entityParent
+  let conceptParent = conceptOk ? hints.concept : '';
+  if (!conceptParent) {
+    const infoCls = (onto.classes || []).find((c) => /information|class_of_individual|generically_dependent/.test(c.key));
+    conceptParent = infoCls ? infoCls.key : entityParent;
+  }
+  const classLine = (onto.classes || []).map((c) => `${c.key}(${c.label}${c.desc ? '：' + c.desc : ''})`).join('、');
+  const prompt2 = [
+    `你是知识库领域建模专家。已确定领域「${trimStr(name, 100)}」绑定顶层本体体系「${onto.name}」。`,
+    `领域描述：${trimStr(desc) || '（无）'}`,
+    '',
+    `该体系的类树（key(中文名：说明)）：${classLine}`,
+    '',
+    '请为该领域设计 5-8 个领域类，每个领域类挂载到上述体系类树中合适的父类下。只输出一个 JSON 对象：',
+    '{ "domainClasses": [ { "label": "领域类中文名", "parent": "父类的体系类 key", "desc": "一句话说明" } ] }',
+    '',
+    `要求：`,
+    `- parent 只能从上述类树的 key 中选，且只能是代表「具体实体」的 ${entityParent} 或代表「抽象概念/标准/规范/信息」的 ${conceptParent}；`,
+    `- 具体的人/物/组织/设备/工具/产品用 ${entityParent}；概念/标准/规范/方法/规则/文档等抽象信息用 ${conceptParent}；`,
+    '- 领域类之间尽量正交（不重叠）；全部使用中文。',
+  ].join('\n');
+  const answer2 = await chatOnce(settings, [
+    { role: 'system', content: getPrompt(settings, 'tplGenPrompt') },
+    { role: 'user', content: prompt2 },
+  ], undefined, onDelta);
+  const raw2 = extractJson(answer2);
+  const validKeys = new Set((onto.classes || []).map((c) => c.key));
+  const domainClasses = (Array.isArray(raw2.domainClasses) ? raw2.domainClasses : [])
+    .map((c) => {
+      const p = trimStr(c.parent, 60);
+      // parent 必须是体系类树真实 key，且限定在 entity/concept 两个挂点之一；非法则按内容倾向回退
+      const parent = (p === entityParent || p === conceptParent) ? p : (validKeys.has(p) ? p : entityParent);
+      return {
+        key: trimStr(c.label, 60), label: trimStr(c.label, 100),
+        parent, desc: trimStr(c.desc, 300), examples: [], from: 'custom',
+      };
+    })
     .filter((c) => c.key);
   return {
     id,
     ontologyProfile: profileId,
-    profileName: resolveOntologyFor(profileId).name, // 运行时展示字段：体系中文名
-    keywords: toList(raw.keywords),
+    profileName: onto.name, // 运行时展示字段：体系中文名
+    keywords,
     domainClasses,
   };
 }
@@ -307,12 +359,20 @@ async function suggestTemplateName(settings, raws) {
 // onDelta(delta, isReasoning) 可选：流式增量回调，供渲染层实时打印 AI 思考过程
 async function suggestOntologyProfile(settings, raws, onDelta) {
   const { listProfiles } = require('./graph'); // 惰性 require 避免循环依赖
+  const { PROFILE_SCENARIOS } = require('../common/constants');
   const profiles = listProfiles();
-  const lines = profiles.map((p) => `- ${p.id}（${p.name}）：${p.desc || '无描述'}（含 ${p.counts ? p.counts.classes : 0} 个类）`);
+  const lines = profiles.map((p) => {
+    const scenario = PROFILE_SCENARIOS[p.id] || '';
+    return `- ${p.id}（${p.name}）：${p.desc || '无描述'}（含 ${p.counts ? p.counts.classes : 0} 个类）${scenario ? `\n  ${scenario}` : ''}`;
+  });
   const text = (raws || []).map((r) => r.content || r.text || '').join('\n').slice(0, 3000);
   const prompt = [
-    '你是知识库本体建模专家。下方是待抽取的来源内容摘录，以及当前可用的顶层本体体系清单。',
-    '请依据内容的领域属性（通用日常 / 科研严谨推理 / 工业设备 4D 时空 / 其他专用 OWL 体系），从中选出最适合作为本次抽取基座的一个体系。',
+    '你是知识库本体建模专家。下方是待抽取的来源内容摘录，以及当前可用的顶层本体体系清单（含各体系适用场景）。',
+    '请依据内容的核心特征，从清单中选出最适合作为本次抽取基座的一个体系。判断要点：',
+    '- 内容是日常办公/通用文档/流程说明 → 选 bfo-lite（轻量、中文谓词、分类扁平）',
+    '- 内容是科研文献/实验报告/学术推理 → 选 bfo（严谨分类、持续体/发生体二分）',
+    '- 内容涉及设备/仪器/产线/质检流程/工程数据 → 选 iso15926（4D 时空观、物理对象/活动/事件）',
+    '- 内容是其他专用领域 → 选导入的 OWL 体系（如有）',
     '',
     ...lines,
     '',

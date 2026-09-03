@@ -253,8 +253,13 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
     } catch (err) {
       // 停止导致的 abort 不重试，直接抛出
       if (signal && signal.aborted) throw abortErr();
+      // 本地服务（Ollama 等 loopback）连接失败时给出可操作的提示
+      const isLoopback = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])/.test(baseUrl);
+      const hint = isLoopback && /ECONNREFUSED|ECONNRESET|ETIMEDOUT/i.test(String(err.message || ''))
+        ? '。本地模型服务未启动？请确认已运行 ollama serve（或对应服务）后再试'
+        : '';
       // 网络层失败（DNS/连接/超时）视为可重试，并带上根因便于诊断
-      throw new RetriableError(`网络请求失败：${err.message}${err.cause ? `（${err.cause.code || err.cause.message}）` : ''}`);
+      throw new RetriableError(`网络请求失败：${err.message}${err.cause ? `（${err.cause.code || err.cause.message}）` : ''}${hint}`);
     }
     if (!resp.ok) {
       const detail = (await resp.text().catch(() => '')).slice(0, 300);

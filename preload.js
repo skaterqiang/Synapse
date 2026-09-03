@@ -163,6 +163,8 @@ contextBridge.exposeInMainWorld('kb', {
   graphClear: () => ipcRenderer.invoke('graph:clear'),
   graphOntology: (profileId) => ipcRenderer.invoke('graph:ontology', profileId),
   graphProfiles: () => ipcRenderer.invoke('graph:profiles'),
+  graphProfilePrompts: (profileId) => ipcRenderer.invoke('graph:profilePrompts', profileId),
+  graphSaveProfilePrompt: (payload) => ipcRenderer.invoke('graph:saveProfilePrompt', payload),
   graphScopes: () => ipcRenderer.invoke('graph:scopes'),
   graphResolveSources: (payload) => ipcRenderer.invoke('graph:resolveSources', payload),
   ontoSave: (payload) => ipcRenderer.invoke('onto:save', payload),

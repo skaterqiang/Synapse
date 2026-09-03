@@ -131,6 +131,9 @@ function buildJobCard(job) {
       ? `按领域模版「${dom.label}」抽取：实体类型〔${(dom.entity || []).join('、')}〕；概念类型〔${(dom.concept || []).join('、')}〕`
       : `按「${dom.label}」抽取：未附加实体/概念类型约束`)
     : '';
+  // 本次作业所用模型（payload.settings.model）：让用户明确知道该作业是哪家模型跑的
+  const jobModel = job.payload && job.payload.settings && job.payload.settings.model;
+  const jobProvider = job.payload && job.payload.settings && job.payload.settings.apiProvider;
   let dur = '';
   if (job.finishedAt && job.startedAt) dur = fmtDuration(job.finishedAt - job.startedAt);
   else if (job.status === 'running' && job.startedAt) dur = fmtDuration(Date.now() - job.startedAt) + '（进行中）';
@@ -142,6 +145,7 @@ function buildJobCard(job) {
     <span class="job-icon">${icon}</span>
     <span class="job-title" title="${escapeHtml(job.title)}">${escapeHtml(job.title)}</span>
     ${dom ? `<span class="job-domain" title="${escapeHtml(domTitle)}">领域：${escapeHtml(dom.label)}${domTypes ? ` · ${domTypes} 类型` : ''}</span>` : ''}
+    ${jobModel ? `<span class="job-model" title="本次作业使用模型：${escapeHtml(jobProvider || '')} / ${escapeHtml(jobModel)}">${escapeHtml(jobModel)}</span>` : ''}
     ${srcCount != null ? `<span class="job-src-count" title="抽取的来源/文件数">${icoSvg('notes', 12)} ${srcCount}</span>` : ''}
     <span class="job-progress" title="阶段进度：已完成 ${doneCount}/${stages.length} 个阶段">${doneCount}/${stages.length}</span>
     <span class="job-status ${statusCls}">${statusText}</span>
