@@ -1,4 +1,4 @@
-* {
+﻿* {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
@@ -9,7 +9,7 @@
 }
 
 :root {
-  /* Qoder 椋庢牸锛氭祬鑹茶儗？+ 缁胯壊涓昏壊 + 澶у渾瑙掑崱？*/
+/* Qoder 风格：浅色背景 + 绿色主色 + 大圆角卡片 */
   --bg: #fafbfc;
   --panel: #ffffff;
   --sidebar-bg: #f5f7fa;
@@ -53,7 +53,7 @@ html, body {
   height: 100vh;
 }
 
-/* 缁熶竴绾挎€у浘鏍囷細閰嶅悎 index.html 椤堕儴？SVG sprite锛宑urrentColor 缁ф壙鏂囧瓧棰滆壊 */
+/* 统一线性图标：配合 index.html 顶部 SVG sprite，currentColor 继承文字颜色 */
 .ico {
   display: inline-block;
   vertical-align: -2px;
@@ -70,7 +70,7 @@ html, body {
 .settings-tabs button .ico { vertical-align: -2px; }
 .logo .logo-ico { color: var(--primary); vertical-align: -3px; margin-right: 6px; }
 
-/* 渚ц竟鏍忔敹璧峰悗鐨勫浘鏍囨爮锛氱獎鏉″崰浣嶏紙闈炴偓娴級锛屼繚鐣欎富鍏ュ彛鍥炬爣 */
+/* 侧边栏收起后的图标栏：窄条占位（非悬浮），保留主入口图标 */
 .sidebar-rail {
   flex: none;
   width: 46px;
@@ -83,7 +83,7 @@ html, body {
   border-right: 1px solid var(--border);
   overflow-y: auto;
 }
-/* 绫婚€夋嫨鍣ㄧ殑 display 浼樺厛绾ч珮？UA ？[hidden]锛岄渶鏄惧紡琛ュ洖 */
+/* 类选择器的 display 优先级高于 UA 的 [hidden]，需显式补回 */
 .sidebar-rail[hidden] { display: none; }
 .sidebar-rail .rail-btn {
   width: 32px;
@@ -105,7 +105,7 @@ html, body {
 .sidebar-rail .rail-sep { width: 22px; height: 1px; background: var(--border); margin: 4px 0; flex: none; }
 .sidebar-rail .rail-spacer { flex: 1; min-height: 8px; }
 
-/* ---------- 闈㈡澘鍒嗛殧鏉★紙鎷栨嫿璋冨？---------- */
+/* ---------- 面板分隔条（拖拽调宽） ---------- */
 .pane-resizer {
   width: 6px;
   flex: none;
@@ -155,7 +155,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   background: var(--primary-hover);
   box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
 }
-/* 鍥炵瓟涓彂閫佹寜閽垏鎹负鈥滃仠姝⑩€濓細绾㈣壊璀︾ず鑹诧紝琛ㄧず鐐瑰嚮浼氫腑鏂綋鍓嶅洖？*/
+/* 回答中发送按钮切换为“停止”：红色警示色，表示点击会中断当前回复 */
 .btn.btn-stop {
   background: var(--danger);
   border-color: var(--danger);
@@ -169,7 +169,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   box-shadow: none;
 }
 .btn-ghost:hover { background: rgba(0, 0, 0, 0.04); color: var(--text); box-shadow: none; }
-/* 褰撳墠椤靛搴旂殑骞界伒鎸夐挳閫変腑鎬侊紙濡備晶杈规爮搴曢儴鐨勩€孉I 闂瓟銆嶅叆鍙ｏ級 */
+/* 当前页对应的幽灵按钮选中态（如侧边栏底部的「AI 问答」入口） */
 .btn-ghost.active { background: var(--primary-light); color: var(--primary); font-weight: 600; }
 
 .icon-btn {
@@ -286,12 +286,12 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .nav-side { display: inline-flex; align-items: center; gap: 4px; }
 .nav-side .icon-btn { font-size: 12px; padding: 1px 6px; }
 
-/* 渚ц竟鏍忓瓙鑿滃崟锛圠LM Wiki / 鐭ヨ瘑鍥捐氨 涓嬬骇瀵艰埅？*/
+/* 侧边栏子菜单（LLM Wiki / 知识图谱 下级导航） */
 .nav-submenu { display: flex; flex-direction: column; gap: 1px; padding-left: 14px; }
 .nav-sub-item { padding: 5px 10px; font-size: 12.5px; color: var(--text-sub); }
 .nav-sub-item.active { color: var(--primary); }
 .nav-sub-item.nav-tpl { margin-top: 6px; border-top: 1px dashed var(--border); border-radius: 0; padding-top: 7px; }
-/* 瀛愮骇鍒嗗尯灏忔爣棰橈紙鐩綍/鏍囩？*/
+/* 子级分区小标题（目录/标签） */
 .nav-sub-head {
   display: flex;
   align-items: center;
@@ -364,7 +364,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .sidebar-footer .btn { flex: 1; font-size: 12px; }
 
-/* ---------- 绗旇鍒楄〃 ---------- */
+/* ---------- 笔记列表 ---------- */
 .note-list-pane {
   width: 290px;
   min-width: 200px;
@@ -385,7 +385,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .note-list-header #btn-notelist-hide:hover { opacity: 1; }
 .note-list-count { color: var(--text-sub); font-size: 12px; font-weight: 400; }
 #note-list { flex: 1; overflow-y: auto; padding: 8px 10px; }
-/* 鍏ㄩ儴绗旇路鏃堕棿绾垮垎缁勫ご锛氬惛椤跺皬鏍囬锛屾粴鍔ㄦ椂濮嬬粓鐭ラ亾褰撳墠鏃堕棿？*/
+/* 全部笔记·时间线分组头：吸顶小标题，滚动时始终知道当前时间 */
 .nl-group {
   position: sticky;
   top: 0;
@@ -406,7 +406,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   border-radius: var(--radius);
   padding: 0 6px;
 }
-/* 鐩綍娴忚琛岋紙鍏ㄩ儴绗旇鏍圭洰褰曡鍥撅級锛氱偣鍑昏繘鍏ョ洰褰曪紝浣撻獙鍚屼晶杈规爮鐩綍？*/
+/* 目录浏览行（全部笔记根目录视图）：点击进入目录，体验同侧边栏目录 */
 .nl-folder-row {
   display: flex;
   align-items: center;
@@ -465,7 +465,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .note-card-footer .nc-words { flex: none; }
 .note-card-footer .nc-words::before { content: '路 '; }
-/* 瀛愮洰褰曟爣璁帮細鐩綍瑙嗗浘鍚瓙鐩綍绗旇锛岀敤瀹冭〃鏄庤绡囩殑瀛樻斁灞傜骇 */
+/* 子目录标记：目录视图含子目录笔记，用它表明该篇的存放层级 */
 .note-card-footer .nc-sub {
   flex: none;
   max-width: 55%;
@@ -475,7 +475,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   color: var(--primary);
   opacity: 0.75;
 }
-/* 灏忔爣绛句笌绫诲瀷鍦嗙偣锛氬叏灞€鍩虹鏍峰紡锛堢瑪璁板崱？/ KG 瀹炰綋 / 鏈綋绀轰緥绛夊叡鐢級 */
+/* 小标签与类型圆点：全局基础样式（笔记卡片 / KG 实体 / 本体示例等共用） */
 .mini-tag {
   background: rgba(16, 185, 129, 0.1);
   color: var(--primary);
@@ -504,14 +504,14 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   opacity: 0.6;
 }
 
-/* ---------- 缂栬緫？---------- */
+/* ---------- 编辑器 ---------- */
 .editor-pane {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 360px;
   background: var(--panel);
-  container-type: inline-size; /* 宸ュ叿？鍒嗗睆闄嶇骇鎸夌紪杈戝尯瀹為檯瀹藉害鍝嶅簲锛堥潰鏉垮彲鎷栨嫿锛岃鍙ｅ搴︿笉鍑嗭級 */
+/* 工具栏分屏降级按编辑区实际宽度响应（面板可拖拽，视口宽度不准） */
 }
 .editor-empty {
   flex: 1;
@@ -529,7 +529,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   align-items: center;
   gap: 12px;
   padding: 14px 20px 6px;
-  flex-wrap: nowrap; /* 绐勭紪杈戝尯涓嬩笉鎶樿锛岄伩鍏嶆寜閽枃瀛楄鍘嬫垚绔栨帓 */
+  flex-wrap: nowrap; /* 窄编辑区下不换行，避免按钮文字被压成竖排 */
 }
 .editor-toolbar .tb-group, .editor-toolbar .mode-switch, .editor-toolbar .toolbar-actions { flex: none; }
 #note-title {
@@ -539,7 +539,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   font-size: 20px;
   font-weight: 700;
   background: transparent;
-  min-width: 48px; /* 淇濆簳瀹藉害锛氱獎缂栬緫鍖轰笅涓嶈鎸夐挳缁勬尋鍒版秷？*/
+/* 保底宽度：窄编辑区下不被按钮组挤到消失 */
 }
 #note-title::placeholder, #note-content::placeholder {
   color: #c3c9d2;
@@ -572,7 +572,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   padding: 4px 20px 10px;
   border-bottom: 1px solid var(--border);
 }
-/* 鍏冧俊鎭爮浠呬綑瀛楁暟/鏇存柊鏃堕棿锛岄潬鍙冲睍？*/
+/* 元信息栏仅余字数/更新时间，靠右展示 */
 .meta-date { margin-left: auto; font-size: 12px; color: #b0b6bf; white-space: nowrap; }
 .meta-time { font-size: 12px; color: #b0b6bf; white-space: nowrap; }
 
@@ -601,7 +601,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .editor-body.mode-preview #note-content { display: none; }
 .editor-body.mode-preview .preview { border-left: none; }
 
-/* 缂栬緫鍖哄彉绐勬椂閫愮骇绱у噾锛堝鍣ㄦ煡璇紝闅忛潰鏉挎嫋鎷藉疄鏃剁敓鏁堬級 */
+/* 编辑区变窄时逐级紧缩（容器查询，随面板拖拽实时生效） */
 @container (max-width: 640px) {
   .editor-toolbar { gap: 6px; padding: 12px 12px 6px; }
   .editor-meta { gap: 6px; padding: 4px 12px 10px; }
@@ -611,8 +611,8 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   #note-content, .preview { padding: 12px 14px; }
 }
 @container (max-width: 540px) {
-  .meta-date { display: none; }              /* 绐勭紪杈戝尯涓嬪瓧鏁拌？*/
-  .editor-body.mode-split .preview { display: none; } /* 鍒嗗睆鍦ㄦ瀹藉害涓嬩笉鍙敤锛岄檷绾т负鍗曟爮缂栬緫 */
+/* 窄编辑区下字数让位 */
+/* 分屏在此宽度下不可用，降级为单栏编辑 */
   .editor-body.mode-split #note-content { border-right: none; }
 }
 
@@ -641,7 +641,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .markdown-body ul, .markdown-body ol { padding-left: 24px; margin: 10px 0; }
 .markdown-body li { margin: 4px 0; line-height: 1.75; }
 .markdown-body li > ul, .markdown-body li > ol { margin: 4px 0; }
-/* 浠诲姟鍒楄〃锛歮arked ？- [ ] 娓叉煋涓哄閫夋锛屽幓鎺夊垪琛ㄧ鍙峰苟瀵归綈 */
+/* 任务列表：marked 的 - [ ] 渲染为复选框，去掉列表符号并对齐 */
 .markdown-body li:has(> input[type="checkbox"]:first-child) {
   list-style: none;
   margin-left: -22px;
@@ -653,7 +653,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   vertical-align: -2px;
   accent-color: var(--primary);
 }
-/* 绗旇棰勮閲岀殑浠诲姟澶嶉€夋鍙偣閫夛紙浼氬洖鍐欐鏂囷級锛岀粰鍑哄彲浜や簰鐨勫厜鏍囦笌鎮仠鍙嶉 */
+/* 笔记预览里的任务复选框可点选（会回写正文），给出可交互的光标与悬停反馈 */
 .preview .markdown-body input[type="checkbox"]:not([disabled]),
 .preview input[type="checkbox"]:not([disabled]) { cursor: pointer; }
 .preview input[type="checkbox"]:not([disabled]):hover { outline: 2px solid rgba(16, 185, 129, 0.25); outline-offset: 1px; }
@@ -712,7 +712,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 
 /* ---------- AI 闈㈡澘 ---------- */
 .ai-panel {
-  flex: 0 1 400px; /* 鍏佽鏀剁缉锛氱獥鍙ｈ緝绐勬椂浼樺厛淇濅綇缂栬緫鍖哄搴︼紝鑰屼笉鏄尋纰庣紪杈戝尯 */
+/* 允许收缩：窗口较窄时优先保住编辑区宽度，而不是挤碎编辑区 */
   width: 400px;
   min-width: 280px;
   position: relative;
@@ -765,7 +765,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ai-msg.user .bubble a { color: #cfe0ff; }
 .ai-msg.user .bubble code { background: rgba(255, 255, 255, 0.18); color: #fff; }
 .ai-msg.user .bubble blockquote { border-left-color: rgba(255, 255, 255, 0.7); background: rgba(255, 255, 255, 0.12); color: #fff; }
-/* 鐢ㄦ埛娑堟伅銆岀紪杈戝苟閲嶆柊鍙戦€併€嶏細鎮仠姘旀场涓嬫柟鍙充晶鏄剧ず 鉁庯紝缂栬緫鎬佹皵娉℃崲涓烘祬鑹茶緭鍏ユ */
+/* 用户消息「编辑并重新发送」：悬停气泡下方右侧显示 ✏，编辑态气泡换为浅色输入框 */
 .ai-msg-edit {
   align-self: flex-end; margin-top: 2px;
   border: none; background: transparent; color: var(--text-sub);
@@ -872,7 +872,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   box-shadow: 0 0 0 3px var(--primary-lighter);
 }
 
-/* 璁剧疆椤碉細涓诲尯？Tab 鍒嗙被 */
+/* 设置页：主区 Tab 分类 */
 .settings-view { display: flex; flex-direction: column; height: 100%; }
 .settings-view-header {
   display: flex;
@@ -946,16 +946,16 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   border-top: 1px solid var(--border);
 }
 .settings-view-actions .modal-data-path { flex: 1; }
-/* 璁剧疆鑷姩淇濆瓨鎻愮ず */
+/* 设置自动保存提示 */
 .settings-autosave { font-size: 12.5px; color: #2ea121; white-space: nowrap; }
 /* 指示器挂在「文档解析方式」卡片右上角 */
 .config-card { position: relative; }
 .config-card > .settings-autosave { position: absolute; top: 16px; right: 16px; }
-/* 杈撳叆？+ 琛屽唴鎸夐挳锛堥渶鏄惧紡搴旂敤鐨勮矾寰勯」銆佽幏鍙栨ā鍨嬬瓑？*/
+/* 输入框 + 行内按钮（需显式应用的路径项、获取模型等） */
 .settings-pane .setting-row, .modal .setting-row { display: flex; gap: 8px; align-items: center; }
 .settings-pane .setting-row input, .modal .setting-row input { flex: 1; min-width: 0; }
 .settings-pane .setting-row .btn, .modal .setting-row .btn { flex-shrink: 0; }
-/* 妯″瀷鍚嶇О杈撳叆？+ 鍙充晶 ？涓嬫媺锛堝垪鍑哄叏閮ㄥ凡鑾峰彇妯″瀷？*/
+/* 模型名称输入框 + 右侧下拉（列出全部已获取模型） */
 .model-input-wrap { position: relative; flex: 1; min-width: 0; display: flex; }
 .model-input-wrap input { flex: 1; min-width: 0; padding-right: 30px; }
 .model-dd-btn {
@@ -982,15 +982,15 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   cursor: pointer;
 }
 .radio-row input { width: auto; margin: 0; }
-/* MinerU 瑙ｆ瀽鏂瑰紡锛氫袱涓崟閫夐」妯悜骞舵帓 */
+/* MinerU 解析方式：两个单选项横向并排 */
 .mineru-mode-row { display: flex; gap: 18px; align-items: center; }
 .mineru-mode-row .radio-row { margin: 4px 0 !important; }
-/* 閫変腑 MinerU 瑙ｆ瀽鏃讹紝鍛戒护杈撳叆琛屽姞娴呴珮浜彁？*/
+/* 选中 MinerU 解析时，命令输入行加浅高亮提示 */
 .setting-row.mineru-active input { border-color: var(--primary); }
-/* MinerU 閰嶇疆娴嬭瘯鐨勪腑闂磋В鏋愭棩蹇楋細娣辫壊缁堢椋庢牸锛岃嚜鍔ㄦ粴？*/
+/* MinerU 配置测试的中间解析日志：深色终端风格，自动滚动 */
 .mineru-test-log { max-height: 220px; overflow: auto; background: #0f1115; color: #c9d1d9; font: 11.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 10px 12px; border-radius: var(--radius); margin: 8px 0; white-space: pre-wrap; word-break: break-all; }
 .mineru-test-log .mineru-progress { color: #7ee787; }
-/* MinerU 娴嬭瘯缁撴灉鍗★細缁撹 / 浜х墿璺緞+鎸夐挳 / 鏍锋湰鍐呭 涓夊眰鍒嗗潡锛岄伩鍏嶉暱鏂囨湰绯婃垚涓€？*/
+/* MinerU 测试结果卡：结论 / 产物路径+按钮 / 样本内容 三层分块，避免长文本糊成一团 */
 .mineru-result { margin: 8px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-soft, #f2f4f7); }
 .mineru-result-line { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.5; user-select: text; }
 .mineru-result-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
@@ -1050,7 +1050,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .config-card select {
   margin: 0;
 }
-/* 鍗曢€夐」鍙充晶鐨勭伆鑹茶鏄庯紙棰嗗煙閫夋嫨寮圭獥锛夛細璺熷湪閫夐」鏂囧瓧鍚庯紝涓嶆姠涓绘枃鏈殑娉ㄦ剰？*/
+/* 单选项右侧的灰色说明（领域选择弹窗）：跟在选项文字后，不抢主文本的注意 */
 .radio-hint { flex: 1; min-width: 0; font-size: 11.5px; font-style: normal; color: var(--text-sub); line-height: 1.5; }
 /* 解析方式行的短提示不换行，避免「仅支持 PDF」折成两行 */
 .mineru-mode-row .radio-hint { flex: 0 0 auto; white-space: nowrap; }
@@ -1077,7 +1077,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 .src-cb input { width: auto; margin: 0; }
 
-/* ================= KG 妯″潡瀛愯？================= */
+/* ================= KG 模块子视图 ================= */
 .kg-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 20px; border-bottom: 1px solid var(--border); }
 .kg-crumb { font-size: 14px; color: var(--text-sub); }
 .kg-crumb b { color: var(--text); }
@@ -1100,9 +1100,9 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .kg-bar { flex: 1; height: 8px; background: var(--sidebar-bg); border-radius: 4px; overflow: hidden; }
 .kg-bar i { display: block; height: 100%; }
 .kg-filterbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-/* 鍗＄墖寮忚繃婊ゆ潯锛氱櫧搴曞渾瑙掓潯鎶娾€滅被？棰嗗煙/鏈€澶氳妭？鎺掑簭鈥濆湀鎴愪竴缁勶紝涓庝笅鏂瑰浘渚嬪崱鐗囧？*/
+/* 卡片式过滤条：白底圆角条把「类/领域/最多节点排序」圈成一组，与下方图例卡片对齐 */
 .kg-filterbar.as-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; row-gap: 8px; box-shadow: var(--shadow-sm); }
-/* 瀛愯鍥炬爣棰樺潡锛氬ぇ鏍囬 + 鐏拌壊鍓爣棰樿？*/
+/* 子视图标题块：大标题 + 灰色副标题说明 */
 .kg-pane-head h3 { margin: 0; font-size: 17px; display: flex; align-items: center; gap: 6px; }
 .kg-pane-head p { margin: 4px 0 0; font-size: 12.5px; color: var(--text-sub); }
 .kg-filterbar select, .kg-filterbar input[type="text"] {
@@ -1110,7 +1110,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 .kg-filterbar input[type="text"] { flex: 1; min-width: 140px; }
 .kg-filterbar label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-sub); }
-/* 瀹炰綋娴忚绫诲瀷棰滆壊鍥句緥 */
+/* 实体浏览类型颜色图例 */
 .kg-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--text-sub); }
 .kg-legend .lg-item { display: inline-flex; align-items: center; gap: 5px; }
 .kg-entities { flex: 1; min-height: 0; display: flex; gap: 14px; }
@@ -1129,11 +1129,11 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 .kg-eitem .mini-tag { flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kg-edetail { width: 340px; min-width: 280px; flex: none; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); padding: 14px; }
-/* 绐勭獥鍙ｏ細璇︽儏闈㈡澘鍫嗗彔鍒板垪琛ㄤ笅鏂癸紝閬垮厤鍒楄〃琚尋？*/
+/* 窄窗口：详情面板堆叠到列表下方，避免列表被挤 */
 @media (max-width: 1100px) {
   .kg-entities { flex-direction: column; overflow-y: auto; }
   .kg-elist { flex: 1; min-width: 0; }
-  /* 浠呭綋璇︽儏闈㈡澘灞曞紑鏃堕檺鍒跺垪琛ㄩ珮搴︼紝鍏抽棴鏃跺垪琛ㄥ崰婊℃暣？*/
+/* 仅当详情面板展开时限制列表高度，关闭时列表占满整 */
   .kg-entities:has(.kg-edetail:not([hidden])) .kg-elist { flex: none; max-height: 45%; }
   .kg-edetail { width: auto; min-width: 0; flex: none; }
 }
@@ -1183,7 +1183,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   align-items: center;
 }
 
-/* 鏈湴鏂囦欢/鐩綍瀵煎叆閫夋嫨？*/
+/* 本地文件/目录导入选择 */
 .pickdir-path {
   display: flex;
   flex-wrap: wrap;
@@ -1222,7 +1222,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   border-bottom: 1px solid rgba(0, 0, 0, 0.04);
 }
 .pickdir-row:hover { background: var(--bg-soft, #f6f7f9); }
-/* 澶嶉€夋涓嶈 .modal input 鐨勮〃鍗曟牱寮忥紙width:100%锛夊奖鍝嶏紝閬垮厤鎸ゆ帀鏂囦欢鍚嶅？*/
+/* 复选框不被 .modal input 的表单样式（width:100%）影响，避免挤掉文件名宽 */
 .pickdir-row input[type="checkbox"] { width: auto; padding: 0; border: none; border-radius: 0; flex: none; }
 .pickdir-row .pd-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pickdir-row .pd-meta { font-size: 11px; color: var(--text-sub); flex-shrink: 0; }
@@ -1236,7 +1236,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 .pickdir-row .pd-ext.unsupported { background: #f3f4f6; color: #9ca3af; }
 .pickdir-empty { padding: 40px 0; text-align: center; color: var(--text-sub); font-size: 13px; }
-/* 褰撳墠鐩綍锛氬崟琛岀渷鐣ワ紝鍚﹀垯闀胯矾寰勪細鎶婂彸渚ф寜閽尋鎴愮珫？*/
+/* 当前目录：单行省略，否则长路径会把右侧按钮挤成竖 */
 .pickdir-info {
   flex: 1;
   min-width: 0;
@@ -1246,7 +1246,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 寮圭獥搴曢儴鎸夐挳涓嶅弬涓庢尋鍘嬶紝鏂囨涓嶆崲？*/
+/* 弹窗底部按钮不参与挤压，文案不换行 */
 .modal-actions .btn { flex: none; white-space: nowrap; }
 .modal-data-path {
   flex: 1;
@@ -1257,7 +1257,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   white-space: nowrap;
 }
 
-/* ================= 鍘熷鏂囦欢绠＄悊 ================= */
+/* ================= 原始文件管理 ================= */
 .raw-view { display: flex; flex-direction: column; height: 100%; }
 .raw-toolbar {
   display: flex;
@@ -1277,7 +1277,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   gap: 8px;
 }
 .raw-empty { padding: 40px 10px; text-align: center; font-size: 13px; color: var(--text-sub); }
-/* 瓒呴檺鐩綍寮曠敤鍛婅鏉★紙缃《锛屽甫涓€閿В闄わ級 */
+/* 超限目录引用警告条（置顶，带一键解除） */
 .raw-warn {
   display: flex;
   align-items: flex-start;
@@ -1315,7 +1315,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   border-radius: var(--radius-sm);
   padding: 3px 5px;
 }
-/* 缃戦〉閾炬帴寮曠敤锛氱敤閾炬帴鍥炬爣浠ｆ浛鈥淯RL鈥濇枃瀛楀窘绔狅紝涓庢枃浠舵墿灞曞悕/鐩綍寰界珷鍖哄垎 */
+/* 网页链接引用：用链接图标代替“URL”文字徽章，与文件扩展名/目录徽章区分 */
 .raw-ext-url { font-size: 14px; line-height: 1; padding: 6px 5px; }
 .raw-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .raw-name { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1324,12 +1324,12 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .raw-actions .btn { padding: 3px 8px; font-size: 12px; }
 .raw-actions .btn.danger { color: var(--danger); border-color: rgba(245, 74, 69, 0.35); }
 .raw-actions .btn.danger:hover { background: rgba(245, 74, 69, 0.08); }
-/* 鍚告敹鐘舵€佸窘鏍囷細宸插惛鏀讹紙缁匡級/ 鍚告敹鍚庢枃浠跺凡淇敼锛堟？*/
+/* 吸收状态徽标：已吸收（绿）/ 吸收后文件已修改（黄） */
 .raw-badge { font-size: 11px; padding: 1px 8px; border-radius: 9px; flex-shrink: 0; margin-right: 4px; cursor: default; }
 .raw-badge.ok { color: #16a34a; background: rgba(22, 163, 74, 0.1); }
 .raw-badge.stale { color: #d97706; background: rgba(217, 119, 6, 0.12); }
 
-/* 鍙抽敭鑿滃崟锛堝師濮嬫枃？鐩綍鎻愬彇 Wiki 涓庣煡璇嗗浘璋憋級 */
+/* 右键菜单（原始文件/目录提取 Wiki 与知识图谱） */
 .ctx-menu {
   position: fixed;
   z-index: 1000;
@@ -1368,7 +1368,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   border-bottom: 1px solid var(--border);
 }
 .tpl-view-title { font-size: 15px; font-weight: 700; }
-/* 棰嗗煙妯＄増绠＄悊椤碉細宸ュ叿鏍忔寜閽按骞冲眳涓紙鏍囬闈犲乏锛屾寜閽眳涓紝鍙充晶鐣欑櫧瀵圭О？*/
+/* 领域模版管理页：工具栏按钮水平居中（标题靠左，按钮居中，右侧留白对称） */
 #tpl-view .tpl-toolbar {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -1419,12 +1419,12 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .tpl-card-btns .btn.danger { color: var(--danger); border-color: rgba(245, 74, 69, 0.35); }
 .tpl-card-btns .btn.danger:hover { background: rgba(245, 74, 69, 0.08); }
 
-/* 妯＄増鏂板缓/缂栬緫锛氫富妗嗘灦鍏ㄥ睆瑙嗗浘锛堜笌鎻愮ず璇嶅叏灞忕紪杈戝悓鏋勶級锛岄暱琛ㄥ崟涓讳綋鍖烘粴？*/
+/* 模版新建/编辑：主框架全屏视图（与提示词全屏编辑同构），长表单主体区滚动 */
 .tpl-editor-view { display: flex; flex-direction: column; height: 100%; }
 .tpl-modal-head { display: flex; align-items: center; justify-content: space-between; }
 .tpl-modal-head h3 { font-size: 15px; }
 .tpl-modal-body { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 20px 24px; max-width: 860px; }
-/* 缂栬緫椤甸《閮ㄥ畾浣嶈鏄庯細涓€鍙ヨ瘽鐐规槑妯＄増鏈川锛堣鍒欓泦？*/
+/* 编辑页顶部定位说明：一句话点明模版本质（规则集） */
 .tpl-editor-intro {
   margin: 10px 0 2px;
   padding: 9px 12px;
@@ -1435,7 +1435,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   border-radius: var(--radius);
 }
 .tpl-editor-intro b { color: var(--primary); font-weight: 600; }
-/* 涓夌粍瑙勫垯鍒嗗尯锛氶鍩熷畾？/ 鎶藉彇瑙勫垯 / 浜х墿缁勭粐 */
+/* 三组规则分区：领域定义 / 提取规则 / 产物组织 */
 .tpl-sec {
   margin: 16px 0 6px;
   padding: 4px 14px 12px;
@@ -1492,12 +1492,12 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .tpl-ai-banner .btn { background: rgba(16, 185, 129, 0.18); color: var(--primary); white-space: nowrap; }
 .tpl-ai-banner .btn:hover { background: rgba(16, 185, 129, 0.28); }
 .tpl-ai-banner .tpl-ai-row span { font-size: 12px; color: var(--text-sub); }
-/* 妯＄増 ID 琛岋細缃簬 AI 鑷姩鐢熸垚鎸夐挳涓嬫柟锛屾棤闇€鐢ㄦ埛濉啓 */
+/* 模版 ID 行：置于 AI 自动生成按钮下方，无需用户填写 */
 .tpl-id-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .tpl-id-row label { margin: 0; white-space: nowrap; }
 .tpl-id-row input { flex: 0 1 240px; }
 .tpl-id-row span { font-size: 12px; color: var(--text-sub); }
-/* AI 鐢熸垚棰嗗煙妯＄増鐨勫噯？鐢熸垚闃舵鐘舵€佸睍？*/
+/* AI 生成领域模版的准备/生成阶段状态展示 */
 .tpl-gen-status {
   font-size: 12.5px;
   line-height: 1.6;
@@ -1509,7 +1509,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   border-radius: var(--radius-sm);
 }
 .tpl-gen-status.running { color: var(--primary); }
-/* 杩愯涓姩鐢绘彁绀猴細鏃嬭浆鍦嗙幆 + 鏂囧瓧鍛煎惛闂儊锛堝噯澶囬樁？鐢熸垚闃舵鍏辩敤？*/
+/* 运行中动画提示：旋转圆环 + 文字呼吸闪烁（准备阶段/生成阶段共用） */
 .tpl-gen-status.running::before {
   content: '';
   display: inline-block;
@@ -1527,7 +1527,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 @keyframes tpl-gen-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 .tpl-gen-status.ok { color: #16a34a; }
 .tpl-gen-status.err { color: var(--danger); }
-/* AI 鐢熸垚杩囩▼瀹炴椂杈撳嚭妗嗭細姝ｆ枃榛樿鑹诧紝鎬濊€冭繃绋嬬伆鏂滀綋 */
+/* AI 生成过程实时输出框：正文默认色，思考过程灰斜体 */
 .tpl-gen-log {
   margin-top: 6px; max-height: 180px; overflow-y: auto;
   padding: 8px 10px; font-size: 12px; line-height: 1.6;
@@ -1639,7 +1639,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
 
-/* ---------- 婊氬姩？---------- */
+/* ---------- 滚动条 ---------- */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: #d5d9e0; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #b9bec7; }
@@ -1664,7 +1664,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   font-weight: 600;
   letter-spacing: 0.5px;
 }
-/* Wiki 棰嗗煙涓€绾у垎缁勪笌棰嗗煙鍐呬簩绾у垎？*/
+/* Wiki 领域一级分组与领域内二级分组 */
 .wiki-domain-title {
   padding: 8px 10px 4px;
   font-size: 13px;
@@ -1678,7 +1678,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .raw-dir-del { margin-left: auto; flex: none; }
 .wiki-group-sub { padding-left: 22px; font-size: 12px; color: var(--primary); }
 .wiki-tree-item .wiki-ico { flex: none; font-size: 12px; }
-/* 鎵╁睍锛圡CP/Skills锛夐厤缃崱？*/
+/* 扩展（MCP/Skills）配置卡片 */
 .ext-sec-head { display: flex; align-items: center; justify-content: space-between; margin: 14px 0 8px; font-size: 13px; }
 .ext-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px; background: var(--panel); }
 .ext-card-row { display: flex; align-items: center; gap: 8px; }
@@ -1693,7 +1693,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ext-card-spacer { flex: 1; }
 .ext-switch-wrap { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-sub); }
 .ext-switch-txt { user-select: none; }
-/* AI 闂瓟涓绘鏋堕〉 */
+/* AI 问答主框架页 */
 .ai-view { display: flex; height: 100%; }
 .ai-view-left { width: 240px; flex: none; border-right: 1px solid var(--border); padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
 .ai-newtask { width: 100%; }
@@ -1703,7 +1703,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ai-session-item.active { background: rgba(16, 185, 129, 0.12); }
 .ai-session-item .t { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-session-item .d { font-size: 11px; color: var(--text-sub); }
-/* 姝ｅ湪鍥炵瓟鐨勪細璇濓細宸︿晶绔栨潯 + 鑴夊啿鍦嗙偣锛屼笌榛樿楂樹寒鍖哄垎寮€ */
+/* 正在回答的会话：左侧竖条 + 脉冲圆点，与默认高亮区分开 */
 .ai-session-item.busy { background: rgba(46, 161, 33, 0.08); box-shadow: inset 2px 0 0 #2ea121; }
 .ai-session-item.busy.active { background: rgba(46, 161, 33, 0.14); }
 .ai-session-live { display: inline-flex; align-items: center; gap: 4px; color: #2ea121; font-weight: 600; }
@@ -1717,14 +1717,14 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 .ai-view-main { flex: 1; display: flex; flex-direction: column; padding: 16px 24px; min-width: 0; }
 .ai-view-welcome { flex: 1; display: flex; align-items: center; justify-content: center; overflow-y: auto; }
-/* 娆㈣繋椤碉細蹇€熷紑濮嬪紩瀵硷紙绀轰緥 + 閰嶇疆妯″瀷 + 鎵嬪唽鍏ュ彛？*/
+/* 欢迎页：快速开始引导（示例 + 配置模型 + 手册入口） */
 .ai-welcome-inner { max-width: 720px; width: 100%; margin: auto; padding: 24px 8px; display: flex; flex-direction: column; gap: 14px; }
 .ai-welcome-title { font-size: 30px; font-weight: 700; color: var(--text); text-align: center; }
 .ai-welcome-sub { font-size: 13px; color: var(--text-sub); text-align: center; }
 .ai-welcome-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .ai-welcome-card { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--panel); padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: var(--shadow-sm); min-height: fit-content; }
 .ai-welcome-card .t { font-size: 14px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 8px; }
-/* 鍗＄墖鏍囬鍥炬爣锛氫笌宸︽墜鑿滃崟銆屽師濮嬫枃浠躲€嶃€佸乏涓嬨€岃缃€嶁殭 淇濇寔涓€鑷达紝鍔犲渾瑙掓祬鑹插簳琛洿閱掔洰 */
+/* 卡片标题图标：与左手菜单「原始文件」、左下「设置」保持一致，加圆角浅色底衬更醒目 */
 .ai-card-ico {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; border-radius: var(--radius); font-size: 14px; line-height: 1;
@@ -1736,7 +1736,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ai-welcome-card .ex:hover { background: rgba(16, 185, 129, 0.16); }
 .ai-welcome-docs { align-self: center; border: none; background: transparent; color: var(--primary); font-size: 13px; cursor: pointer; padding: 6px 10px; border-radius: var(--radius); }
 .ai-welcome-docs:hover { background: rgba(16, 185, 129, 0.10); }
-/* 鍩虹閰嶇疆寮曞娓呭崟锛氫笁？checkbox 鍒濆鏈€夛紝閰嶅ソ鑷姩鎵撶豢鑹插嬀骞舵樉绀恒€屽凡閰嶇疆？*/
+/* 基础配置引导清单：三 checkbox 初始未选，配好自动打绿色勾并显示「已配置 */
 .ai-setup-progress { margin-left: 2px; font-size: 12px; font-weight: 400; color: var(--text-sub); }
 #ai-setup-card.all-done .ai-setup-progress { color: #22a06b; font-weight: 600; }
 .ai-welcome-card.all-done .ai-setup-progress { color: #22a06b; font-weight: 600; }
@@ -1750,7 +1750,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ai-setup-item.done .ai-setup-go { display: none; }
 .ai-setup-go { margin-left: auto; border: none; background: transparent; color: var(--primary); font-size: 12px; cursor: pointer; padding: 2px 6px; border-radius: var(--radius-sm); }
 .ai-setup-go:hover { background: rgba(16, 185, 129, 0.12); }
-/* 浣跨敤鎵嬪唽？*/
+/* 使用手册 */
 .docs-view { display: flex; flex-direction: column; height: 100%; min-width: 0; }
 .docs-body { flex: 1; overflow-y: auto; padding: 20px 32px 48px; max-width: 920px; width: 100%; margin: 0 auto; box-sizing: border-box; }
 .docs-body img { max-width: 100%; border: 1px solid var(--border); border-radius: var(--radius); margin: 6px 0; }
@@ -1759,7 +1759,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ai-view-composer textarea { width: 100%; border: none; outline: none; resize: vertical; font-size: 14px; font-family: inherit; background: transparent; min-height: 44px; }
 .ai-composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .ai-composer-left { display: flex; align-items: center; gap: 4px; }
-/* 鐭ヨ瘑婧愰€夋嫨鏉★細骞抽摵鍦ㄨ緭鍏ユ涓婃柟锛岀洿鎺ョ偣鍑诲嬀閫夛紝涓嶉渶瑕佸紑涓嬫媺鑿滃崟 */
+/* 知识源选择条：平铺在输入框上方，直接点击勾选，不需要开下拉菜单 */
 .ai-src-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 2px 8px; border-bottom: 1px dashed var(--border); }
 .ai-src-head { font-size: 12px; color: var(--text-sub); margin-right: 2px; }
 .ai-src-chip {
@@ -1815,14 +1815,14 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 /* 搜索平铺模式：子菜单不再飞出，统一平铺展示过滤结果 */
 .ai-src-sub-menu.gp-flat .gp-fly { display: contents; position: static; box-shadow: none; border: none; padding: 0; }
 .ai-src-sub-menu.gp-flat .gp-caret { display: none; }
-/* AI 鎵ц鐘舵€佹爮锛堣緭鍏ユ涓婃柟锛屽疄鏃舵椿？+ 鑰楁椂？*/
+/* AI 执行状态条（输入框上方，实时活动 + 耗时） */
 .ai-view-status { margin-top: 8px; padding: 6px 12px; border-radius: var(--radius); background: rgba(46, 164, 79, 0.08); color: #2e8b57; font-size: 12px; }
-/* AI 鎵ц姝ラ缁勶細杩囩▼鎶樺彔鍧楋紙浣嶄簬绛旀涓婃柟？*/
-/* flex: none 蹇呴渶锛氭秷鎭垪？flex 鍒楀鍣紝鑰屾湰鍏冪礌？overflow:hidden 浼氭妸鑷姩鏈€灏忓昂？   闄嶄负 0锛岄暱绛旀浣垮鍣ㄦ孩鍑烘椂瀹冧細琚帇？2px 鐨勭粏绾匡紝鐪嬭捣鏉ュ氨鍍忚繃绋嬫暟鎹秷澶变簡 */
+/* AI 执行步骤组：过程折叠块（位于答案上方） */
+/* flex: none 必需：消息列是 flex 列容器，而本元素 overflow:hidden 会把自动最小尺寸降为 0，长答案使容器溢出时它会被压 2px 的细线，看起来就像过程数据消失了 */
 .ai-steps { flex: none; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
 .ai-steps-head { display: flex; align-items: center; gap: 6px; width: 100%; border: none; background: transparent; padding: 8px 12px; font-size: 12px; color: var(--text-sub); cursor: pointer; font-family: inherit; text-align: left; }
 .ai-steps-head:hover { color: var(--text); }
-/* 宸插畬鎴愬苟鎶樺彔鐨勮繃绋嬪尯锛氶粯璁ょ殑鐏板瓧閫忔槑鏉＄湅涓婂幓鍍忓垎闅旂嚎？   鐢ㄦ埛浼氫互涓哄伐鍏疯皟鐢ㄤ笌鎬濊€冭繃绋嬫病浜嗭紝鏁呯粰瀹冩槑纭殑鍙偣鍑诲？*/
+/* 已完成并折叠的过程区：默认的灰字透明条看上去像分隔线，用户会以为工具调用与思考过程没了，故给它明确的可点击外观 */
 .ai-steps.done.collapsed { background: var(--bg-soft, #f6f7f9); border-color: rgba(16, 185, 129, 0.28); }
 .ai-steps.done.collapsed .ai-steps-head { color: var(--primary); font-weight: 600; }
 .ai-steps.done.collapsed .ai-steps-head:hover { background: rgba(16, 185, 129, 0.08); }
@@ -1836,8 +1836,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ai-step-item summary::before { content: '▸'; font-size: 10px; transition: transform .15s; flex: none; }
 .ai-step-item[open] summary::before { transform: rotate(90deg); }
 .ai-step-detail { margin: 4px 0 2px 16px; white-space: pre-wrap; color: var(--text-sub); font-size: 11.5px; max-height: 160px; overflow-y: auto; background: rgba(0, 0, 0, 0.03); border-radius: var(--radius-sm); padding: 6px 8px; }
-/* 鍙粴鍖哄煙鐨勬粴鍔ㄦ潯甯告樉锛氶粯璁ょ殑娴呰壊 thumb 鍑犱箮鐪嬩笉瑙侊紝
-   鍐呭琚鍒囧湪鍗婅澶勬椂鐢ㄦ埛鏃犳硶寰楃煡杩樿兘婊氬姩 */
+/* 可滚动区域的滚动条常显：默认的浅色 thumb 几乎看不见，内容被裁切在半行处时用户无法得知还能滚动 */
 .ai-steps-body::-webkit-scrollbar,
 .ai-step-detail::-webkit-scrollbar,
 .ai-think-live-body::-webkit-scrollbar { width: 10px; }
@@ -1855,7 +1854,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ai-steps-body::-webkit-scrollbar-thumb:hover,
 .ai-step-detail::-webkit-scrollbar-thumb:hover,
 .ai-think-live-body::-webkit-scrollbar-thumb:hover { background: #7f8794; background-clip: content-box; }
-/* AI 婢勬竻闂鍗＄墖 */
+/* AI 澄清问题卡片 */
 .ai-ask-card { margin-top: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 12px 14px; }
 .ai-ask-q { margin: 10px 0 6px; font-size: 13px; font-weight: 600; }
 .ai-ask-q:first-child { margin-top: 0; }
@@ -1870,14 +1869,14 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ai-ask-opt .t { font-size: 12.5px; font-weight: 600; display: block; }
 .ai-ask-opt .d { font-size: 11.5px; color: var(--text-sub); margin-top: 2px; display: block; }
 .ai-ask-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
-/* 鏅鸿兘浣撴楠ゆ姌鍙犲潡 */
+/* 智能体步骤折叠块 */
 .ai-step { border: 1px solid var(--border); border-radius: var(--radius); margin: 6px 0; background: var(--panel); }
 .ai-step summary { cursor: pointer; padding: 6px 10px; font-size: 12.5px; color: var(--text-sub); display: flex; gap: 6px; align-items: center; list-style: none; }
 .ai-step summary::-webkit-details-marker { display: none; }
 .ai-step summary::before { content: '▸'; font-size: 10px; }
 .ai-step[open] summary::before { content: '▾'; }
 .ai-step .step-body { padding: 0 10px 8px; font-size: 12px; color: var(--text-sub); white-space: pre-wrap; }
-/* 妯″瀷鍒楄〃锛堣缃啋妯″瀷閰嶇疆鈫掓洿澶氭ā鍨嬶級 */
+/* 模型列表（设置→模型配置→更多模型） */
 .model-empty { font-size: 12.5px; color: var(--text-sub); padding: 10px 0; }
 .model-row { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); margin-bottom: 8px; }
 .model-name { font-size: 13px; font-weight: 600; color: var(--text); flex-shrink: 0; }
@@ -1887,26 +1886,26 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .model-badge.warn { background: rgba(245, 74, 69, 0.1); color: var(--danger); }
 .model-url { font-size: 12px; color: var(--text-sub); font-family: ui-monospace, Menlo, Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
 .model-acts { display: flex; gap: 2px; flex-shrink: 0; }
-/* 褰撳墠榛樿妯″瀷寰界珷 */
+/* 当前默认模型徽章 */
 .model-badge.cur { background: rgba(16, 185, 129, 0.16); color: var(--primary); font-weight: 600; }
-/* 妯″瀷鍗＄墖鍐呯殑鍐呰仈琛ㄥ崟锛堜豢 MCP 鍗＄墖浣撹？*/
+/* 模型卡片内的内联表单（仿 MCP 卡片体验） */
 .model-form label { display: block; font-size: 12px; color: var(--text-sub); margin: 10px 0 4px; }
 .model-form label:first-child { margin-top: 2px; }
 .model-form input, .model-form select { width: 100%; }
 .model-form .modal-tip { margin: 6px 0 0; }
 .model-form .setting-row { display: flex; gap: 8px; align-items: center; }
 .model-form .setting-row .btn { flex-shrink: 0; white-space: nowrap; }
-/* 榛樿妯″瀷鍗★細瀛楁鑺傜偣浠庢殏瀛樺尯鎼繘鏉ュ悗鐨勯棿璺濅笌鍗″唴琛ㄥ崟淇濇寔涓€？*/
+/* 默认模型卡片：字段节点从暂存区搬进来后的间距与卡内表单保持一致 */
 .mcp-card-body > #primary-model-fields > label { display: block; font-size: 12px; color: var(--text-sub); margin: 10px 0 4px; }
 .mcp-card-body > #primary-model-fields > label:first-child { margin-top: 2px; }
-/* 妯″瀷鍗°€屼繚瀛樹慨鏀广€嶈锛氫富鎸夐挳 + 鐏拌壊璇存槑骞舵帓 */
+/* 模型卡「保存修改」行：主按钮 + 灰色说明并排 */
 .model-save-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
 .model-save-row .btn { white-space: nowrap; }
 .model-save-row .modal-tip { margin: 0; }
-/* 鍗″ご琛屽唴銆屼繚瀛樸€嶏細涓庛€岃涓洪粯璁ゃ€嶅悓鍒楋紝涓昏壊鏂囧瓧浠ョず鍙偣？*/
+/* 卡头行内「保存」：与「设为默认」同列，主色文字以示可点 */
 .skill-act.save { color: var(--primary); font-weight: 600; }
 
-/* 闂瓟闄勪欢锛氳緭鍏ユ涓婃柟鐨勬枃浠惰姱？*/
+/* 问答附件：输入框上方的文件芯片 */
 .ai-attach-bar {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
   padding: 0 2px 8px; border-bottom: 1px dashed var(--border); margin-bottom: 8px;
@@ -1926,7 +1925,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 /* 鐢ㄦ埛姘旀场閲岀殑闄勪欢鏍囨敞 */
 .ai-msg-attach { margin-top: 6px; font-size: 11px; opacity: 0.85; }
 
-/* AI 杈撳叆鍖烘ā鍨嬮€夋嫨鍣細鍥炬爣 + 妯″瀷鍚嶆í鎺掞紝鍚嶇О杩囬暱鏃朵粎鎴柇鏂囧瓧锛堜笉瑁佸浘鏍囷級 */
+/* AI 输入区模型选择器：图标 + 模型名横排，名称过长时仅截断文字（不裁图标） */
 .ai-model-btn { display: inline-flex; align-items: center; gap: 4px; width: auto; height: 24px; padding: 0 8px; font-size: 12px; max-width: 190px; }
 .ai-model-btn .ico { flex: none; }
 .ai-model-btn #ai-model-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1934,12 +1933,12 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ext-tag { font-size: 10px; line-height: 14px; padding: 0 5px; margin-left: 6px; border-radius: 4px; background: rgba(16, 185, 129, 0.12); color: var(--primary); vertical-align: middle; }
 .ext-tag.warn { background: rgba(245, 74, 69, 0.12); color: var(--danger); }
 
-/* MCP 鏈嶅姟鍣ㄥ崱鐗囷紙榛樿鏀惰捣锛屽睍寮€鍚庡惈鍙閰嶇疆涓庤繛閫氭€ф祴璇曪級 */
+/* MCP 服务器卡片（默认收起，展开后含只读配置与连通性测试） */
 .mcp-empty { font-size: 12.5px; color: var(--text-sub); padding: 10px 0; }
 .mcp-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); margin-bottom: 10px; overflow: hidden; box-shadow: var(--shadow-sm); transition: var(--transition); }
 .mcp-card:hover { box-shadow: var(--shadow); }
-/* 灞曞紑鏃朵笉鑳借鍒囷細妯″瀷鍚嶇О涓嬫媺鑿滃崟？absolute 瀹氫綅锛宱verflow:hidden 浼氭妸瀹冨垏鎺夛紝
-   琛ㄧ幇涓哄垪琛ㄨ鍗＄墖涓嬬紭鎸′綇锛涘渾瑙掓敼鐢卞崱澶磋嚜宸辨壙？*/
+/* 展开时不能裁切：模型名称下拉菜单是 absolute 定位，overflow:hidden 会把它切掉，
+   表现为列表被卡片下缘挡住；圆角改由卡头自己承担 */
 .mcp-card.open { overflow: visible; }
 .mcp-card:not(.open) .mcp-card-head { border-radius: var(--radius); }
 .mcp-card.open .mcp-card-head { border-radius: var(--radius) 10px 0 0; }
@@ -1959,10 +1958,10 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .mcp-test-bar .mcp-test-query { flex: 1; min-width: 0; margin: 0; }
 .mcp-test-btn, .mcp-copy-btn { flex-shrink: 0; }
 
-/* MCP 鍙 JSON 灞曠ず */
+/* MCP 只读 JSON 展示 */
 .mcp-json-view { margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow-y: auto; color: var(--text); user-select: text; }
 
-/* MCP 杩為€氭€ф祴璇曪紙鍗＄墖鍐咃級 */
+/* MCP 连通性测试（卡片内） */
 .mcp-test-query { width: 100%; box-sizing: border-box; }
 .mcp-test-name { font-size: 13px; font-weight: 600; color: var(--text); flex-shrink: 0; }
 .mcp-test-badge { font-size: 11px; line-height: 16px; padding: 1px 7px; border-radius: 5px; background: rgba(16, 185, 129, 0.1); color: var(--primary); flex-shrink: 0; }
@@ -1974,7 +1973,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .mcp-test-status.ok { color: #2ea121; }
 .mcp-test-status.fail { color: var(--danger); }
 .mcp-test-out { margin: 10px 0 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto; color: var(--text); user-select: text; cursor: text; }
-/* 鎶€鑳藉箍鍦哄紡绠＄悊 */
+/* 技能广场式管理 */
 .skill-mgr-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 .skill-mgr-head b { font-size: 15px; flex: none; }
 .skill-mgr-head input { flex: 1; min-width: 140px; max-width: 280px; border: 1px solid var(--border); border-radius: 999px; padding: 7px 14px; font-size: 13px; outline: none; }
@@ -2010,12 +2009,12 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ai-ext-menu .ext-item { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; font-size: 12.5px; }
 .ai-ext-menu .ext-item:hover { background: rgba(0, 0, 0, 0.05); }
 .ai-ext-menu .ext-item .chk { margin-left: auto; color: var(--primary); font-weight: 700; }
-/* 榛樿鍏ㄩ儴鍙備笌锛涜鐢ㄦ埛鍘婚櫎鐨勯」缃伆锛屼笌鉁撻」涓€鐪煎彲？*/
+/* 默认全部参与；被用户去除的项置灰，与勾选项一眼可辨 */
 .ai-ext-menu .ext-item.off { color: var(--muted); opacity: 0.6; }
-/* AI 闈㈡澘宸︾紭鎷栨嫿璋冨 */
+/* AI 面板左缘拖拽调宽 */
 .ai-resize { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; }
 .ai-resize:hover { background: rgba(16, 185, 129, 0.25); }
-/* 鍏ㄥ眬鎼滅储鍒嗙被鏍囬 */
+/* 全局搜索分类标题 */
 .search-sec { padding: 10px 10px 3px; font-size: 12px; font-weight: 700; color: var(--text); }
 .wiki-tree-item {
   display: flex;
@@ -2038,7 +2037,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .wiki-ops .btn { flex: 1; font-size: 12px; }
 .wiki-empty-tip { padding: 4px 10px; font-size: 12px; color: var(--text-sub); }
 
-/* Wiki 椤甸潰闃呰？*/
+/* Wiki 页面阅读 */
 .wiki-viewer {
   display: flex;
   flex-direction: column;
@@ -2080,7 +2079,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .wiki-chip.type { background: rgba(82, 196, 26, 0.14); color: #389e0d; }
 .wiki-chip.status { background: rgba(250, 173, 20, 0.16); color: #d48806; }
 .wiki-chip.tag { background: rgba(0, 0, 0, 0.06); color: var(--text-sub); }
-/* Wiki 鏂囨。妯″紡锛氱粺涓€缂栬緫鍣ㄥ唴？frontmatter 寰芥爣琛岋紙姣旈槄璇诲櫒鏇寸揣鍑戯級 */
+/* Wiki 文档模式：统一编辑器内 frontmatter 徽章行（比阅读器更紧凑） */
 .wiki-fm-editor { padding: 6px 14px 0; }
 .wiki-body {
   flex: 1;
@@ -2132,7 +2131,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .version-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .versions-compare-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .versions-compare-bar span { font-size: 12px; color: var(--text-sub); }
-/* 鐗堟湰 diff 瑙嗗浘锛氬/？涓婁笅？涓夎壊？*/
+/* 版本 diff 视图：增/删/上下文三色 */
 .version-diff {
   flex: 1; min-height: 0; overflow-y: auto;
   border: 1px solid var(--border); border-radius: var(--radius);
@@ -2166,7 +2165,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 .ingest-status.err { color: #d4380d; }
 .ingest-status.ok { color: #389e0d; }
-/* 杩涜涓細鏂囧瓧鍓嶅姞杞湀 */
+/* 进行中：文字前加转圈 */
 .ingest-status.running::before {
   content: '';
   display: inline-block;
@@ -2189,7 +2188,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   font-size: 13.5px;
 }
 
-/* 浣滀笟绠＄悊？*/
+/* 作业管理 */
 .jobs-view { display: flex; flex-direction: column; height: 100%; }
 .jobs-toolbar { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .jobs-view-title { font-size: 15px; font-weight: 700; white-space: nowrap; }
@@ -2198,7 +2197,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .jobs-filter { display: flex; gap: 4px; background: rgba(0, 0, 0, 0.04); border-radius: var(--radius); padding: 3px; }
 .jobs-filter button { border: none; background: transparent; font-size: 12px; padding: 4px 12px; border-radius: var(--radius-sm); cursor: pointer; color: var(--text-sub); display: inline-flex; align-items: center; }
 .jobs-filter button.active { background: #fff; color: var(--primary); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); }
-/* 绛涢€夋寜閽笂鐨勮鏁板窘？*/
+/* 筛选按钮上的计数徽章 */
 .jf-count {
   font-style: normal;
   font-size: 10px;
@@ -2223,8 +2222,10 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .job-title { flex: 1; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-progress { font-size: 11px; color: var(--text-sub); background: rgba(0, 0, 0, 0.05); border-radius: var(--radius); padding: 1px 7px; white-space: nowrap; }
 .job-src-count { font-size: 11px; color: var(--primary); background: rgba(16, 185, 129, 0.1); border-radius: var(--radius); padding: 1px 7px; white-space: nowrap; }
-/* 棰嗗煙寰芥爣锛氫綔涓氭爣棰樻梺灞曠ず鏈鎶藉彇鎵€鐢ㄩ鍩熸ā鐗堬紝榧犳爣鎮仠鐪嬪疄？姒傚康绫诲瀷绾︽潫 */
+/* 领域徽章：作业标题旁展示本次提取所用领域模版，鼠标悬停查看实体概念类型约束 */
 .job-domain { font-size: 11px; color: #7a5af8; background: rgba(122, 90, 248, 0.1); border-radius: var(--radius); padding: 1px 7px; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+/* 模型徽章：作业标题旁展示本次作业所用模型名 */
+.job-model { font-size: 11px; color: #0891b2; background: rgba(8, 145, 178, 0.1); border-radius: var(--radius); padding: 1px 7px; white-space: nowrap; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
 .job-status { font-size: 11px; padding: 2px 8px; border-radius: var(--radius); background: rgba(0, 0, 0, 0.06); color: var(--text-sub); white-space: nowrap; }
 .job-status.running { background: rgba(16, 185, 129, 0.12); color: var(--primary); }
 .job-status.success { background: rgba(82, 196, 26, 0.14); color: #389e0d; }
@@ -2241,7 +2242,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .job-source-items { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .job-artifact { margin-top: 7px; padding-top: 6px; border-top: 1px dashed var(--border); font-size: 12px; color: var(--primary); }
 .job-source-item { font-size: 11px; color: var(--text-sub); background: rgba(0, 0, 0, 0.05); border-radius: var(--radius-sm); padding: 1px 6px; }
-/* 浣滀笟鍐呬换鍔″垪琛紙姣忎釜鏉ユ簮涓€？task？*/
+/* 作业内任务列表（每个来源一 task） */
 .job-task-list { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; max-height: 220px; overflow-y: auto; }
 .job-task-wrap { display: flex; flex-direction: column; gap: 3px; }
 .task-output { max-height: 140px; margin-left: 22px; font-size: 11px; }
@@ -2255,10 +2256,10 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .job-task .task-ico.pend { color: #b0b6bf; }
 .job-task .task-ico.run { color: var(--primary); animation: pulse 1.2s infinite; }
 .job-task-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 浠诲姟杈撳嚭澶嶅埗鎸夐挳 */
+/* 任务输出复制按钮 */
 .task-copy { flex: none; margin-left: 6px; font-size: 11px; color: var(--primary); background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: var(--radius-sm); padding: 1px 8px; cursor: pointer; }
 .task-copy:hover { background: rgba(16, 185, 129, 0.16); }
-/* 鎻愮ず璇嶇鐞嗛〉锛堜富鍖哄煙？*/
+/* 提示词管理页（主区域） */
 .prompts-view { display: flex; flex-direction: column; height: 100%; }
 .prompts-cards { flex: 1; overflow-y: auto; padding: 16px 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; align-content: start; }
 .prompts-cards .prompt-card { margin-bottom: 0; }
@@ -2268,7 +2269,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .prompt-card-input { width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 12.5px; line-height: 1.6; font-family: inherit; resize: vertical; outline: none; user-select: text; background: #fff; }
 .prompt-card-input:focus { border-color: var(--primary); }
 .prompt-card-actions { display: flex; gap: 6px; margin-top: 8px; }
-/* 鎻愮ず璇嶅叏灞忕紪杈戦〉锛堜富妗嗘灦瑙嗗浘？*/
+/* 提示词全屏编辑页（主框架视图） */
 .prompt-editor-view { display: flex; flex-direction: column; height: 100%; }
 .prompt-editor-input { flex: 1; min-height: 200px; margin: 0 20px 20px; border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; font-size: 13px; line-height: 1.7; font-family: inherit; resize: none; outline: none; user-select: text; background: #fff; }
 .prompt-editor-input:focus { border-color: var(--primary); }
@@ -2283,7 +2284,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .job-stage .stage-name { min-width: 96px; font-weight: 500; }
 .job-stage .stage-detail { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-error { margin-top: 8px; font-size: 12px; color: var(--danger); word-break: break-all; }
-/* MinerU 鍥為€€璀︾ず妗嗭紙鎻愬彇绗旇浣滀笟锛氭湁鏉ユ簮？MinerU 澶辫触鍥為€€鍐呯疆鏃跺睍绀猴級 */
+/* MinerU 回退警告框（提取笔记作业：有来源 MinerU 失败回退内置时展示） */
 .job-fallback-warn { margin: 0 0 10px; padding: 8px 10px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: var(--radius-sm); }
 .job-fallback-warn .fb-head { font-size: 12.5px; font-weight: 600; color: #b45309; }
 .job-fallback-warn .fb-body { margin-top: 4px; font-size: 12px; color: var(--text-sub); line-height: 1.6; }
@@ -2293,7 +2294,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .job-act-btn.danger { color: var(--danger); border-color: rgba(245, 74, 69, 0.35); }
 .job-act-btn.danger:hover { background: rgba(245, 74, 69, 0.08); }
 .job-summary { margin-top: 6px; font-size: 12px; color: var(--text-sub); }
-/* 浣滀笟瀹炴椂瑙ｆ瀽杩囩▼锛圡inerU 瀛愯繘绋嬭緭鍑猴級锛氬？.job-live 缁堢椋庢牸锛岄檺楂樻粴？*/
+/* 作业实时解析过程（MinerU 子进程输出）：复用 .job-live 终端风格，限高滚动 */
 .job-parselog .parse-log { margin-top: 6px; max-height: 200px; }
 .job-live {
   margin-top: 8px;
@@ -2319,7 +2320,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   animation: spin 0.8s linear infinite;
   display: inline-block;
 }
-/* 渚ц竟鏍忎綔涓氭寜閽細鏈変綔涓氳繘琛屼腑鏃舵樉绀哄懠鍚稿渾？*/
+/* 侧边栏作业按钮：有作业进行中时显示呼吸圆点 */
 #nav-jobs.jobs-active { color: var(--primary); }
 #nav-jobs.jobs-active::after {
   content: '';
@@ -2334,7 +2335,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 @keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 
-/* AI 妯″紡鍒囨崲 */
+/* AI 模式切换 */
 .ai-mode-switch {
   display: flex;
   gap: 6px;
@@ -2381,10 +2382,10 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   white-space: nowrap;
 }
 .ai-ref-chip:hover { background: rgba(0, 0, 0, 0.09); }
-/* 寮卞懡涓殑鍏抽敭瀛楀紩鐢紙鏈粡璇箟鏍″锛夛細缃伆浠ュ尯鍒嗕簬宸叉牳瀹炵殑渚濇嵁 */
+/* 弱命中的关键字引用（未经词义核对）：置灰以区别于已核实的依据 */
 .ai-ref-chip.weak { opacity: 0.62; border-style: dashed; }
 .ai-ref-fav { width: 14px; height: 14px; border-radius: 3px; margin-right: 6px; flex: none; }
-/* 鏉ユ簮鎮诞寮曠敤？*/
+/* 来源悬浮引用 */
 .ai-src-pop { position: fixed; z-index: 80; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16); padding: 12px 14px 8px; }
 .ai-src-pop-t { font-size: 13px; font-weight: 600; line-height: 1.45; }
 .ai-src-pop-d { font-size: 12px; color: var(--text-sub); margin-top: 6px; line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
@@ -2392,33 +2393,33 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ai-src-pop-domain { font-size: 11.5px; color: var(--text-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-src-pop-copy { appearance: none; border: none; background: transparent; font-size: 12px; color: var(--text-sub); cursor: pointer; flex: none; padding: 2px 6px; border-radius: var(--radius-sm); font-family: inherit; }
 .ai-src-pop-copy:hover { color: var(--primary); background: rgba(16, 185, 129, 0.08); }
-/* 鎬濊€冨疄鏃舵墦鍗帮紙绛旀姘旀场鍐咃紝姝ｆ枃娴佸紑濮嬪墠？*/
+/* 思考实时打印（答案气泡内，正文流开始前） */
 .ai-think-live { font-size: 12px; color: var(--text-sub); margin-bottom: 6px; }
 .ai-think-live-body { margin: 0; padding: 8px 10px; border-radius: var(--radius); background: rgba(0, 0, 0, 0.04); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.6; color: var(--text-sub); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; scrollbar-gutter: stable; }
-/* 绛旀鎿嶄綔琛岋細澶嶅埗/璇勭骇/鑰楁椂 */
+/* 答案操作行：复制/评级/耗时 */
 .ai-meta { display: flex; align-items: center; gap: 2px; margin-top: 6px; }
 .ai-meta-btn { appearance: none; border: none; background: transparent; cursor: pointer; font-size: 13px; padding: 3px 6px; border-radius: var(--radius-sm); opacity: .5; filter: grayscale(.7); }
 .ai-meta-btn:hover { opacity: 1; filter: none; background: rgba(0, 0, 0, 0.05); }
 .ai-meta-btn.on { opacity: 1; filter: none; background: rgba(16, 185, 129, 0.12); }
 .ai-meta-time { margin-left: 6px; font-size: 11px; color: var(--text-sub); font-family: Consolas, monospace; }
-/* 鎴戠殑鏀惰棌鍏ュ彛涓庢敹钘忓垪？*/
+/* 我的收藏入口与收藏列 */
 .ai-favbtn { width: 100%; text-align: left; padding: 6px 10px; font-size: 12.5px; }
 .ai-fav-empty { padding: 18px 8px; font-size: 12px; color: var(--text-sub); text-align: center; line-height: 1.8; }
-/* 鏀惰棌鎬佹槦鏍囩敤鏆栬壊楂樹寒锛屽尯鍒簬榛樿钃濊壊閫変腑？*/
+/* 收藏态星标用暖色高亮，区别于默认蓝色选中 */
 .ai-meta-btn[data-act="fav"].on { background: rgba(255, 193, 7, 0.18); }
-/* 浠庢敹钘忓垪琛ㄥ畾浣嶅悗锛岀洰鏍囧洖绛旂煭鏆傞珮？*/
+/* 从收藏列表定位后，目标回答短暂高亮 */
 @keyframes ai-fav-flash { 0% { background: rgba(255, 193, 7, 0.28); } 100% { background: transparent; } }
 .ai-msg.ai-fav-flash { animation: ai-fav-flash 1.8s ease-out 1; border-radius: var(--radius); }
-/* 浜х墿鍗＄墖锛氬綊妗ｅ洖绛斾负 Wiki ？*/
+/* 产物卡片：归档回答为 Wiki */
 .ai-artifact { display: flex; align-items: center; gap: 10px; margin-top: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); padding: 10px 12px; }
 .ai-artifact-ico { font-size: 20px; flex: none; }
 .ai-artifact-info { flex: 1; min-width: 0; }
 .ai-artifact-info .t { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-artifact-info .d { font-size: 11px; color: var(--text-sub); margin-top: 2px; }
-/* 鍙偣寮€鐨勪骇鐗╁崱锛堝綊妗ｅ崱鏈綊妗ｅ墠涓嶅甫 done锛屼笉搴旀樉绀轰负鍙偣？/
+/* 可点开的产物卡片（归档卡未归档前不带 done，不应显示为可点） */
 .ai-artifact.done { cursor: pointer; }
 .ai-artifact.done:hover { border-color: var(--primary); }
-/* 宸ュ叿杩斿洖鍥剧墖棰勮锛圡CP 鐢熷浘 / 鏂囦欢绫荤粨鏋滐級*/
+/* 工具返回图片预览（MCP 生图 / 文件类结果） */
 .img-preview { margin-top: 8px; }
 .img-preview-head { font-size: 11px; color: var(--text-sub); margin-bottom: 6px; }
 .img-preview { display: block; }
@@ -2435,7 +2436,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 .img-preview-item.broken img { opacity: 0.35; }
 .img-preview-item.broken::after { content: '鍔犺浇澶辫触'; display: block; font-size: 10px; color: var(--text-sub); text-align: center; }
-/* 浣跨敤鎵嬪唽鍐呭浘鐗囧ぇ鍥鹃瑙堝脊灞傦細鐐瑰嚮浠绘剰澶勫叧？*/
+/* 使用手册内图片大图预览弹层：点击任意处关闭 */
 .doc-asset-overlay {
   position: fixed; inset: 0; z-index: 900; cursor: zoom-out;
   background: rgba(15, 23, 42, 0.72);
@@ -2452,7 +2453,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 /* 鎵嬪唽鍐呭祵鍥惧彲鐐瑰嚮鏀惧ぇ */
 #docs-body img.doc-img-zoom { cursor: zoom-in; }
-/* 瀛樺偍浣嶇疆锛氱瓑瀹藉瓧浣撳崟琛岀渷鐣ワ紝瀹屾暣璺緞鎮仠鍙 */
+/* 存储位置：等宽字体单行省略，完整路径悬停可见 */
 .ai-artifact-info .p {
   font-size: 11px; color: var(--text-sub); margin-top: 2px;
   font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -2460,7 +2461,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 .ai-artifact-btn { flex: none; white-space: nowrap; }
 
-/* 鏂囦欢涓婁紶？*/
+/* 文件上传 */
 .file-drop {
   border: 2px dashed var(--border);
   border-radius: var(--radius);
@@ -2509,18 +2510,18 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   padding: 14px 16px; overflow-y: auto; font-size: 13px;
 }
 .graph-detail h4 { margin: 0 0 6px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
-/* gd-* 璇︽儏鍏冪礌锛氭暣浣撳浘璋辫妭鐐硅鎯呬笌瀹炰綋娴忚璇︽儏闈㈡澘鍏辩敤 */
+/* gd-* 详情元素：整体图谱节点详情与实体浏览详情面板共用 */
 .gd-type { font-size: 11px; padding: 1px 8px; border-radius: var(--radius); color: #fff; }
 .gd-desc { color: var(--text-sub); margin: 6px 0 10px; line-height: 1.6; }
 .gd-sec { font-size: 12px; color: var(--text-sub); margin: 10px 0 4px; }
 .gd-rel { padding: 5px 8px; border-radius: var(--radius-sm); cursor: pointer; line-height: 1.5; }
 .gd-rel:hover { background: var(--sidebar-bg); }
 .gd-rel .rel-tag { color: var(--primary); font-size: 11px; margin: 0 4px; }
-/* 瀹炰綋璇︽儏闈㈡澘澶撮儴锛氭爣？+ 鍏抽棴鎸夐挳 */
+/* 实体详情面板头部：标题 + 关闭按钮 */
 .kg-edetail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .kg-edetail-head h4 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0; min-width: 0; }
 .kg-edetail-head .icon-btn { flex: none; }
-/* 鏉ユ簮琛岋細鍙偣鍑绘墦寮€鍘熸枃锛圵iki/绗旇/鍘熷鏂囦欢锛夛紝鏁翠綋鍥捐氨涓庡疄浣撴祻瑙堣鎯呭叡？*/
+/* 来源行：可点击打开原文（Wiki/笔记/原始文件），整体图谱与实体浏览详情共用 */
 .gd-src { font-size: 11px; color: var(--text-sub); margin-top: 2px; word-break: break-all; }
 .gd-src.openable {
   display: flex; align-items: flex-start; gap: 6px; padding: 4px 8px; margin-top: 2px;
@@ -2532,7 +2533,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .gd-src.openable.missing:hover { background: transparent; color: var(--text-sub); }
 .graph-legend { display: flex; gap: 14px; padding: 8px 20px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-sub); flex-wrap: wrap; }
 .graph-legend .lg-item { display: inline-flex; align-items: center; gap: 5px; }
-/* 鍥句緥鍗＄墖锛堢敾甯冧笂鏂癸級锛氣€滃浘渚嬧€濋？+ 鑹茬偣/绫诲悕/褰撳墠鐢诲竷鍐呰妭鐐规暟？ 涓殑绫绘贰？*/
+/* 图例卡片（画布上方）：「图例」首行 + 色点/类名/当前画布内节点数 个的类淡 */
 .graph-legend.as-card {
   align-items: center; padding: 9px 12px; border: 1px solid var(--border); border-top: 1px solid var(--border);
   border-radius: var(--radius); background: var(--panel);
@@ -2541,12 +2542,12 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .graph-legend .lg-count { font-weight: 600; color: var(--text); }
 .graph-legend .lg-item.zero { opacity: 0.45; }
 .graph-legend .lg-tip { margin-left: auto; color: #b0b6bf; }
-/* 鐢诲竷瀹瑰櫒锛氬渾瑙掕竟妗嗗寘浣忥紝涓庝笂鏂逛袱寮犲崱鐗囨瀯鎴愪笁娈靛紡灞傛 */
+/* 画布容器：圆角边框包住，与上方两张卡片构成三段式层次 */
 .kg-pane[data-pane="graph"] .graph-body { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .graph-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--text-sub); pointer-events: none; }
 .graph-empty .empty-icon { font-size: 40px; }
 
-/* ================= 浠垮蹇樺綍缂栬緫宸ュ叿？================= */
+/* ================= 备忘录编辑工具 ================= */
 .tb-group { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; }
 .tb-btn {
   border: none; background: transparent; color: var(--text); cursor: pointer;
@@ -2554,7 +2555,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 .tb-btn:hover { background: var(--sidebar-bg); }
 .tb-btn:disabled { opacity: 0.5; cursor: default; }
-/* AI 杈呭姪鎸夐挳锛氫富棰樿壊楂樹寒锛屼笌鏅€氭牸寮忔寜閽尯？*/
+/* AI 辅助按钮：主题色高亮，与普通格式按钮区分 */
 .tb-btn.tb-ai { color: var(--primary); font-weight: 600; }
 .tb-btn.tb-ai:hover { background: rgba(16, 185, 129, 0.1); }
 .tb-btn .caret { font-size: 9px; margin-left: 2px; color: var(--text-sub); }
@@ -2604,6 +2605,19 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 /* 顶层本体树形可视化（仿 知识图谱顶层本体结构图.html 卡片风格） */
 .onto-tree-wrap{margin:6px 0 4px;border:1px solid var(--border);border-radius:10px;background:linear-gradient(180deg,#0d1117 0%,#161b22 100%);overflow:auto;height:420px}
 .onto-tree-wrap svg{display:block;width:100%;height:100%}
+/* 本体定义页：当前体系的抽取/实体识别提示词编辑区（默认收起，避免挤压结构树） */
+.onto-prompts{margin:10px 0 4px;border:1px solid var(--border);border-radius:10px;background:var(--card-bg,#fff)}
+.onto-prompts-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:100%;padding:10px 14px;background:none;border:none;cursor:pointer;text-align:left;font-family:inherit}
+.onto-prompts-head:hover{background:rgba(0,0,0,0.02)}
+.onto-prompts-title{display:inline-flex;align-items:center;gap:6px;font-weight:600;color:var(--text)}
+.onto-prompts-caret{margin-left:auto;font-size:12px;color:var(--text-sub)}
+.onto-prompts-body{padding:0 14px 12px}
+.onto-prompts-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:900px){.onto-prompts-grid{grid-template-columns:1fr}}
+.onto-prompt-item{display:flex;flex-direction:column;gap:6px}
+.onto-prompt-label{font-size:12px;color:var(--text-sub);font-weight:600}
+.onto-prompt-item textarea{width:100%;resize:vertical;font-family:inherit;font-size:13px;line-height:1.6;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text)}
+.onto-prompt-actions{display:flex;gap:8px}
 .onto-tree-node{cursor:pointer}
 .onto-tree-node rect{transition:filter .15s;fill:#1c2333;stroke:#3d5a99;stroke-width:1.2}
 .onto-tree-node.is-root rect{fill:#26417c;stroke:#6d9dff;stroke-width:1.6}
