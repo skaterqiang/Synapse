@@ -218,8 +218,8 @@
           </div>
           <div class="kg-filterbar as-card">
             <button class="btn btn-ghost" id="btn-graph-focus" hidden title="点击退出邻居视图"></button>
-            <label>类型 <select id="kg-g-type"></select></label>
-            <label>领域 <select id="kg-g-domain"></select></label>
+            <label>本体体系 <select id="kg-g-profile"></select></label>
+            <label>知识图谱 <select id="kg-g-domain"></select></label>
             <label>最多节点 <select id="kg-g-max"><option value="0">全部</option><option>50</option><option selected>100</option><option>200</option><option>500</option></select></label>
             <label>排序 <select id="kg-g-sort"><option value="deg">按边数</option><option value="name">按名称</option></select></label>
             <button class="btn btn-ghost" id="btn-graph-fit" title="自适应：重置缩放并居中适配画布"><svg class="ico" width="13" height="13"><use href="#i-fit"/></svg>自适应</button>
@@ -518,7 +518,9 @@
                   <label>服务商 Provider（选择后自动带出 Base URL/模型）</label>
                   <select id="set-provider">
                     <option value="dashscope">阿里云百炼（DashScope）</option>
-                    <option value="ollama">Ollama（本地）</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="vllm">vLLM</option>
+                    <option value="sglang">sglang</option>
                   </select>
                   <label>接口地址 (Base URL)</label>
                   <input type="text" id="set-baseurl" placeholder="" />

@@ -709,8 +709,8 @@ function renderSidebar() {
 // 归一：遇到已下线或非法的 provider 值（如历史配置）一律回退阿里云
 const normalizeProvider = (p) => (PROVIDER_PRESETS[p] ? p : DEFAULT_PROVIDER);
 const providerLabel = (p) => ((PROVIDER_PRESETS[p] && PROVIDER_PRESETS[p].label) || p || DEFAULT_PROVIDER);
-// 本地部署（Ollama）无需 API Key
-const providerNeedsKey = (p) => p !== 'ollama';
+// 本地部署（Ollama/vLLM/sglang）无需 API Key
+const providerNeedsKey = (p) => !['ollama', 'vllm', 'sglang'].includes(p);
 
 // 切换 provider 会覆写主模型的 baseUrl/模型名（且自动保存立即落盘），
 // 因此先把原 provider 的可用配置收进「更多模型」，否则旧配置会静默丢失、

@@ -350,9 +350,9 @@ function saveStore(store) {
         f.parentId == null ? null : String(f.parentId),
       ]);
     }
-    db.setKv('settings', JSON.stringify(store.settings || {}));
     db.setKv('trashedFolders', JSON.stringify(Array.isArray(store.trashedFolders) ? store.trashedFolders : []));
   });
+  settings.saveSettings(store.settings || {});
   writeNotesToDisk(folders, Array.isArray(store.notes) ? store.notes : []);
   db.flush();
 }
@@ -372,8 +372,8 @@ function importLegacy(data) {
         f.parentId == null ? null : String(f.parentId),
       ]);
     }
-    db.setKv('settings', JSON.stringify(data.settings || {}));
   });
+  settings.saveSettings(data.settings || {});
   writeNotesToDisk(Array.isArray(data.folders) ? data.folders : [], Array.isArray(data.notes) ? data.notes : []);
 }
 

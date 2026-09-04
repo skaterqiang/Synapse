@@ -141,6 +141,8 @@ async function init() {
       }
     }
   } catch (_) {}
+  // 应用配置库与知识库分离；由 db.init 统一初始化，兼容测试和 Web 入口直接初始化 db 的场景
+  await require('./appdb').init();
   try { dbMtime = fs.statSync(dbFilePath).mtimeMs; } catch (_) { dbMtime = 0; }
 }
 

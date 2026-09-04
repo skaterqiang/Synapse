@@ -5,16 +5,11 @@
 // 画布模拟运行时状态（坐标/缩放/拖拽），与持久化数据分离
 const graphSim = { nodes: [], edges: [], zoom: 1, ox: 0, oy: 0, drag: null, selected: null, raf: 0, running: false, alpha: 1 };
 
-// 实体类列表（key/展示名/颜色）：以本体定义为准，用户自定义的实体类也能正确显示名称与配色
-// 多体系共存：图谱节点带 profile，可能来自不同体系（如 BFO-Lite / ISO 15926 / OWL 导入）；
-// 类型表取「图里实际出现的所有体系」的类表并集 ∪ 当前浏览体系，否则非当前体系的节点类型会因查不到而全灰
+// 实体类列表（key/展示名/颜色）：以当前浏览本体体系为准，用户自定义类也能正确显示名称与配色
+// 多体系共存时，图例只展示当前体系支持的类，避免把其他体系的类混入当前图例。
 function graphTypes() {
-  // 收集图里出现的体系 id（节点 profile），并始终并入当前浏览体系（保证类型下拉/图例覆盖当前体系可筛）
-  const pids = new Set();
-  (state.graph && state.graph.nodes || []).forEach((n) => { if (n.profile) pids.add(String(n.profile)); });
-  const browsing = state.kg && state.kg.onto && state.kg.onto.profileId;
-  if (browsing) pids.add(String(browsing));
-  // 按体系顺序合并各类（保留体系内类顺序），同 key 去重（先出现的体系优先）
+  const filter = document.getElementById('kg-g-profile');
+  const browsing = (filter && filter.value) || (state.kg && state.kg.onto && state.kg.onto.profileId);
   const seen = new Set();
   const list = [];
   const pushCls = (cls) => (cls || []).forEach((c) => {
@@ -22,22 +17,10 @@ function graphTypes() {
     seen.add(c.key);
     list.push({ key: c.key, name: c.label || c.key });
   });
-  pids.forEach((pid) => pushCls((state.kg.profileClasses && state.kg.profileClasses[pid]) || (browsing === pid ? (state.kg.onto && state.kg.onto.classes) : null)));
+  if (browsing && state.kg.onto && Array.isArray(state.kg.onto.classes)) pushCls(state.kg.onto.classes);
   if (!list.length) Object.entries(GRAPH_TYPE_NAMES).forEach(([key, name]) => list.push({ key, name }));
   // 固定色优先；其余按黄金角生成（索引确定 → 同 key 跨会话同色），确保任意数量类型颜色互不重复
   return list.map((t, i) => ({ ...t, color: GRAPH_COLORS[t.key] || graphGenColor(i) }));
-}
-
-// 预加载图里出现的所有体系的类表到 state.kg.profileClasses（同步渲染期不 await，故先拉齐）
-async function ensureGraphProfileClasses() {
-  if (!state.kg) state.kg = {};
-  if (!state.kg.profileClasses) state.kg.profileClasses = {};
-  const pids = new Set();
-  (state.graph && state.graph.nodes || []).forEach((n) => { if (n.profile) pids.add(String(n.profile)); });
-  await Promise.all([...pids].map(async (pid) => {
-    if (state.kg.profileClasses[pid]) return;
-    try { const o = await window.kb.graphOntology(pid); state.kg.profileClasses[pid] = (o && o.classes) || []; } catch (_) { state.kg.profileClasses[pid] = []; }
-  }));
 }
 
 function graphTypeColor(key) {
@@ -73,11 +56,12 @@ async function loadGraph() {
     state.graph = g || { nodes: [], edges: [], updatedAt: Date.now() };
   // 图例/类型下拉的名称与配色以本体定义为准，故先取一次本体（本地 kv 读取，开销可忽略）
   if (!state.kg.onto) state.kg.onto = await window.kb.graphOntology();
-  // 多体系共存：预加载图里出现的所有体系的类表，使非当前浏览体系的节点类型也能正确配色/进图例
-  await ensureGraphProfileClasses();
   // 领域下拉要显示领域中文名，而图谱作业可能刚自动新建了领域模版，故同步刷一次模版列表
   state.templates = (await window.kb.tplList()) || [];
+  state.kg.graphProfiles = (await window.kb.graphProfiles()) || [];
+  state.kg.graphScopes = window.kb.graphScopes ? ((await window.kb.graphScopes()) || []) : [];
   $('count-graph').textContent = state.graph.nodes.length;
+  renderGraphProfileFilter();
   renderGraphTypeFilters();
   renderGraphDomainFilter();
   renderGraphStats();
@@ -103,7 +87,19 @@ function renderGraphTypeFilters() {
   }
 }
 
-// 领域筛选下拉：节点实际出现的领域 ∪ 模版列表，名称优先取模版中文名
+// 一级筛选：本体体系；二级知识图谱筛选会随当前体系联动
+function renderGraphProfileFilter() {
+  const sel = $('kg-g-profile');
+  if (!sel) return;
+  // 不提供“全部本体体系”汇总项，但保留系统中的全部体系，包括暂时没有节点的体系
+  const profiles = state.kg.graphProfiles || [];
+  const cur = sel.dataset.userSelected === '1' ? sel.value : 'bfo-lite';
+  sel.innerHTML = profiles.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.id)}</option>`).join('');
+  const next = profiles.some((p) => p.id === cur) ? cur : (profiles[0] && profiles[0].id) || '';
+  sel.value = next;
+}
+
+// 二级筛选：只列出当前本体体系下实际存在的知识图谱/领域分组
 function renderGraphDomainFilter() {
   const sel = $('kg-g-domain');
   if (!sel) return;
@@ -112,9 +108,13 @@ function renderGraphDomainFilter() {
     const t = (state.templates || []).find((x) => x.id === id);
     return t ? t.name : id;
   };
-  const domains = [...new Set([...(state.templates || []).map((t) => t.id), ...state.graph.nodes.map((n) => n.domain || 'general')])];
-  sel.innerHTML = '<option value="">全部领域</option>' + domains.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(name(d))}</option>`).join('');
-  sel.value = domains.includes(cur) ? cur : '';
+  const profile = ($('kg-g-profile') || {}).value || '';
+  const scopes = (state.kg.graphScopes || []).filter((s) => !profile || s.profile === profile);
+  sel.innerHTML = '<option value="">全部知识图谱</option>' + scopes.map((s) => {
+    const label = `${s.label || name(s.domain)}（${s.nodeCount || 0} 节点）`;
+    return `<option value="${escapeHtml(s.id)}">${escapeHtml(label)}</option>`;
+  }).join('');
+  sel.value = scopes.some((s) => s.id === cur) ? cur : '';
 }
 
 function renderGraphStats() {
@@ -404,7 +404,8 @@ function physicsStep(W, H, a0) {
 function kgFilteredGraph() {
   const typeEl = $('kg-g-type');
   const type = typeEl ? typeEl.value : '';
-  const domain = ($('kg-g-domain') || {}).value || '';
+  const profile = ($('kg-g-profile') || {}).value || '';
+  const scope = ($('kg-g-domain') || {}).value || '';
   const maxRaw = parseInt(($('kg-g-max') || {}).value || '100', 10);
   const max = Number.isFinite(maxRaw) ? maxRaw : 100; // 0 = 全部
   const sort = ($('kg-g-sort') || {}).value || 'deg';
@@ -419,7 +420,8 @@ function kgFilteredGraph() {
     }
     nodes = nodes.filter((n) => nb.has(n.id));
   }
-  if (domain) nodes = nodes.filter((n) => (n.domain || 'general') === domain);
+  if (profile) nodes = nodes.filter((n) => (n.profile || 'bfo-lite') === profile);
+  if (scope) nodes = nodes.filter((n) => `${n.profile || 'bfo-lite'}|${n.domain || 'general'}` === scope);
   if (type) nodes = nodes.filter((n) => n.type === type);
   const ids0 = new Set(nodes.map((n) => n.id));
   let edges = state.graph.edges.filter((e) => ids0.has(e.from) && ids0.has(e.to));
@@ -1289,6 +1291,11 @@ function bindGraphEvents() {
   ['kg-f-type', 'kg-f-src'].forEach((id) => $(id).addEventListener('change', renderKgEntities));
   $('kg-f-q').addEventListener('input', renderKgEntities);
   $('kg-f-refresh').addEventListener('click', () => { state.kg.onto = null; loadGraph(); });
+  $('kg-g-profile').addEventListener('change', () => {
+    $('kg-g-profile').dataset.userSelected = '1';
+    renderGraphDomainFilter();
+    startGraphSim();
+  });
   ['kg-g-type', 'kg-g-max', 'kg-g-sort', 'kg-g-domain'].forEach((id) => $(id).addEventListener('change', () => startGraphSim()));
   $('kg-onto-tabs').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-ot]');

@@ -21,11 +21,13 @@ const NUM_SETTING_FIELDS = {
 };
 
 // ---------- 模型服务商 ----------
-// 服务商预设：仅支持阿里云百炼与 Ollama（默认阿里云）
+// 服务商预设：均使用 OpenAI 兼容接口；本地 vLLM/sglang/Ollama 不要求 API Key
 // label 用于模型选择器分组展示；suggest 仅作为「添加模型」时的候选提示，实际可用模型以用户配置为准
 const PROVIDER_PRESETS = {
   dashscope: { label: '阿里云百炼', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: ((window.kb && window.kb.defaults) || {}).model || 'qwen3.8-max', suggest: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-long'] },
-  ollama: { label: 'Ollama（本地）', url: 'http://localhost:11434/v1', model: '', suggest: ['qwen2.5', 'llama3.1', 'deepseek-r1'] },
+  ollama: { label: 'Ollama', url: 'http://localhost:11434/v1', model: '', suggest: ['qwen2.5', 'llama3.1', 'deepseek-r1'] },
+  vllm: { label: 'vLLM', url: 'http://localhost:8000/v1', model: '', suggest: ['Qwen/Qwen2.5-0.5B-Instruct', 'Qwen/Qwen3-0.6B'] },
+  sglang: { label: 'sglang', url: 'http://localhost:30000/v1', model: '', suggest: ['Qwen/Qwen2.5-0.5B-Instruct', 'Qwen/Qwen3-0.6B'] },
 };
 const DEFAULT_PROVIDER = 'dashscope';
 
