@@ -62,6 +62,11 @@ async function loadGraph() {
   state.kg.graphScopes = window.kb.graphScopes ? ((await window.kb.graphScopes()) || []) : [];
   $('count-graph').textContent = state.graph.nodes.length;
   renderGraphProfileFilter();
+  // 体系下拉重建后，按当前选中的 profile 重拉一次本体（初始渲染图例需与体系一致）
+  const curPid = ($('kg-g-profile') || {}).value;
+  if (curPid && (!state.kg.onto || state.kg.onto.profileId !== curPid)) {
+    try { state.kg.onto = await window.kb.graphOntology(curPid); } catch (_) { /* 保留旧缓存 */ }
+  }
   renderGraphTypeFilters();
   renderGraphDomainFilter();
   renderGraphStats();
@@ -535,14 +540,16 @@ function renderKgEntityDetail(id) {
     <div class="gd-sec">入边（${inn.length}）</div>${inn.map(edgeRow).join('') || '<div class="gd-desc">（无）</div>'}
     <button class="btn btn-primary" id="btn-kg-neighbor">${icoSvg('kg', 13)}看邻居图 →</button>`;
   renderGdSources(box, n);
-  $('btn-kg-neighbor').addEventListener('click', () => {
+  const neighborBtn = $('btn-kg-neighbor');
+  if (neighborBtn) neighborBtn.addEventListener('click', () => {
     state.kg.focus = id; // 邻居视图：画布只看该节点的邻居
     switchKgTab('graph');
     graphSim.selected = id;
     renderGraphDetail(graphSim.nodes.find((x) => x.id === id) || null);
     recenterGraph();
   });
-  $('btn-kg-edetail-close').addEventListener('click', () => {
+  const detailCloseBtn = $('btn-kg-edetail-close');
+  if (detailCloseBtn) detailCloseBtn.addEventListener('click', () => {
     state.kg.entitySel = null;
     renderKgEntities();
   });
@@ -1291,12 +1298,22 @@ function bindGraphEvents() {
   ['kg-f-type', 'kg-f-src'].forEach((id) => $(id).addEventListener('change', renderKgEntities));
   $('kg-f-q').addEventListener('input', renderKgEntities);
   $('kg-f-refresh').addEventListener('click', () => { state.kg.onto = null; loadGraph(); });
-  $('kg-g-profile').addEventListener('change', () => {
-    $('kg-g-profile').dataset.userSelected = '1';
+  const profileFilter = $('kg-g-profile');
+  if (profileFilter) profileFilter.addEventListener('change', async () => {
+    profileFilter.dataset.userSelected = '1';
+    // 切换体系后：同步刷新本体缓存（图例/类型下拉/节点配色都读它），避免图例始终停留在旧体系
+    try {
+      state.kg.onto = await window.kb.graphOntology(profileFilter.value);
+    } catch (_) { /* 拉取失败时保留旧本体，图例/下拉维持原状 */ }
+    renderGraphTypeFilters();
+    renderGraphLegend();
     renderGraphDomainFilter();
     startGraphSim();
   });
-  ['kg-g-type', 'kg-g-max', 'kg-g-sort', 'kg-g-domain'].forEach((id) => $(id).addEventListener('change', () => startGraphSim()));
+  ['kg-g-type', 'kg-g-max', 'kg-g-sort', 'kg-g-domain'].forEach((id) => {
+    const filter = $(id);
+    if (filter) filter.addEventListener('change', () => startGraphSim());
+  });
   $('kg-onto-tabs').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-ot]');
     if (!b) return;

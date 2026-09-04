@@ -66,7 +66,7 @@ async function createWindow() {
   mainWindow.setMenuBarVisibility(false);
   // Electron 44：console-message 旧多参签名已弃用，改用 Event 对象（event.message）
   mainWindow.webContents.on('console-message', (event) => {
-    console.log('[renderer]', event.message);
+    console.log('[renderer]', event.message, event.sourceId ? `${event.sourceId}:${event.lineNumber || 0}` : '');
   });
   // 兜底安全网：渲染层任何直接导航（旧前端未拦截的链接、相对资源路径等）一律阻止，
   // 避免 file:// 找不到文件出现整页空白；docs 资源用系统默认软件打开，外链走系统浏览器
@@ -85,7 +85,7 @@ async function createWindow() {
   });
   if (process.argv.includes('--kb-debug')) mainWindow.webContents.openDevTools({ mode: 'detach' });
   // 版本 query 使 index.html 自身绕开 file:// 缓存（内部脚本引用另带各自版本号）
-  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'), { query: { v: '20260830b' } });
+  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'), { query: { v: '20260904a' } });
 }
 
 app.whenReady().then(async () => {

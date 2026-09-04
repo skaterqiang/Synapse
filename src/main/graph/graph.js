@@ -405,6 +405,12 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
         }
       }
     }
+    // 兑底：若本批次粗匹配全部未命中（节点名未出现在原文），仍按本次领域兜底补齐 domain，避免节点入「未分类」
+    if (domainTag && domainTag !== 'general') {
+      for (const node of nodes.values()) {
+        if (!node.domain) node.domain = domainTag;
+      }
+    }
     } catch (err) {
       // 用户手动停止：必须向上传播，让作业标为已停止而非部分成功
       if (err && err.name === 'AbortError') throw err;
@@ -911,7 +917,7 @@ function listGraphScopes() {
     if (!groups.has(key)) {
       groups.set(key, {
         id: key, profile, profileName: nameOf(profile), domain,
-        label: domain === 'general' ? '未分类' : tplNameOf(domain),
+        label: domain === 'general' ? '通用（未匹配领域）' : tplNameOf(domain),
         nodeCount: 0, edgeCount: 0,
       });
       nodeIds.set(key, new Set());

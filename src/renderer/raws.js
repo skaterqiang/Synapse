@@ -552,13 +552,17 @@ function renderTplCards() {
   state.templates.forEach((t) => {
     const card = document.createElement('div');
     card.className = 'tpl-card' + (t.builtin ? '' : ' custom');
+    const pid = t.ontologyProfile || 'bfo-lite';
     const kws = (t.keywords || []).map((k) => `<span class="tpl-kw">${escapeHtml(k)}</span>`).join('');
     card.innerHTML = `
-      <div class="tpl-card-head"><b>${escapeHtml(t.name)}</b><code>${escapeHtml(t.id)}</code></div>
-      <p class="tpl-card-desc">${escapeHtml(t.desc || '')}</p>
+      <div class="tpl-card-head">
+        <b class="tpl-card-name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</b>
+        <code class="tpl-card-id" title="${escapeHtml(t.id)}">${escapeHtml(t.id)}</code>
+      </div>
+      <p class="tpl-card-desc" title="${escapeHtml(t.desc || '')}">${escapeHtml(t.desc || '')}</p>
       <div class="tpl-counts">
-        <span class="tpl-badge-profile">${escapeHtml(profileNameOf(t.ontologyProfile || 'bfo-lite'))}</span>
-        <span>领域类: ${(t.domainClasses || t.entityTypes || []).length}</span>
+        <span class="tpl-badge-profile tpl-profile-${escapeHtml(pid)}">${escapeHtml(profileNameOf(pid))}</span>
+        <span class="tpl-count-badge">领域类: ${(t.domainClasses || t.entityTypes || []).length}</span>
       </div>
       ${kws ? `<div class="tpl-kws">${kws}</div>` : ''}
       <div class="tpl-card-foot">
@@ -947,9 +951,10 @@ function renderRawList() {
   for (const [root, refs] of byRoot) {
     if (!root) { refs.forEach((r) => box.appendChild(makeRow(r, 0))); continue; }
     // 按 rel 构建嵌套目录树，原样保留多级目录结构
+    // 注意：后端 rel 是 path.relative 产出，Windows 下为反斜杠，这里统一换成 / 再拆分
     const tree = { dirs: new Map(), files: [] };
     for (const r of refs) {
-      const parts = String(r.rel || r.name).split('/').filter(Boolean);
+      const parts = String(r.rel || r.name).replace(/\\/g, '/').split('/').filter(Boolean);
       let cur = tree;
       for (let i = 0; i < parts.length - 1; i++) {
         if (!cur.dirs.has(parts[i])) cur.dirs.set(parts[i], { dirs: new Map(), files: [] });
