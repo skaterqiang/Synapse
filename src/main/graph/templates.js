@@ -141,6 +141,16 @@ function removeTemplate(id) {
   const tpl = list.find((t) => t.id === id);
   if (!tpl) throw new Error('模版不存在：' + id);
   if (tpl.builtin) throw new Error('内置通用模版不可删除');
+  // 防护：已抽取图谱数据的领域模板不可删除（惰性 require 避免与 graph.js 循环依赖）
+  try {
+    const graph = require('./graph');
+    const scopes = graph.listGraphScopes() || [];
+    const scope = scopes.find((s) => s.domain === id && (s.nodeCount || 0) > 0);
+    if (scope) throw new Error(`该领域已抽取 ${scope.nodeCount} 个图谱节点，不能删除；请先到「整体图谱」清空对应节点`);
+  } catch (e) {
+    if (String(e.message || '').includes('图谱节点')) throw e; // 数据防护错误照常抛出
+    // graph 模块不可用等异常不阻塞删除
+  }
   persistTemplates(list.filter((t) => t.id !== id));
   return { removed: id };
 }

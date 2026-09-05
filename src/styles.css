@@ -1054,17 +1054,51 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .radio-hint { flex: 1; min-width: 0; font-size: 11.5px; font-style: normal; color: var(--text-sub); line-height: 1.5; }
 /* 解析方式行的短提示不换行，避免「仅支持 PDF」折成两行 */
 .mineru-mode-row .radio-hint { flex: 0 0 auto; white-space: nowrap; }
-/* 提取知识图谱 · AI 自主判定进度流 */
-.domain-progress { max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; margin: 8px 0 6px; padding: 14px 16px; background: var(--bg-soft, #f7f8fa); border-radius: 10px; font-size: 14px; line-height: 1.7; }
+/* ===== 提取知识图谱 · AI 自主判定进度流（卡片化） ===== */
+.domain-progress { max-height: 460px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; margin: 8px 0 6px; padding: 14px; background: var(--bg-soft, #f7f8fa); border-radius: 12px; font-size: 14px; line-height: 1.7; }
+/* 步骤卡片：白底圆角卡片承载每一步的标题/结果/思考流 */
+.domain-card { background: var(--panel, #fff); border: 1px solid var(--border, #e3e6eb); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 1px 2px rgba(0,0,0,.04); transition: border-color .2s, box-shadow .2s; }
+.domain-card.running { border-color: var(--primary, #1a7f4b); box-shadow: 0 0 0 3px rgba(26,127,75,.08); }
+.domain-card.done { border-color: rgba(26,127,75,.35); }
+.domain-card.failed { border-color: rgba(192,57,43,.4); }
+/* 卡片头：步骤序号圆点 + 标题 + 状态 */
+.domain-card-head { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 14px; color: var(--text-main, #1f2329); }
+.domain-card-idx { flex: none; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; background: var(--sidebar-bg, #eef1f4); color: var(--text-sub, #8a9099); transition: background .2s, color .2s; }
+.domain-card.running .domain-card-idx { background: var(--primary, #1a7f4b); color: #fff; animation: domainPulse 1.2s ease-in-out infinite; }
+.domain-card.done .domain-card-idx { background: rgba(26,127,75,.12); color: var(--primary, #1a7f4b); }
+.domain-card.failed .domain-card-idx { background: rgba(192,57,43,.12); color: #c0392b; }
+@keyframes domainPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(26,127,75,.35);} 50% { box-shadow: 0 0 0 5px rgba(26,127,75,0);} }
+.domain-card-status { margin-left: auto; flex: none; font-size: 12px; font-weight: 500; color: var(--text-sub, #8a9099); }
+.domain-card.running .domain-card-status::after { content: '…'; animation: domainDots 1.2s steps(3) infinite; }
+@keyframes domainDots { 0% { content: ''; } 33% { content: '·'; } 66% { content: '··'; } 100% { content: '···'; } }
+/* 结果行：命中领域/体系的徽章 + 匹配度 */
+.domain-result { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.domain-badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; background: rgba(26,127,75,.1); color: var(--primary, #1a7f4b); border: 1px solid rgba(26,127,75,.25); }
+.domain-badge.sim { background: var(--sidebar-bg, #eef1f4); color: var(--text-sub, #8a9099); border-color: var(--border, #e3e6eb); font-weight: 500; font-size: 12px; }
+.domain-badge.err { background: rgba(192,57,43,.08); color: #c0392b; border-color: rgba(192,57,43,.3); }
+/* 普通步骤行（非卡片场景仍兼容） */
 .domain-step { color: var(--text-main, #1f2329); white-space: pre-wrap; word-break: break-all; }
 .domain-step.run { color: var(--text-sub, #8a9099); }
-.domain-step.dim { color: var(--text-sub, #8a9099); opacity: .85; }
+.domain-step.dim { color: var(--text-sub, #8a9099); opacity: .85; font-size: 13px; }
 .domain-step.ok { color: var(--primary, #1a7f4b); }
 .domain-step.err { color: #c0392b; }
-.domain-pick { margin-left: 6px; padding: 4px 8px; font-size: 14px; border: 1px solid var(--border, #d8dce1); border-radius: 6px; background: var(--panel, #fff); color: var(--text-main, #1f2329); max-width: 360px; }
+/* 卡片内备注（判定理由等）：浅灰底圆角块 */
+.domain-note { padding: 8px 10px; background: var(--bg-soft, #f7f8fa); border-radius: 8px; font-size: 13px; color: var(--text-sub, #6b7280); line-height: 1.65; white-space: pre-wrap; word-break: break-all; }
+/* 确认区：领域/体系下拉行 */
+.domain-confirm { display: flex; flex-direction: column; gap: 10px; background: var(--panel, #fff); border: 1.5px solid rgba(26,127,75,.35); border-radius: 10px; padding: 14px; box-shadow: 0 0 0 3px rgba(26,127,75,.06); }
+.domain-confirm-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--text-main, #1f2329); }
+.domain-confirm-row { display: flex; align-items: center; gap: 10px; }
+.domain-confirm-row > label { flex: none; width: 44px; font-size: 13px; font-weight: 600; color: var(--text-sub, #6b7280); }
+.domain-pick { flex: 1; min-width: 0; padding: 7px 10px; font-size: 14px; border: 1px solid var(--border, #d8dce1); border-radius: 8px; background: var(--panel, #fff); color: var(--text-main, #1f2329); max-width: none; }
+.domain-pick:focus { outline: none; border-color: var(--primary, #1a7f4b); box-shadow: 0 0 0 3px rgba(26,127,75,.1); }
 .domain-progress-hint { flex: 1; font-size: 13px; color: var(--text-sub, #8a9099); align-self: center; }
-/* 判定思考过程流：缩进、斜体、左侧细边，逐字追加 */
-.domain-think { margin: 4px 0 4px 20px; padding: 6px 10px; font-size: 13px; font-style: italic; color: var(--text-sub, #8a9099); opacity: .9; border-left: 2px solid var(--border, #d8dce1); white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
+/* 思考过程流：默认折叠，点击标题展开；逐字追加 */
+.domain-think-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-sub, #8a9099); cursor: pointer; user-select: none; width: fit-content; padding: 2px 6px; border-radius: 5px; }
+.domain-think-toggle:hover { color: var(--primary, #1a7f4b); background: rgba(26,127,75,.06); }
+.domain-think-toggle .chevron { display: inline-block; font-size: 9px; transition: transform .15s; }
+.domain-think-toggle.open .chevron { transform: rotate(90deg); }
+.domain-think { display: none; margin: 2px 0 0 4px; padding: 8px 10px; font-size: 12.5px; font-style: italic; color: var(--text-sub, #8a9099); opacity: .9; background: var(--bg-soft, #f7f8fa); border-left: 2px solid var(--border, #d8dce1); border-radius: 0 6px 6px 0; white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow-y: auto; line-height: 1.6; }
+.domain-think.open { display: block; }
 .wiki-group-toggle { cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none; }
 .wiki-group-toggle:hover { color: var(--primary); }
 .wiki-group-toggle .chevron { display: inline-block; font-size: 10px; transition: transform 0.15s; }
@@ -1404,6 +1438,23 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 .tpl-card.custom { border-color: var(--primary); }
 .tpl-card.custom:hover { border-color: var(--primary); }
+/* 有图谱数据的模板卡片：整体可点击（跳转查看知识图谱） */
+.tpl-card.has-graph { cursor: pointer; }
+/* 删除领域模版确认弹窗：关联图谱提示块 */
+.tpl-del-info { margin: 12px 0 4px; padding: 12px 14px; border-radius: 8px; font-size: 13px; line-height: 1.7; background: var(--bg-soft, #f7f8fa); color: var(--text-sub, #6b7280); white-space: pre-wrap; }
+.tpl-del-info.has-graph { background: rgba(192,57,43,.06); color: #c0392b; border: 1px solid rgba(192,57,43,.25); }
+.tpl-del-info.no-graph { background: rgba(26,127,75,.06); color: var(--primary, #1a7f4b); border: 1px solid rgba(26,127,75,.2); }
+.tpl-del-info b { color: var(--text, #1f2329); }
+.btn-danger { background: #c0392b; color: #fff; border-color: #c0392b; }
+.btn-danger:hover:not(:disabled) { background: #a93226; }
+.btn-danger:disabled { opacity: .45; cursor: not-allowed; }
+/* 图谱数据徽章：绿色，提示已抽取节点数并可点击 */
+.tpl-graph-badge {
+  background: rgba(26,127,75,.08);
+  color: var(--primary);
+  border: 1px solid rgba(26,127,75,.25);
+  cursor: pointer;
+}
 .tpl-card-head {
   display: flex;
   flex-direction: column;

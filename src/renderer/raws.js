@@ -88,6 +88,64 @@ function domainStep(text, cls) {
   return div;
 }
 
+// 卡片化步骤：序号圆点 + 标题 + 状态，结果/理由/思考流挂在卡片内
+function domainCard(idx, title, state) {
+  const box = $('domain-progress');
+  if (!box) return null;
+  const card = document.createElement('div');
+  card.className = 'domain-card' + (state ? ' ' + state : '');
+  const head = document.createElement('div');
+  head.className = 'domain-card-head';
+  const dot = document.createElement('span');
+  dot.className = 'domain-card-idx';
+  dot.textContent = idx;
+  const t = document.createElement('span');
+  t.textContent = title;
+  const st = document.createElement('span');
+  st.className = 'domain-card-status';
+  head.append(dot, t, st);
+  card.appendChild(head);
+  box.appendChild(card);
+  box.scrollTop = box.scrollHeight;
+  return card;
+}
+
+// 向卡片追加一行内容（结果徽章行 / 备注块）
+function domainCardRow(card, cls) {
+  if (!card) return null;
+  const row = document.createElement('div');
+  row.className = cls || 'domain-note';
+  card.appendChild(row);
+  const box = $('domain-progress');
+  if (box) box.scrollTop = box.scrollHeight;
+  return row;
+}
+
+// 结果徽章行：主徽章（如领域名）+ 可选副徽章（如匹配度）
+function domainBadgeRow(card, mainText, subText, isErr) {
+  const row = domainCardRow(card, 'domain-result');
+  if (!row) return;
+  const badge = document.createElement('span');
+  badge.className = 'domain-badge' + (isErr ? ' err' : '');
+  badge.textContent = mainText;
+  row.appendChild(badge);
+  if (subText) {
+    const sub = document.createElement('span');
+    sub.className = 'domain-badge sim';
+    sub.textContent = subText;
+    row.appendChild(sub);
+  }
+}
+
+// 设置卡片状态（running → done / failed）
+function domainCardState(card, state, statusText) {
+  if (!card) return;
+  card.classList.remove('running', 'done', 'failed');
+  if (state) card.classList.add(state);
+  const st = card.querySelector('.domain-card-status');
+  if (st) st.textContent = statusText || '';
+}
+
 // AI 判定领域并提交：进度展示 → 填充可编辑下拉 → 用户点「确认提取」才提交作业；「取消」放弃本次提取
 // texts 为字符串数组（领域预匹配用）；inlineSources 为 {label,text} 数组（笔记图谱的作业来源）
 async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSources = [] }) {
@@ -105,15 +163,38 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
   let cancelled = false; // 是否已点「取消」（取消后不再展示可确认的下拉/按钮）
 
   // 判定思考过程流：当前活动步骤的思考容器（reasoning 增量逐字追加；正文增量也显示，属最终 JSON 判定）
+  // 进行中的步骤自动展开并实时滚动到底；该步骤结束后自动折叠为「查看思考过程 ▸」。parent 为宿主卡片
   let curThink = null;
-  const mkThink = () => {
-    const el = document.createElement('div');
-    el.className = 'domain-think';
+  const setThinkOpen = (el, open) => {
+    if (!el) return;
+    el.classList.toggle('open', open);
+    const toggle = el._toggle;
+    if (toggle) {
+      toggle.classList.toggle('open', open);
+      toggle.querySelector('.tt').textContent = open ? '收起思考过程' : '查看思考过程';
+    }
+  };
+  const mkThink = (parent) => {
+    // 切换到新的思考容器前，折叠上一个进行中的思考流（步骤推进时自动收起）
+    if (curThink) setThinkOpen(curThink, false);
     const box = $('domain-progress');
-    if (box) { box.appendChild(el); box.scrollTop = box.scrollHeight; }
+    const host = parent || box;
+    // 折叠开关行
+    const toggle = document.createElement('div');
+    toggle.className = 'domain-think-toggle';
+    toggle.innerHTML = '<span class="chevron">▶</span><span class="tt">收起思考过程</span>';
+    // 内容容器（进行中默认展开，实时滚动）
+    const el = document.createElement('div');
+    el.className = 'domain-think open';
+    toggle.classList.add('open');
+    toggle.addEventListener('click', () => setThinkOpen(el, !el.classList.contains('open')));
+    if (host) { host.append(toggle, el); box.scrollTop = box.scrollHeight; }
     curThink = el;
+    curThink._toggle = toggle;
     return el;
   };
+  // 当前步骤结束：自动折叠其思考流
+  const collapseThink = () => { if (curThink) setThinkOpen(curThink, false); };
   const feedThink = (chunk) => {
     if (!curThink || !chunk || !chunk.text) {
       return;
@@ -121,6 +202,8 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     // 思考增量（reasoning）直接显示；正文增量也显示但加上前缀区分
     const text = chunk.reasoning ? chunk.text : `　[输出] ${chunk.text}`;
     curThink.textContent += text;
+    // 思考容器自身滚动到底（其 max-height 内独立滚动），外层进度流同步贴底
+    curThink.scrollTop = curThink.scrollHeight;
     const box = $('domain-progress');
     if (box) box.scrollTop = box.scrollHeight;
   };
@@ -129,7 +212,7 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
   const unbindProfile = (window.kb.onTplSuggestProfileChunk ? window.kb.onTplSuggestProfileChunk(feedThink) : null);
   const unbindName = (window.kb.onTplSuggestNameChunk ? window.kb.onTplSuggestNameChunk(feedThink) : null);
   const unbindGen = (window.kb.onTplGenChunk ? window.kb.onTplGenChunk(feedThink) : null);
-  const unbindThink = () => { if (unbindMatch) unbindMatch(); if (unbindProfile) unbindProfile(); if (unbindName) unbindName(); if (unbindGen) unbindGen(); };
+  const unbindThink = () => { if (unbindMatch) unbindMatch(); if (unbindProfile) unbindProfile(); if (unbindName) unbindName(); if (unbindGen) unbindGen(); collapseThink(); };
 
   const submitJob = async (extras) => {
     const payload = { settings: state.settings, ...extras };
@@ -148,12 +231,20 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     return await submitJob(extras);
   };
 
-  // 判定完成后：把「命中领域」「选定体系」两行替换为可编辑下拉，并显示「确认提取」
+  // 判定完成后：渲染确认卡片（领域/体系下拉），并显示「确认提取」
   const finalizeDecision = async () => {
     if (cancelled) return; // 用户已取消：不再渲染下拉与确认按钮
     // 确保下拉数据就绪
     if (!state.templates || !state.templates.length) state.templates = (await window.kb.tplList()) || [];
     const profiles = await getProfiles();
+    // 确认卡片容器
+    const box = $('domain-progress');
+    const confirm = document.createElement('div');
+    confirm.className = 'domain-confirm';
+    const cTitle = document.createElement('div');
+    cTitle.className = 'domain-confirm-title';
+    cTitle.textContent = '✔ 请确认提取配置';
+    confirm.appendChild(cTitle);
     // 领域下拉
     const dSel = document.createElement('select');
     dSel.className = 'domain-pick';
@@ -172,10 +263,16 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
       pSel.appendChild(o);
     }
     pSel.value = sel.profileId;
-    const dRow = domainStep('', null); if (dRow) dRow.append('领域：', dSel);
-    const pRow = domainStep('', null); if (pRow) pRow.append('体系：', pSel);
-    // 说明体系来源：按来源内容从全部可用体系（内置三体系+导入 OWL）实时匹配最贴合者，可下拉更换（如改用 ISO 15926）
-    const pNote = domainStep('　体系按内容实时匹配最贴合者（可在上方下拉更换，如改用 ISO 15926）', 'dim');
+    const dRow = document.createElement('div'); dRow.className = 'domain-confirm-row';
+    const dLab = document.createElement('label'); dLab.textContent = '领域';
+    dRow.append(dLab, dSel);
+    const pRow = document.createElement('div'); pRow.className = 'domain-confirm-row';
+    const pLab = document.createElement('label'); pLab.textContent = '体系';
+    pRow.append(pLab, pSel);
+    const pNote = document.createElement('div'); pNote.className = 'domain-note';
+    pNote.textContent = '体系按内容实时匹配最贴合者（可在上方下拉更换，如改用 ISO 15926）';
+    confirm.append(dRow, pRow, pNote);
+    if (box) { box.appendChild(confirm); box.scrollTop = box.scrollHeight; }
     // 切换领域仅改领域，不再联动改体系（体系按内容匹配，与所选领域无关）；体系仍可手动下拉更改
     dSel.addEventListener('change', () => {
       sel.domainId = dSel.value;
@@ -192,7 +289,9 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
   confirmBtn.onclick = async () => {
     if (decided || cancelled) return; decided = true;
     confirmBtn.disabled = true;
-    domainStep(`③ 已确认：领域「${sel.tpl ? sel.tpl.name : '通用'}」/ 体系「${profileNameOf(sel.profileId)}」，提交作业…`, 'ok');
+    const c3 = domainCard('③', '已确认，提交提取作业', 'done');
+    domainBadgeRow(c3, `「${sel.tpl ? sel.tpl.name : '通用'}」`, `体系：${profileNameOf(sel.profileId)}`, false);
+    domainCardState(c3, 'done', '提交中');
     const ok = await doSubmit();
     confirmBtn.disabled = false;
     if (ok) { $('domain-modal').hidden = true; confirmBtn.hidden = true; }
@@ -206,40 +305,57 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
 
   // 前置建域：未命中已有领域时，直接在本流程内归纳并新建（不回退通用、不人工确认），随后纳入下拉供用户复核
   const autoCreateDomainNow = async () => {
-    domainStep('② 未命中已有领域，按内容归纳并新建领域…', 'run');
-    mkThink(); // 换领域归纳的思考流容器
+    const c = domainCard('②', '未命中已有领域，按内容归纳并新建', 'running');
+    domainCardState(c, 'running', '归纳中');
+    mkThink(c); // 换领域归纳的思考流容器
     const sug = await window.kb.tplSuggestName({ settings: state.settings, rawPaths, texts });
-    if (!sug.ok || !sug.name) { domainStep('✖ 领域归纳失败：' + (sug.error || '未归纳出名称'), 'err'); return null; }
+    if (!sug.ok || !sug.name) {
+      domainBadgeRow(c, '领域归纳失败', sug.error || '未归纳出名称', true);
+      domainCardState(c, 'failed', '失败');
+      return null;
+    }
     state.templates = (await window.kb.tplList()) || [];
     const exist = state.templates.find((t) => t.id !== 'general' && t.name === sug.name);
     if (exist) {
-      domainStep(`✔ 归纳为「${sug.name}」，命中已有领域模版，直接复用`, 'ok');
+      domainBadgeRow(c, `「${sug.name}」`, '命中已有领域模版，直接复用', false);
+      domainCardState(c, 'done', '已完成');
       return { id: exist.id, name: exist.name, tpl: exist, reason: '同名已有领域，复用' };
     }
-    domainStep(`✔ 归纳出新领域「${sug.name}」，AI 正在生成领域类并从 bfo-lite / bfo / iso15926 中选定本体体系…`, 'run');
-    mkThink(); // 为「生成领域类」步骤新建思考流容器，否则增量仍追加到上一步的旧容器
+    domainCardRow(c, 'domain-note').textContent = `✔ 归纳出新领域「${sug.name}」，AI 正在生成领域类并选定本体体系…`;
+    mkThink(c); // 为「生成领域类」步骤新建思考流容器，否则增量仍追加到上一步的旧容器
     const gen = await window.kb.tplGenerate({ settings: state.settings, name: sug.name, desc: sug.desc || '' });
-    if (!gen.ok || !gen.template) { domainStep('✖ 生成领域类失败：' + (gen.error || '未知错误'), 'err'); return null; }
+    if (!gen.ok || !gen.template) {
+      domainBadgeRow(c, '生成领域类失败', gen.error || '未知错误', true);
+      domainCardState(c, 'failed', '失败');
+      return null;
+    }
     let g = gen.template;
     if (state.templates.some((t) => t.id === g.id && t.name !== sug.name)) g = { ...g, id: g.id + '_' + Date.now().toString(36) };
     const save = await window.kb.tplSave({ ...g, name: sug.name, desc: sug.desc || g.desc || '' });
-    if (!save.ok || !save.template) { domainStep('✖ 领域保存失败：' + (save.error || '未知错误'), 'err'); return null; }
+    if (!save.ok || !save.template) {
+      domainBadgeRow(c, '领域保存失败', save.error || '未知错误', true);
+      domainCardState(c, 'failed', '失败');
+      return null;
+    }
     const tpl = save.template;
     state.templates = (await window.kb.tplList()) || [];
     const clsN = Array.isArray(tpl.domainClasses) ? tpl.domainClasses.length : 0;
-    domainStep(`✔ 已创建领域「${tpl.name}」（${tpl.id}）：${clsN} 个领域类`, 'ok');
+    domainBadgeRow(c, `「${tpl.name}」`, `${clsN} 个领域类`, false);
+    domainCardState(c, 'done', '已完成');
     return { id: tpl.id, name: tpl.name, tpl, reason: '按内容自动新建' };
   };
 
   try {
-    domainStep('① 按内容匹配已有领域…', 'run');
-    mkThink(); // 挂领域匹配的思考流容器（reasoning 逐字追加）
+    // 步骤一：领域匹配（卡片）
+    const c1 = domainCard('①', '按内容匹配已有领域', 'running');
+    domainCardState(c1, 'running', '判定中');
+    mkThink(c1); // 挂领域匹配的思考流容器（reasoning 逐字追加）
     const domain = await checkDomainBeforeIngest({ rawPaths, texts, allowCreate: false, timeoutMs: GRAPH_MATCH_TIMEOUT });
     let finalDomain = null;
     if (domain && domain !== 'skip' && domain.id && domain.id !== 'general') {
       finalDomain = domain; // 命中已有领域
     } else if (domain === null || domain === 'skip') {
-      domainStep('↷ 预匹配不可用，尝试直接建域', 'dim');
+      domainCardRow(c1, 'domain-note').textContent = '↷ 预匹配不可用，尝试直接建域';
       finalDomain = await autoCreateDomainNow();
     } else {
       finalDomain = await autoCreateDomainNow(); // 未命中 → 自动新建（不回退通用）
@@ -249,35 +365,42 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
       const tpl = finalDomain.tpl || {};
       sel.domainId = finalDomain.id;
       sel.tpl = tpl.id ? tpl : (state.templates.find((t) => t.id === finalDomain.id) || null);
-      // 领域匹配结果 + 匹配度
-      const dSim = (typeof finalDomain.similarity === 'number') ? `（匹配度 ${finalDomain.similarity}%）` : '';
-      domainStep(`✔ 领域匹配「${finalDomain.name}」${dSim}`, 'ok');
+      // 领域匹配结果 + 匹配度徽章
+      const dSim = (typeof finalDomain.similarity === 'number') ? `匹配度 ${finalDomain.similarity}%` : '';
+      domainBadgeRow(c1, `「${finalDomain.name}」`, dSim, false);
+      domainCardState(c1, 'done', '已完成');
       if (finalDomain.reason) {
-        domainStep(`　判定理由：${finalDomain.reason}`, 'dim');
+        domainCardRow(c1, 'domain-note').textContent = `判定理由：${finalDomain.reason}`;
       }
-      // 体系：优先使用模版绑定的体系；未绑定时才按内容实时匹配
+      // 步骤二：体系匹配（卡片）
       const tplProfile = sel.tpl && sel.tpl.ontologyProfile ? String(sel.tpl.ontologyProfile).trim() : '';
       if (tplProfile) {
         sel.profileId = tplProfile;
         const profName = profileNameOf(tplProfile);
-        domainStep(`② 体系「${profName}」（复用领域模版绑定）`, 'ok');
+        const c2 = domainCard('②', '本体体系', 'done');
+        domainBadgeRow(c2, `「${profName}」`, '复用领域模版绑定', false);
+        domainCardState(c2, 'done', '已完成');
       } else {
-        // 模版未绑定体系：按来源内容实时匹配最贴合者
-        domainStep('② 按内容匹配本体体系…', 'run');
-        mkThink(); // 换体系匹配的思考流容器（后续 chunk 追加到新容器）
+        const c2 = domainCard('②', '按内容匹配本体体系', 'running');
+        domainCardState(c2, 'running', '判定中');
+        mkThink(c2); // 换体系匹配的思考流容器（后续 chunk 追加到新容器）
         try {
           const prof = await window.kb.tplSuggestProfile({ settings: state.settings, rawPaths, texts });
           if (prof && prof.ok && prof.id) {
             sel.profileId = prof.id;
-            const simTxt = (typeof prof.similarity === 'number' && prof.similarity > 0) ? `（匹配度 ${prof.similarity}%）` : '';
-            domainStep(`✔ 体系匹配「${prof.name || prof.id}」${simTxt}${prof.reason ? '：' + prof.reason : ''}`, 'ok');
+            const simTxt = (typeof prof.similarity === 'number' && prof.similarity > 0) ? `匹配度 ${prof.similarity}%` : '';
+            domainBadgeRow(c2, `「${prof.name || prof.id}」`, simTxt, false);
+            domainCardState(c2, 'done', '已完成');
+            if (prof.reason) domainCardRow(c2, 'domain-note').textContent = `匹配理由：${prof.reason}`;
           } else {
             sel.profileId = (state.settings && state.settings.ontologyProfile) || 'bfo-lite';
-            domainStep('↷ 体系匹配不可用，回退默认体系（可下拉更改）', 'dim');
+            domainCardRow(c2, 'domain-note').textContent = '↷ 体系匹配不可用，回退默认体系（可下拉更改）';
+            domainCardState(c2, 'done', '默认');
           }
         } catch (_) {
           sel.profileId = (state.settings && state.settings.ontologyProfile) || 'bfo-lite';
-          domainStep('↷ 体系匹配失败，回退默认体系（可下拉更改）', 'dim');
+          domainCardRow(c2, 'domain-note').textContent = '↷ 体系匹配失败，回退默认体系（可下拉更改）';
+          domainCardState(c2, 'failed', '失败');
         }
       }
       if (cancelled) return false; // 等待体系匹配期间用户已取消
@@ -286,7 +409,8 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
       return true; // 已就绪，等待用户确认（不return提交结果）
     }
     // 建域也失败：仍给通用选项让用户确认后提取，而非静默跑
-    domainStep('✖ 未能确定领域，已回退「通用」，可下拉更改或确认提取', 'err');
+    domainCardState(c1, 'failed', '失败');
+    domainBadgeRow(c1, '未能确定领域', '已回退「通用」', true);
     sel.domainId = 'general'; sel.tpl = null;
     sel.profileId = (state.settings && state.settings.ontologyProfile) || 'bfo-lite';
     unbindThink();
@@ -543,7 +667,18 @@ function hideTplView() {
 async function loadTemplates() {
   state.templates = (await window.kb.tplList()) || [];
   $('count-tpl').textContent = state.templates.length || '';
+  // 同步拉取图谱范围，用于判断每个模板是否已有图谱数据（决定可否删除/可点击查看图谱）
+  if (window.kb.graphScopes) {
+    state.kg = state.kg || {};
+    try { state.kg.graphScopes = (await window.kb.graphScopes()) || []; } catch (_) { /* 保留旧缓存 */ }
+  }
   renderTplCards();
+}
+
+// 模板是否有已抽取的图谱数据：存在 scope（profile|domain）使 domain 等于模板 id 且节点数 > 0
+function tplGraphScope(tplId) {
+  const scopes = state.kg && Array.isArray(state.kg.graphScopes) ? state.kg.graphScopes : [];
+  return scopes.find((s) => s.domain === tplId && (s.nodeCount || 0) > 0) || null;
 }
 
 function renderTplCards() {
@@ -554,6 +689,15 @@ function renderTplCards() {
     card.className = 'tpl-card' + (t.builtin ? '' : ' custom');
     const pid = t.ontologyProfile || 'bfo-lite';
     const kws = (t.keywords || []).map((k) => `<span class="tpl-kw">${escapeHtml(k)}</span>`).join('');
+    // 有图谱数据的模板：禁止删除，卡片可点击查看对应知识图谱
+    const scope = tplGraphScope(t.id);
+    const hasGraph = !!scope;
+    if (hasGraph) card.classList.add('has-graph');
+    const graphBadge = hasGraph
+      ? `<span class="tpl-count-badge tpl-graph-badge" title="已抽取 ${scope.nodeCount} 个节点，点击查看知识图谱">图谱: ${scope.nodeCount} 节点 ▸</span>`
+      : '';
+    // 删除按钮始终可点；是否有图谱关联在删除确认弹窗内实时判定并展示（避免 scopes 缓存滞后误判）
+    const delBtn = t.builtin ? '' : '<button class="btn btn-ghost danger" data-act="del">删除</button>';
     card.innerHTML = `
       <div class="tpl-card-head">
         <b class="tpl-card-name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</b>
@@ -563,30 +707,47 @@ function renderTplCards() {
       <div class="tpl-counts">
         <span class="tpl-badge-profile tpl-profile-${escapeHtml(pid)}">${escapeHtml(profileNameOf(pid))}</span>
         <span class="tpl-count-badge">领域类: ${(t.domainClasses || t.entityTypes || []).length}</span>
+        ${graphBadge}
       </div>
       ${kws ? `<div class="tpl-kws">${kws}</div>` : ''}
       <div class="tpl-card-foot">
         <span>更新: ${t.updatedAt ? formatDate(t.updatedAt).slice(0, 10) : '—'}</span>
         <span class="tpl-card-btns">
           <button class="btn btn-ghost" data-act="edit">编辑</button>
-          ${t.builtin ? '' : '<button class="btn btn-ghost danger" data-act="del">删除</button>'}
+          ${delBtn}
         </span>
       </div>`;
     card.addEventListener('click', (e) => {
       const act = e.target.dataset && e.target.dataset.act;
-      if (act === 'edit') openTplModal(t);
-      if (act === 'del') deleteTpl(t);
+      if (act === 'edit') { openTplModal(t); return; }
+      if (act === 'del') { deleteTpl(t); return; }
+      // 有图谱数据的模板：点击卡片（非按钮区）跳转查看对应知识图谱
+      if (hasGraph && !e.target.closest('.tpl-card-btns')) viewTplGraph(scope);
     });
-    // 右键菜单：编辑模板
+    // 右键菜单：编辑模板（有图谱时附「查看知识图谱」）
     card.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openCtxMenu(e.clientX, e.clientY, [
-        { label: '编辑模板', action: () => openTplModal(t) },
-      ]);
+      const items = [{ label: '编辑模板', action: () => openTplModal(t) }];
+      if (hasGraph) items.unshift({ label: '查看知识图谱', action: () => viewTplGraph(scope) });
+      openCtxMenu(e.clientX, e.clientY, items);
     });
     box.appendChild(card);
   });
+}
+
+// 跳转到「整体图谱」并选中该模板对应的知识图谱（profile + domain）
+async function viewTplGraph(scope) {
+  if (!scope) return;
+  showGraphView();
+  switchKgTab('graph');
+  await loadGraph(); // 确保过滤下拉已按最新数据重建
+  const pSel = $('kg-g-profile');
+  if (pSel && scope.profile) { pSel.dataset.userSelected = '1'; pSel.value = scope.profile; }
+  renderGraphDomainFilter();
+  const dSel = $('kg-g-domain');
+  if (dSel) dSel.value = scope.id;
+  if (typeof startGraphSim === 'function') startGraphSim();
 }
 
 // 填充体系绑定下拉（内置三体系 + OWL），并初始化领域类编辑器状态
@@ -695,12 +856,62 @@ async function saveTplForm() {
   }
 }
 
-async function deleteTpl(tpl) {
-  if (!confirm(`确定删除领域模版“${tpl.name}”？`)) return;
-  const res = await window.kb.tplRemove(tpl.id);
-  if (!res.ok) { toast('删除失败：' + res.error, 4000); return; }
-  toast('模版已删除');
-  loadTemplates();
+// 实时查询模板是否有关联知识图谱（直接拉最新 scopes，不用可能滞后的缓存）
+async function fetchTplGraphScope(tplId) {
+  try {
+    const scopes = window.kb.graphScopes ? ((await window.kb.graphScopes()) || []) : [];
+    // 同步刷新缓存，供卡片徽章/点击查看使用
+    state.kg = state.kg || {};
+    state.kg.graphScopes = scopes;
+    return scopes.find((s) => s.domain === tplId && (s.nodeCount || 0) > 0) || null;
+  } catch (_) { return null; }
+}
+
+// 删除领域模版：弹窗内实时判定是否关联知识图谱，有关联则禁用删除并在框中明确展示
+function deleteTpl(tpl) {
+  const modal = $('tpl-del-modal');
+  const info = $('tpl-del-info');
+  const okBtn = $('btn-tpl-del-ok');
+  const cancelBtn = $('btn-tpl-del-cancel');
+  $('tpl-del-title').textContent = `删除领域模版「${tpl.name}」`;
+  // 初始：检查中
+  info.className = 'tpl-del-info';
+  info.textContent = '正在检查是否关联知识图谱…';
+  okBtn.disabled = true;
+  modal.hidden = false;
+
+  // 实时判定图谱关联
+  fetchTplGraphScope(tpl.id).then((scope) => {
+    if (modal.hidden) return; // 用户已关闭
+    if (scope) {
+      // 有关联图谱：禁用删除，红色提示
+      info.className = 'tpl-del-info has-graph';
+      info.innerHTML = `⚠ 该领域模版已关联知识图谱，不能删除。\n\n体系：${escapeHtml(scope.profileName || scope.profile)}\n已抽取节点：${scope.nodeCount} 个\n\n请先到「知识图谱管理 → 整体图谱」清空该领域的图谱节点后，才能删除本模版。`;
+      okBtn.disabled = true;
+    } else {
+      // 无关联图谱：可删除，绿色提示
+      info.className = 'tpl-del-info no-graph';
+      info.textContent = `✓ 已检查：模版「${tpl.name}」暂无关联的知识图谱数据，可安全删除。`;
+      okBtn.disabled = false;
+    }
+  });
+
+  const close = () => {
+    modal.hidden = true;
+    okBtn.onclick = null;
+    cancelBtn.onclick = null;
+    modal.onclick = null;
+  };
+  okBtn.onclick = async () => {
+    okBtn.disabled = true;
+    const res = await window.kb.tplRemove(tpl.id);
+    if (!res.ok) { close(); toast('删除失败：' + res.error, 4000); return; }
+    close();
+    toast('模版已删除');
+    loadTemplates();
+  };
+  cancelBtn.onclick = close;
+  modal.onclick = (e) => { if (e.target === modal) close(); };
 }
 
 // AI 自动生成模版的准备/生成阶段状态展示（弹窗内 banner 下方）
