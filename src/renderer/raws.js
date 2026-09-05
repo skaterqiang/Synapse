@@ -148,6 +148,7 @@ function domainCardState(card, state, statusText) {
 
 // AI 判定领域并提交：进度展示 → 填充可编辑下拉 → 用户点「确认提取」才提交作业；「取消」放弃本次提取
 // texts 为字符串数组（领域预匹配用）；inlineSources 为 {label,text} 数组（笔记图谱的作业来源）
+// 多领域拆分提取：识别全部内聚领域 → 逐文件分类（多归属+置信度）→ 逐领域准备模版/体系 → 清单确认 → 每领域独立作业
 async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSources = [] }) {
   const n = rawPaths.length || inlineSources.length || texts.length;
   $('domain-modal-title').textContent = '提取知识图谱';
@@ -157,8 +158,9 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
   const confirmBtn = $('btn-domain-confirm');
   confirmBtn.hidden = true;
 
-  // 判定完成后持有的当前选择（可经下拉修改）：{ domainId, tpl, profileId }
-  const sel = { domainId: 'general', tpl: null, profileId: 'bfo-lite' };
+  // 多领域分组清单：每元素对应一个待提交作业。同一文件可出现在多个组的 fileRefs（多归属）
+  // { key, domainId, tpl, profileId, fileRefs:[{rawPath,confidence}], inlineKeys:[label], checked }
+  let groups = [];
   let decided = false; // 是否已提交（避免重复提交）
   let cancelled = false; // 是否已点「取消」（取消后不再展示可确认的下拉/按钮）
 
@@ -179,11 +181,9 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     if (curThink) setThinkOpen(curThink, false);
     const box = $('domain-progress');
     const host = parent || box;
-    // 折叠开关行
     const toggle = document.createElement('div');
     toggle.className = 'domain-think-toggle';
     toggle.innerHTML = '<span class="chevron">▶</span><span class="tt">收起思考过程</span>';
-    // 内容容器（进行中默认展开，实时滚动）
     const el = document.createElement('div');
     el.className = 'domain-think open';
     toggle.classList.add('open');
@@ -193,233 +193,333 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     curThink._toggle = toggle;
     return el;
   };
-  // 当前步骤结束：自动折叠其思考流
   const collapseThink = () => { if (curThink) setThinkOpen(curThink, false); };
   const feedThink = (chunk) => {
     if (!curThink || !chunk || !chunk.text) {
       return;
     }
-    // 思考增量（reasoning）直接显示；正文增量也显示但加上前缀区分
     const text = chunk.reasoning ? chunk.text : `　[输出] ${chunk.text}`;
     curThink.textContent += text;
-    // 思考容器自身滚动到底（其 max-height 内独立滚动），外层进度流同步贴底
     curThink.scrollTop = curThink.scrollHeight;
     const box = $('domain-progress');
     if (box) box.scrollTop = box.scrollHeight;
   };
-  // 订阅四个判定步骤的思考流（领域匹配 / 体系匹配 / 领域归纳 / 领域类生成），函数结束时解绑
+  // 订阅思考流：领域匹配/体系匹配/领域归纳/领域类生成/多领域归纳/文件归类，函数结束时解绑
   const unbindMatch = (window.kb.onTplMatchChunk ? window.kb.onTplMatchChunk(feedThink) : null);
   const unbindProfile = (window.kb.onTplSuggestProfileChunk ? window.kb.onTplSuggestProfileChunk(feedThink) : null);
   const unbindName = (window.kb.onTplSuggestNameChunk ? window.kb.onTplSuggestNameChunk(feedThink) : null);
   const unbindGen = (window.kb.onTplGenChunk ? window.kb.onTplGenChunk(feedThink) : null);
-  const unbindThink = () => { if (unbindMatch) unbindMatch(); if (unbindProfile) unbindProfile(); if (unbindName) unbindName(); if (unbindGen) unbindGen(); collapseThink(); };
+  const unbindSugDom = (window.kb.onTplSuggestDomainsChunk ? window.kb.onTplSuggestDomainsChunk(feedThink) : null);
+  const unbindAssign = (window.kb.onTplAssignDomainsChunk ? window.kb.onTplAssignDomainsChunk(feedThink) : null);
+  const unbindThink = () => { if (unbindMatch) unbindMatch(); if (unbindProfile) unbindProfile(); if (unbindName) unbindName(); if (unbindGen) unbindGen(); if (unbindSugDom) unbindSugDom(); if (unbindAssign) unbindAssign(); collapseThink(); };
 
-  const submitJob = async (extras) => {
+  // 提交单个分组的作业（携带该组勾选文件子集；autoDomain=false，领域/体系已定，作业内不再判定）
+  const submitGroup = async (g) => {
+    const extras = graphDomainExtras({ id: g.domainId, name: g.tpl ? g.tpl.name : '通用', tpl: g.tpl });
+    extras.autoDomain = false;
+    if (g.profileId) extras.ontologyProfile = g.profileId;
     const payload = { settings: state.settings, ...extras };
-    if (inlineSources.length) payload.inlineSources = inlineSources;
-    else payload.rawPaths = rawPaths;
+    const checkedInline = (g.inlineKeys || []).filter((k) => !g.fileChecked || g.fileChecked['inline:' + k] !== false);
+    const checkedRefs = (g.fileRefs || []).filter((f) => !g.fileChecked || g.fileChecked[f.rawPath] !== false);
+    if (!checkedRefs.length && !checkedInline.length) { toast(`「${g.tpl ? g.tpl.name : '通用'}」未勾选任何文件`, 2500); return false; }
+    if (checkedInline.length) {
+      payload.inlineSources = inlineSources.filter((s) => checkedInline.includes(String(s.label || '')));
+    } else {
+      payload.rawPaths = checkedRefs.map((f) => f.rawPath);
+    }
     const res = await window.kb.jobsSubmit({ type: 'graph', payload });
     if (!res.ok) { domainStep('✖ 提交作业失败：' + res.error, 'err'); toast('提交作业失败：' + res.error, 4000); return false; }
     return true;
   };
 
-  // 以当前 sel 构造提交参数并提交（autoDomain=false：领域/体系均已确定，作业不再重复判定）
-  const doSubmit = async () => {
-    const extras = graphDomainExtras({ id: sel.domainId, name: sel.tpl ? sel.tpl.name : '通用', tpl: sel.tpl });
-    extras.autoDomain = false;
-    if (sel.profileId) extras.ontologyProfile = sel.profileId;
-    return await submitJob(extras);
+  // 批量提交：循环勾选的分组，每组一个 graph 作业
+  const doSubmitAll = async () => {
+    const targets = groups.filter((g) => g.checked && ((g.fileRefs && g.fileRefs.length) || (g.inlineKeys && g.inlineKeys.length)));
+    if (!targets.length) { toast('请至少勾选一个领域'); return false; }
+    let ok = 0;
+    for (const g of targets) { if (await submitGroup(g)) ok++; }
+    return ok > 0;
   };
 
-  // 判定完成后：渲染确认卡片（领域/体系下拉），并显示「确认提取」
-  const finalizeDecision = async () => {
-    if (cancelled) return; // 用户已取消：不再渲染下拉与确认按钮
-    // 确保下拉数据就绪
+  // 确认清单：每组一行（☑ 领域下拉 | n 个文件 | 体系下拉 | ✕），文件明细带置信度，低置信标「?」
+  const finalizeDecisionMulti = async () => {
+    if (cancelled) return;
     if (!state.templates || !state.templates.length) state.templates = (await window.kb.tplList()) || [];
     const profiles = await getProfiles();
-    // 确认卡片容器
     const box = $('domain-progress');
     const confirm = document.createElement('div');
     confirm.className = 'domain-confirm';
     const cTitle = document.createElement('div');
     cTitle.className = 'domain-confirm-title';
-    cTitle.textContent = '✔ 请确认提取配置';
+    cTitle.textContent = '✔ 请确认提取配置（将为每个勾选领域各提交一个作业）';
     confirm.appendChild(cTitle);
-    // 领域下拉
-    const dSel = document.createElement('select');
-    dSel.className = 'domain-pick';
-    for (const t of state.templates) {
-      const o = document.createElement('option');
-      o.value = t.id; o.textContent = t.name + (t.id === 'general' ? '（通用）' : '');
-      dSel.appendChild(o);
+    // 统计每个文件出现在几个组（多归属提示用）
+    const fileGroupCount = {};
+    for (const g of groups) for (const f of (g.fileRefs || [])) fileGroupCount[f.rawPath] = (fileGroupCount[f.rawPath] || 0) + 1;
+
+    for (const g of groups) {
+      // 初始化文件勾选状态（默认全选）
+      if (!g.fileChecked) {
+        g.fileChecked = {};
+        for (const f of (g.fileRefs || [])) g.fileChecked[f.rawPath] = true;
+        for (const k of (g.inlineKeys || [])) g.fileChecked['inline:' + k] = true;
+      }
+      // 卡片：标题行=☑+领域名（本体体系）+文件数+✕；二级=文件列表缩进换行
+      const card = document.createElement('div');
+      card.className = 'dgroup-card';
+      // 标题行：☑ + 领域名（本体体系）+ 文件数 + ✕
+      const head = document.createElement('div');
+      head.className = 'dgroup-head';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = g.checked; cb.className = 'dgroup-cb';
+      cb.title = '勾选该组（全选/反选组内文件）';
+      const dName = document.createElement('span');
+      dName.className = 'dgroup-title';
+      const syncName = () => {
+        const t = state.templates.find((x) => x.id === g.domainId);
+        dName.textContent = `${t ? t.name : g.domainId}（${profileNameOf(g.profileId)}）`;
+      };
+      syncName();
+      const cnt = document.createElement('span');
+      cnt.className = 'dgroup-count';
+      const updateCount = () => {
+        const n = (g.fileRefs || []).filter((f) => g.fileChecked[f.rawPath] !== false).length
+          + (g.inlineKeys || []).filter((k) => g.fileChecked['inline:' + k] !== false).length;
+        cnt.textContent = `${n} 个文件`;
+      };
+      updateCount();
+      const rm = document.createElement('button');
+      rm.type = 'button'; rm.className = 'dgroup-rm'; rm.textContent = '✕'; rm.title = '移除该组';
+      rm.addEventListener('click', () => { g.checked = false; card.style.display = 'none'; });
+      head.append(cb, dName, cnt, rm);
+      card.appendChild(head);
+      // 调整行：领域下拉 + 体系下拉
+      const adj = document.createElement('div');
+      adj.className = 'dgroup-adj';
+      const dSel = document.createElement('select');
+      dSel.className = 'domain-pick dgroup-chg';
+      dSel.title = '更改领域（模版）';
+      for (const t of state.templates) {
+        const o = document.createElement('option');
+        o.value = t.id; o.textContent = '领域：' + t.name + (t.id === 'general' ? '（通用）' : '');
+        dSel.appendChild(o);
+      }
+      dSel.value = g.domainId;
+      dSel.addEventListener('change', () => {
+        g.domainId = dSel.value;
+        g.tpl = state.templates.find((t) => t.id === dSel.value) || null;
+        syncName();
+      });
+      const pSel = document.createElement('select');
+      pSel.className = 'domain-pick dgroup-profile';
+      pSel.title = '本体体系';
+      for (const p of profiles) {
+        const o = document.createElement('option');
+        o.value = p.id; o.textContent = '体系：' + (p.name || p.id);
+        pSel.appendChild(o);
+      }
+      pSel.value = g.profileId;
+      pSel.addEventListener('change', () => { g.profileId = pSel.value; syncName(); });
+      adj.append(dSel, pSel);
+      card.appendChild(adj);
+      // 二级：该领域要抽取的文件列表（换行 + 缩进），每个文件带勾选框
+      const fileList = (g.fileRefs || []).map((f) => ({ name: String(f.rawPath).split(/[\\/]/).pop(), conf: f.confidence, key: f.rawPath }))
+        .concat((g.inlineKeys || []).map((k) => ({ name: k, conf: 1, key: 'inline:' + k })));
+      const fileCbs = [];
+      let det = null;
+      if (fileList.length) {
+        det = document.createElement('div');
+        det.className = 'dgroup-files';
+        for (const fi of fileList) {
+          const chip = document.createElement('label');
+          chip.className = 'dgroup-file';
+          const fcb = document.createElement('input');
+          fcb.type = 'checkbox'; fcb.checked = g.fileChecked[fi.key] !== false; fcb.className = 'dgroup-file-cb';
+          fcb.addEventListener('change', () => {
+            g.fileChecked[fi.key] = fcb.checked;
+            chip.classList.toggle('off', !fcb.checked);
+            updateCount();
+            // 同步整组勾选状态
+            const allOn = Object.values(g.fileChecked).every((v) => v !== false);
+            const anyOn = Object.values(g.fileChecked).some((v) => v !== false);
+            cb.checked = anyOn; g.checked = anyOn;
+            cb.indeterminate = anyOn && !allOn;
+            card.classList.toggle('off', !anyOn);
+          });
+          fileCbs.push(fcb);
+          const confTxt = (typeof fi.conf === 'number') ? fi.conf.toFixed(2) : '';
+          const low = (typeof fi.conf === 'number' && fi.conf < 0.6);
+          const multi = fileGroupCount[fi.key] > 1;
+          chip.appendChild(fcb);
+          const nm = document.createElement('span');
+          nm.className = 'dgroup-file-name';
+          nm.textContent = fi.name;
+          chip.appendChild(nm);
+          if (multi) { const m = document.createElement('span'); m.className = 'dgroup-multi'; m.textContent = '（多归属）'; nm.appendChild(m); }
+          if (confTxt) {
+            const cf = document.createElement('span');
+            cf.className = 'dgroup-file-conf' + (low ? ' low' : '');
+            cf.textContent = confTxt + (low ? ' ?' : '');
+            cf.title = low ? '归类把握较低，请人工核对' : '归类置信度';
+            chip.appendChild(cf);
+          }
+          if (low) chip.classList.add('low');
+          det.appendChild(chip);
+        }
+        card.appendChild(det);
+      }
+      // 组级勾选：全选/反选组内文件
+      cb.addEventListener('change', () => {
+        g.checked = cb.checked;
+        for (const key of Object.keys(g.fileChecked)) g.fileChecked[key] = cb.checked;
+        for (const fcb of fileCbs) fcb.checked = cb.checked;
+        if (det) det.querySelectorAll('.dgroup-file').forEach((el) => el.classList.toggle('off', !cb.checked));
+        updateCount();
+        card.classList.toggle('off', !cb.checked);
+      });
+      if (!g.checked) card.classList.add('off');
+      confirm.appendChild(card);
     }
-    dSel.value = sel.domainId;
-    // 体系下拉
-    const pSel = document.createElement('select');
-    pSel.className = 'domain-pick';
-    for (const p of profiles) {
-      const o = document.createElement('option');
-      o.value = p.id; o.textContent = p.name || p.id;
-      pSel.appendChild(o);
-    }
-    pSel.value = sel.profileId;
-    const dRow = document.createElement('div'); dRow.className = 'domain-confirm-row';
-    const dLab = document.createElement('label'); dLab.textContent = '领域';
-    dRow.append(dLab, dSel);
-    const pRow = document.createElement('div'); pRow.className = 'domain-confirm-row';
-    const pLab = document.createElement('label'); pLab.textContent = '体系';
-    pRow.append(pLab, pSel);
-    const pNote = document.createElement('div'); pNote.className = 'domain-note';
-    pNote.textContent = '体系按内容实时匹配最贴合者（可在上方下拉更换，如改用 ISO 15926）';
-    confirm.append(dRow, pRow, pNote);
     if (box) { box.appendChild(confirm); box.scrollTop = box.scrollHeight; }
-    // 切换领域仅改领域，不再联动改体系（体系按内容匹配，与所选领域无关）；体系仍可手动下拉更改
-    dSel.addEventListener('change', () => {
-      sel.domainId = dSel.value;
-      sel.tpl = state.templates.find((t) => t.id === dSel.value) || null;
-    });
-    pSel.addEventListener('change', () => { sel.profileId = pSel.value; });
-    $('domain-modal-sub').textContent = `来源：${label || '当前选择'}${n ? `（${n} 个）` : ''}。请确认领域与体系后开始提取。`;
+    $('domain-modal-sub').textContent = `来源：${label || '当前选择'}${n ? `（${n} 个）` : ''}。勾选要提取的领域，点「确认提取」将为每个领域各提交一个作业。`;
     $('domain-progress-hint').textContent = '可下拉更改领域与体系；点「确认提取」开始，或「取消」放弃本次提取';
     confirmBtn.hidden = false;
-    sel.ready = true;
   };
 
-  // 确认提取：按当前下拉选择提交，随后关闭弹窗
+  // 确认提取：批量提交勾选分组，随后关闭弹窗
   confirmBtn.onclick = async () => {
     if (decided || cancelled) return; decided = true;
     confirmBtn.disabled = true;
-    const c3 = domainCard('③', '已确认，提交提取作业', 'done');
-    domainBadgeRow(c3, `「${sel.tpl ? sel.tpl.name : '通用'}」`, `体系：${profileNameOf(sel.profileId)}`, false);
-    domainCardState(c3, 'done', '提交中');
-    const ok = await doSubmit();
+    const c9 = domainCard('④', '已确认，批量提交提取作业', 'done');
+    domainCardState(c9, 'done', '提交中');
+    const ok = await doSubmitAll();
+    domainCardState(c9, ok ? 'done' : 'failed', ok ? '已提交' : '失败');
     confirmBtn.disabled = false;
     if (ok) { $('domain-modal').hidden = true; confirmBtn.hidden = true; }
   };
   // 取消：关闭弹窗并放弃本次提取（不提交作业）；已提交则不动
   $('btn-domain-close').onclick = async () => {
     cancelled = true;
-    unbindThink(); // 取消后不再接收思考增量
+    unbindThink();
     $('domain-modal').hidden = true; confirmBtn.hidden = true;
   };
 
-  // 前置建域：未命中已有领域时，直接在本流程内归纳并新建（不回退通用、不人工确认），随后纳入下拉供用户复核
-  const autoCreateDomainNow = async () => {
-    const c = domainCard('②', '未命中已有领域，按内容归纳并新建', 'running');
-    domainCardState(c, 'running', '归纳中');
-    mkThink(c); // 换领域归纳的思考流容器
-    const sug = await window.kb.tplSuggestName({ settings: state.settings, rawPaths, texts });
-    if (!sug.ok || !sug.name) {
-      domainBadgeRow(c, '领域归纳失败', sug.error || '未归纳出名称', true);
-      domainCardState(c, 'failed', '失败');
-      return null;
-    }
+  // 按领域名准备模版：同名已有 → 复用；否则 AI 生成 + 保存。返回 { id, name, tpl }
+  const prepareDomainTpl = async (name, desc) => {
     state.templates = (await window.kb.tplList()) || [];
-    const exist = state.templates.find((t) => t.id !== 'general' && t.name === sug.name);
-    if (exist) {
-      domainBadgeRow(c, `「${sug.name}」`, '命中已有领域模版，直接复用', false);
-      domainCardState(c, 'done', '已完成');
-      return { id: exist.id, name: exist.name, tpl: exist, reason: '同名已有领域，复用' };
-    }
-    domainCardRow(c, 'domain-note').textContent = `✔ 归纳出新领域「${sug.name}」，AI 正在生成领域类并选定本体体系…`;
-    mkThink(c); // 为「生成领域类」步骤新建思考流容器，否则增量仍追加到上一步的旧容器
-    const gen = await window.kb.tplGenerate({ settings: state.settings, name: sug.name, desc: sug.desc || '' });
-    if (!gen.ok || !gen.template) {
-      domainBadgeRow(c, '生成领域类失败', gen.error || '未知错误', true);
-      domainCardState(c, 'failed', '失败');
-      return null;
-    }
+    const exist = state.templates.find((t) => t.id !== 'general' && t.name === name);
+    if (exist) return { id: exist.id, name: exist.name, tpl: exist, reused: true };
+    const gen = await window.kb.tplGenerate({ settings: state.settings, name, desc: desc || '' });
+    if (!gen.ok || !gen.template) return null;
     let g = gen.template;
-    if (state.templates.some((t) => t.id === g.id && t.name !== sug.name)) g = { ...g, id: g.id + '_' + Date.now().toString(36) };
-    const save = await window.kb.tplSave({ ...g, name: sug.name, desc: sug.desc || g.desc || '' });
-    if (!save.ok || !save.template) {
-      domainBadgeRow(c, '领域保存失败', save.error || '未知错误', true);
-      domainCardState(c, 'failed', '失败');
-      return null;
-    }
-    const tpl = save.template;
+    if (state.templates.some((t) => t.id === g.id && t.name !== name)) g = { ...g, id: g.id + '_' + Date.now().toString(36) };
+    const save = await window.kb.tplSave({ ...g, name, desc: desc || g.desc || '' });
+    if (!save.ok || !save.template) return null;
     state.templates = (await window.kb.tplList()) || [];
-    const clsN = Array.isArray(tpl.domainClasses) ? tpl.domainClasses.length : 0;
-    domainBadgeRow(c, `「${tpl.name}」`, `${clsN} 个领域类`, false);
-    domainCardState(c, 'done', '已完成');
-    return { id: tpl.id, name: tpl.name, tpl, reason: '按内容自动新建' };
+    return { id: save.template.id, name: save.template.name, tpl: save.template, reused: false };
   };
 
   try {
-    // 步骤一：领域匹配（卡片）
-    const c1 = domainCard('①', '按内容匹配已有领域', 'running');
+    // 卡片①：多领域识别
+    const c1 = domainCard('①', '识别来源包含的领域', 'running');
     domainCardState(c1, 'running', '判定中');
-    mkThink(c1); // 挂领域匹配的思考流容器（reasoning 逐字追加）
-    const domain = await checkDomainBeforeIngest({ rawPaths, texts, allowCreate: false, timeoutMs: GRAPH_MATCH_TIMEOUT });
-    let finalDomain = null;
-    if (domain && domain !== 'skip' && domain.id && domain.id !== 'general') {
-      finalDomain = domain; // 命中已有领域
-    } else if (domain === null || domain === 'skip') {
-      domainCardRow(c1, 'domain-note').textContent = '↷ 预匹配不可用，尝试直接建域';
-      finalDomain = await autoCreateDomainNow();
-    } else {
-      finalDomain = await autoCreateDomainNow(); // 未命中 → 自动新建（不回退通用）
+    mkThink(c1);
+    const sug = await window.kb.tplSuggestDomains({ settings: state.settings, rawPaths, texts });
+    if (cancelled) return false;
+    if (!sug.ok || !Array.isArray(sug.domains) || !sug.domains.length) {
+      throw new Error(sug.error || '未能识别领域');
     }
+    const domNames = sug.domains.map((d) => d.name);
+    domainBadgeRow(c1, `${sug.domains.length} 个领域`, domNames.join('、'), false);
+    domainCardState(c1, 'done', '已完成');
 
-    if (finalDomain && finalDomain.id) {
-      const tpl = finalDomain.tpl || {};
-      sel.domainId = finalDomain.id;
-      sel.tpl = tpl.id ? tpl : (state.templates.find((t) => t.id === finalDomain.id) || null);
-      // 领域匹配结果 + 匹配度徽章
-      const dSim = (typeof finalDomain.similarity === 'number') ? `匹配度 ${finalDomain.similarity}%` : '';
-      domainBadgeRow(c1, `「${finalDomain.name}」`, dSim, false);
-      domainCardState(c1, 'done', '已完成');
-      if (finalDomain.reason) {
-        domainCardRow(c1, 'domain-note').textContent = `判定理由：${finalDomain.reason}`;
-      }
-      // 步骤二：体系匹配（卡片）
-      const tplProfile = sel.tpl && sel.tpl.ontologyProfile ? String(sel.tpl.ontologyProfile).trim() : '';
-      if (tplProfile) {
-        sel.profileId = tplProfile;
-        const profName = profileNameOf(tplProfile);
-        const c2 = domainCard('②', '本体体系', 'done');
-        domainBadgeRow(c2, `「${profName}」`, '复用领域模版绑定', false);
-        domainCardState(c2, 'done', '已完成');
-      } else {
-        const c2 = domainCard('②', '按内容匹配本体体系', 'running');
-        domainCardState(c2, 'running', '判定中');
-        mkThink(c2); // 换体系匹配的思考流容器（后续 chunk 追加到新容器）
-        try {
-          const prof = await window.kb.tplSuggestProfile({ settings: state.settings, rawPaths, texts });
-          if (prof && prof.ok && prof.id) {
-            sel.profileId = prof.id;
-            const simTxt = (typeof prof.similarity === 'number' && prof.similarity > 0) ? `匹配度 ${prof.similarity}%` : '';
-            domainBadgeRow(c2, `「${prof.name || prof.id}」`, simTxt, false);
-            domainCardState(c2, 'done', '已完成');
-            if (prof.reason) domainCardRow(c2, 'domain-note').textContent = `匹配理由：${prof.reason}`;
-          } else {
-            sel.profileId = (state.settings && state.settings.ontologyProfile) || 'bfo-lite';
-            domainCardRow(c2, 'domain-note').textContent = '↷ 体系匹配不可用，回退默认体系（可下拉更改）';
-            domainCardState(c2, 'done', '默认');
-          }
-        } catch (_) {
-          sel.profileId = (state.settings && state.settings.ontologyProfile) || 'bfo-lite';
-          domainCardRow(c2, 'domain-note').textContent = '↷ 体系匹配失败，回退默认体系（可下拉更改）';
-          domainCardState(c2, 'failed', '失败');
-        }
-      }
-      if (cancelled) return false; // 等待体系匹配期间用户已取消
-      unbindThink(); // 判定完成，解绑思考订阅（弹窗仍开着等用户确认，但不再接收增量）
-      await finalizeDecision();
-      return true; // 已就绪，等待用户确认（不return提交结果）
+    // 卡片②：逐文件归类（多归属 + 置信度）
+    const c2 = domainCard('②', '逐文件归类到领域', 'running');
+    domainCardState(c2, 'running', '归类中');
+    mkThink(c2);
+    const asn = await window.kb.tplAssignDomains({ settings: state.settings, rawPaths, domains: sug.domains, inlineSources });
+    if (cancelled) return false;
+    const assignments = (asn && asn.ok && asn.assignments) ? asn.assignments : {};
+    const unassigned = (asn && asn.ok && Array.isArray(asn.unassigned)) ? asn.unassigned : [];
+    // 覆盖完整性断言：并集 + unassigned 应覆盖全部来源，否则回退单组通用
+    const totalKeys = rawPaths.concat(inlineSources.map((s) => 'inline:' + String(s.label || '')));
+    const covered = new Set(Object.keys(assignments).concat(unassigned));
+    const allCovered = totalKeys.every((k) => covered.has(k));
+    if (!asn.ok || !allCovered) {
+      domainBadgeRow(c2, '归类不完整', asn.ok ? '覆盖断言失败' : (asn.error || '失败'), true);
+      domainCardState(c2, 'failed', '回退单组');
+      groups = [{ key: 'general', domainId: 'general', tpl: null, profileId: (state.settings && state.settings.ontologyProfile) || 'bfo-lite', fileRefs: rawPaths.map((p) => ({ rawPath: p, confidence: 1 })), inlineKeys: inlineSources.map((s) => String(s.label || '')), checked: true }];
+      unbindThink();
+      await finalizeDecisionMulti();
+      return true;
     }
-    // 建域也失败：仍给通用选项让用户确认后提取，而非静默跑
-    domainCardState(c1, 'failed', '失败');
-    domainBadgeRow(c1, '未能确定领域', '已回退「通用」', true);
-    sel.domainId = 'general'; sel.tpl = null;
-    sel.profileId = (state.settings && state.settings.ontologyProfile) || 'bfo-lite';
+    domainCardState(c2, 'done', '已完成');
+    // 归类明细 note（每文件一行 → 领域，低置信标 ?）
+    const detRow = domainCardRow(c2, 'domain-note');
+    const parts = [];
+    for (const k of Object.keys(assignments)) {
+      const a = assignments[k];
+      const nm = String(k).startsWith('inline:') ? String(k).slice(7) : String(k).split(/[\\/]/).pop();
+      parts.push(`${nm} → ${a.domains.join('+')}${a.confidence < 0.6 ? '?' : ''}`);
+    }
+    if (unassigned.length) parts.push(`${unassigned.length} 个未分类 → 通用`);
+    detRow.textContent = parts.join('；');
+
+    // 卡片③：逐领域准备模版与体系
+    const c3 = domainCard('③', '准备领域模版与体系', 'running');
+    domainCardState(c3, 'running', '准备中');
+    // 按领域名 → 文件子集（多归属时同一文件进多个领域）
+    const byDomain = {};
+    for (const d of sug.domains) byDomain[d.name] = { rawPaths: [], inlineKeys: [], fileRefs: [] };
+    const generalRefs = { rawPaths: [], inlineKeys: [], fileRefs: [] };
+    for (const k of Object.keys(assignments)) {
+      const a = assignments[k];
+      for (const dn of a.domains) {
+        if (!byDomain[dn]) continue;
+        if (String(k).startsWith('inline:')) byDomain[dn].inlineKeys.push(String(k).slice(7));
+        else { byDomain[dn].rawPaths.push(k); byDomain[dn].fileRefs.push({ rawPath: k, confidence: a.confidence }); }
+      }
+    }
+    for (const k of unassigned) {
+      if (String(k).startsWith('inline:')) generalRefs.inlineKeys.push(String(k).slice(7));
+      else { generalRefs.rawPaths.push(k); generalRefs.fileRefs.push({ rawPath: k, confidence: 1 }); }
+    }
+    // 逐领域准备模版（同名复用否则新建）与体系（模版绑定优先，否则按该领域子集内容匹配）
+    for (const d of sug.domains) {
+      const bucket = byDomain[d.name];
+      if (!bucket.fileRefs.length && !bucket.inlineKeys.length) continue; // 0 文件领域不进清单
+      mkThink(c3);
+      const prep = await prepareDomainTpl(d.name, d.desc);
+      if (cancelled) return false;
+      let profileId = '';
+      if (prep && prep.tpl && prep.tpl.ontologyProfile) {
+        profileId = String(prep.tpl.ontologyProfile).trim();
+      } else {
+        const prof = await window.kb.tplSuggestProfile({ settings: state.settings, rawPaths: bucket.rawPaths, texts: bucket.inlineKeys.length ? inlineSources.filter((s) => bucket.inlineKeys.includes(String(s.label))).map((s) => s.text) : [] });
+        profileId = (prof && prof.ok && prof.id) ? prof.id : ((state.settings && state.settings.ontologyProfile) || 'bfo-lite');
+      }
+      groups.push({ key: d.name, domainId: prep ? prep.id : 'general', tpl: prep ? prep.tpl : null, profileId, fileRefs: bucket.fileRefs, inlineKeys: bucket.inlineKeys, checked: true });
+      domainCardRow(c3, 'domain-note').textContent = `✔ ${d.name} → 模版「${prep ? prep.name : '通用'}」/ 体系「${profileNameOf(profileId)}」`;
+    }
+    // unassigned → 通用组（默认勾选）
+    if (generalRefs.fileRefs.length || generalRefs.inlineKeys.length) {
+      groups.push({ key: 'general', domainId: 'general', tpl: null, profileId: (state.settings && state.settings.ontologyProfile) || 'bfo-lite', fileRefs: generalRefs.fileRefs, inlineKeys: generalRefs.inlineKeys, checked: true });
+      domainCardRow(c3, 'domain-note').textContent = `↷ ${generalRefs.fileRefs.length + generalRefs.inlineKeys.length} 个未分类文件归入「通用」组`;
+    }
+    if (cancelled) return false;
+    domainCardState(c3, 'done', '已完成');
+    if (!groups.length) {
+      groups = [{ key: 'general', domainId: 'general', tpl: null, profileId: (state.settings && state.settings.ontologyProfile) || 'bfo-lite', fileRefs: rawPaths.map((p) => ({ rawPath: p, confidence: 1 })), inlineKeys: inlineSources.map((s) => String(s.label || '')), checked: true }];
+    }
     unbindThink();
-    await finalizeDecision();
+    await finalizeDecisionMulti();
     return true;
   } catch (err) {
     unbindThink();
-    domainStep('✖ 领域判定异常：' + err.message + '，改由作业内自动处理', 'err');
-    return await submitJob({ autoDomain: true });
+    domainStep('✖ 多领域判定异常：' + err.message + '，回退单组通用', 'err');
+    groups = [{ key: 'general', domainId: 'general', tpl: null, profileId: (state.settings && state.settings.ontologyProfile) || 'bfo-lite', fileRefs: rawPaths.map((p) => ({ rawPath: p, confidence: 1 })), inlineKeys: inlineSources.map((s) => String(s.label || '')), checked: true }];
+    await finalizeDecisionMulti();
+    return true;
   }
 }
 

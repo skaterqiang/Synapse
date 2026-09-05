@@ -54,10 +54,21 @@ contextBridge.exposeInMainWorld('kb', {
     const handler = (_event, chunk) => callback(chunk);
     ipcRenderer.on('tpl:suggest-profile-chunk', handler);
     return () => ipcRenderer.removeListener('tpl:suggest-profile-chunk', handler);
-  },  onTplSuggestNameChunk: (callback) => {
+  },
+  onTplSuggestNameChunk: (callback) => {
     const handler = (_e, chunk) => callback(chunk);
     ipcRenderer.on('tpl:suggest-name-chunk', handler);
     return () => ipcRenderer.removeListener('tpl:suggest-name-chunk', handler);
+  },
+  onTplSuggestDomainsChunk: (callback) => {
+    const handler = (_e, chunk) => callback(chunk);
+    ipcRenderer.on('tpl:suggest-domains-chunk', handler);
+    return () => ipcRenderer.removeListener('tpl:suggest-domains-chunk', handler);
+  },
+  onTplAssignDomainsChunk: (callback) => {
+    const handler = (_e, chunk) => callback(chunk);
+    ipcRenderer.on('tpl:assign-domains-chunk', handler);
+    return () => ipcRenderer.removeListener('tpl:assign-domains-chunk', handler);
   },  // AI 问答引用事件：知识检索完成后一次回传 笔记/图谱/原始文件 引用（与 web/kb-shim.js 对齐）
   onAiRefs: (callback) => {
     const handler = (_event, refs) => callback(refs);
@@ -82,6 +93,8 @@ contextBridge.exposeInMainWorld('kb', {
   tplMatchFor: (payload) => ipcRenderer.invoke('tpl:matchFor', payload), // 吸收前领域模板预检查
   tplSuggestName: (payload) => ipcRenderer.invoke('tpl:suggestName', payload), // 未命中后按来源内容归纳领域名称（供新建弹窗自动填充）
   tplSuggestProfile: (payload) => ipcRenderer.invoke('tpl:suggestProfile', payload), // 按来源内容实时匹配最合适的本体体系（不读模版绑定）
+  tplSuggestDomains: (payload) => ipcRenderer.invoke('tpl:suggestDomains', payload), // 多领域归纳：识别来源内容包含的全部内聚领域
+  tplAssignDomains: (payload) => ipcRenderer.invoke('tpl:assignDomains', payload), // 逐文件分类：给定领域清单判定每文件归属（多归属+置信度）
   promptsDefs: () => ipcRenderer.invoke('prompts:defs'),
 
   // 原始文件管理

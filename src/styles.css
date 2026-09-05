@@ -1091,6 +1091,34 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .domain-confirm-row > label { flex: none; width: 44px; font-size: 13px; font-weight: 600; color: var(--text-sub, #6b7280); }
 .domain-pick { flex: 1; min-width: 0; padding: 7px 10px; font-size: 14px; border: 1px solid var(--border, #d8dce1); border-radius: 8px; background: var(--panel, #fff); color: var(--text-main, #1f2329); max-width: none; }
 .domain-pick:focus { outline: none; border-color: var(--primary, #1a7f4b); box-shadow: 0 0 0 3px rgba(26,127,75,.1); }
+/* 多领域确认清单：每领域一张卡片；一级=领域名（独占一行大字，含体系），二级=文件列表（换行缩进） */
+.dgroup-card { display: block; border: 1px solid var(--border, #e5e7eb); border-radius: 10px; background: var(--panel, #fff); padding: 10px 14px 12px; transition: opacity .15s; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
+.dgroup-card.off { opacity: .45; }
+/* 标题行：☑ | 领域名（本体体系） | 文件数 | ✕ ——grid 四列，中间列占剩余，稳定不压缩 */
+.dgroup-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; column-gap: 10px; width: 100%; box-sizing: border-box; }
+.dgroup-cb { width: 15px; height: 15px; margin: 0; accent-color: var(--primary, #1a7f4b); cursor: pointer; }
+/* 一级：领域名（本体体系）——grid 中间列，始终占满剩余宽度 */
+.dgroup-title { font-size: 15px; font-weight: 700; line-height: 1.5; color: var(--text-main, #1f2329); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dgroup-count { font-size: 12px; color: var(--text-sub, #8a9099); white-space: nowrap; padding: 2px 7px; background: var(--bg-soft, #f7f8fa); border: 1px solid var(--border, #e5e7eb); border-radius: 20px; }
+.dgroup-rm { flex: none; border: none; background: transparent; color: var(--text-sub, #9aa0a6); cursor: pointer; font-size: 14px; line-height: 1; padding: 4px 6px; border-radius: 6px; }
+.dgroup-rm:hover { color: #c0392b; background: rgba(192,57,43,.08); }
+/* 调整行：领域/体系下拉，独立成行，与标题文字对齐 */
+.dgroup-adj { display: flex; gap: 8px; margin-top: 8px; padding-left: 23px; }
+.dgroup-chg { flex: 1 1 0; min-width: 0; font-size: 12.5px; padding: 5px 8px; }
+.dgroup-profile { flex: 1 1 0; min-width: 0; font-size: 12.5px; padding: 5px 8px; }
+/* 二级：该领域要抽取的文件列表（每行一个文件，缩进与标题文字对齐） */
+.dgroup-files { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; padding-left: 23px; }
+/* 文件行：grid 三列（☑ | 文件名 | 置信度），覆盖 .modal label 块级/换行，文件名绝不消失 */
+.dgroup-file { display: grid !important; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; column-gap: 8px; font-size: 12.5px; color: var(--text-sub, #6b7280); background: var(--bg-soft, #f7f8fa); border: 1px solid var(--border, #e5e7eb); border-radius: 6px; padding: 6px 10px; cursor: pointer; user-select: none; margin: 0 !important; width: 100%; box-sizing: border-box; transition: border-color .12s, background .12s; }
+.dgroup-file:hover { border-color: var(--primary, #1a7f4b); background: rgba(26,127,75,.03); }
+.dgroup-file.off { opacity: .45; background: var(--bg-soft, #f7f8fa); }
+.dgroup-file-cb { width: 14px; height: 14px; margin: 0; accent-color: var(--primary, #1a7f4b); cursor: pointer; }
+.dgroup-file-name { line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dgroup-file-conf { font-size: 11.5px; color: var(--text-sub, #9aa0a6); font-variant-numeric: tabular-nums; }
+.dgroup-file-conf.low { color: #b45309; font-weight: 700; }
+.dgroup-file.low { border-color: rgba(217,119,6,.4); background: rgba(217,119,6,.07); }
+.dgroup-file.low .dgroup-file-name { color: #b45309; font-weight: 600; }
+.dgroup-multi { color: var(--primary, #1a7f4b); margin-left: 4px; }
 .domain-progress-hint { flex: 1; font-size: 13px; color: var(--text-sub, #8a9099); align-self: center; }
 /* 思考过程流：默认折叠，点击标题展开；逐字追加 */
 .domain-think-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-sub, #8a9099); cursor: pointer; user-select: none; width: fit-content; padding: 2px 6px; border-radius: 5px; }

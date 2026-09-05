@@ -272,6 +272,37 @@ function registerIpc(getWindow) {
     }
   });
 
+  // 多领域归纳：识别来源内容包含的全部内聚领域（≤5），供多领域拆分提取的领域清单
+  ipcMain.handle('tpl:suggestDomains', async (_e, { settings, rawPaths, texts }) => {
+    try {
+      const raws = await buildMatchRaws(settings, rawPaths, texts);
+      if (!raws.length) return { ok: false, error: '来源内容为空，无法归纳领域' };
+      const onDelta = (delta, isReasoning) => { try { _e.sender.send('tpl:suggest-domains-chunk', { text: delta, reasoning: !!isReasoning }); } catch (_) { /* 窗口已关闭 */ } };
+      return { ok: true, ...(await templates.suggestDomains(settings, raws, onDelta)) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // 逐文件分类：给定领域清单，按「文件名 + 内容摘录」逐文件判定归属（多归属 + 置信度）
+  // 注意：assignDomains 需要按 rawPath 归组，buildMatchRaws 返回的 raws 保留了 rawPath 标识，不能丢
+  // inlineSources（笔记图谱的 {label,text}）以 rawPath='inline:<label>' 参与分类，键按此回映射
+  ipcMain.handle('tpl:assignDomains', async (_e, { settings, rawPaths, domains, inlineSources }) => {
+    try {
+      const raws = await buildMatchRaws(settings, rawPaths, []);
+      for (const s of inlineSources || []) {
+        const label = String((s && s.label) || '').trim();
+        const text = String((s && s.text) || '');
+        if (label && text.trim()) raws.push({ rawPath: 'inline:' + label, content: text });
+      }
+      if (!raws.length) return { ok: false, error: '来源内容为空，无法分类' };
+      const onDelta = (delta, isReasoning) => { try { _e.sender.send('tpl:assign-domains-chunk', { text: delta, reasoning: !!isReasoning }); } catch (_) { /* 窗口已关闭 */ } };
+      return { ok: true, ...(await templates.assignDomains(settings, raws, domains, onDelta)) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   // 提取前按来源内容实时匹配最合适的本体体系（不读模版绑定）：从内置三体系+导入 OWL 中选最贴合者，返回 {id,name,similarity,reason}
   // 设置无全局默认体系时也走这里：只要来源有文本，就从体系列表中智能匹配，不再依赖模版绑定或全局默认
   ipcMain.handle('tpl:suggestProfile', async (_e, { settings, rawPaths, texts, timeoutMs }) => {

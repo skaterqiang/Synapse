@@ -409,4 +409,109 @@ async function suggestOntologyProfile(settings, raws, onDelta) {
   return { id: dft.id, name: dft.name || dft.id, similarity: 0, reason: '模型未给出有效选择，回退默认体系' };
 }
 
-module.exports = { listTemplates, saveTemplate, removeTemplate, matchPrompt, matchTemplate, preMatchTemplate, generateTemplate, suggestTemplateName, suggestOntologyProfile };
+// 多领域归纳：从来源内容识别出全部内聚领域（数量不限），返回 { domains: [{ name, desc }] }，同名去重
+// 与 suggestTemplateName 的区别：prompt 明确要求「识别所有内聚领域」并返回数组，用于多领域拆分提取
+async function suggestDomains(settings, raws, onDelta) {
+  const text = (raws || []).map((r) => r.content).join('\n').slice(0, 8000);
+  if (!text.trim()) throw new Error('来源内容为空，无法归纳领域');
+  const prompt = [
+    '你是知识库领域建模专家。下方是用户正要吸收进知识库的来源内容摘录，这些来源可能围绕单一主题，也可能混合多个互不相关的主题。',
+    '请识别这些内容所包含的全部内聚知识领域，输出领域数组。判断要点：',
+    '- 内容围绕单一主题 → 只返回一个领域',
+    '- 内容明显混合多个不相关主题 → 返回多个领域（每个内聚、互不重叠）',
+    '- 实际有几个领域就返回几个，不限制数量；名称 2-8 个汉字，是一个内聚的领域（如“充电桩扩容”“细胞代谢”），避免过于宽泛（如“文档”“知识”）',
+    '',
+    '只输出一个 JSON 对象，不要输出其他任何内容：',
+    '{ "domains": [ { "name": "领域中文名", "desc": "一句话领域描述" } ] }',
+    '',
+    '=== 来源内容摘录 ===',
+    text,
+  ].join('\n');
+  const answer = await chatOnce(settings, [
+    { role: 'system', content: getPrompt(settings, 'tplGenPrompt') },
+    { role: 'user', content: prompt },
+  ], undefined, onDelta);
+  const raw = extractJson(answer);
+  // 兼容单对象返回 {name, desc} → 包成单元素数组
+  let list = Array.isArray(raw.domains) ? raw.domains : (raw.name ? [{ name: raw.name, desc: raw.desc }] : []);
+  const seen = new Set();
+  const domains = [];
+  for (const d of list) {
+    const name = trimStr(d && d.name, 100);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    domains.push({ name, desc: trimStr(d && d.desc, 500) });
+  }
+  if (!domains.length) throw new Error('未能从来源内容归纳出领域');
+  return { domains };
+}
+
+// 逐文件分类（多归属 + 置信度）：给定领域清单，按「文件名 + 内容前 300 字」逐文件判定归属
+// 返回 { assignments: { [rawPath]: { domains: [领域名, ...], confidence: 0~1 } }, unassigned: [rawPath] }
+// 文件数 > 20 时分批调用合并结果，防超时与输出截断；非法领域名剔除，剔除后为空 → unassigned
+async function assignDomains(settings, raws, domains, onDelta) {
+  const list = Array.isArray(domains) ? domains.filter((d) => d && d.name) : [];
+  if (!list.length) return { assignments: {}, unassigned: (raws || []).map((r) => r.rawPath) };
+  // 单领域：无需分类，全部归该领域、置信度 1
+  if (list.length === 1) {
+    const assignments = {};
+    for (const r of raws || []) assignments[r.rawPath] = { domains: [list[0].name], confidence: 1 };
+    return { assignments, unassigned: [] };
+  }
+  const domainLines = list.map((d) => `- ${d.name}：${d.desc || '无描述'}`).join('\n');
+  const BATCH = 20;
+  const merged = { assignments: {}, unassigned: [] };
+  for (let i = 0; i < (raws || []).length; i += BATCH) {
+    const batch = raws.slice(i, i + BATCH);
+    // 每文件取「文件名 + 内容前 600 字」作为判据，避免全文注入导致 prompt 爆炸
+    const fileLines = batch.map((r) => {
+      const name = String(r.rawPath || '').split(/[\\/]/).pop();
+      const excerpt = String(r.content || '').slice(0, 600).replace(/\s+/g, ' ').trim();
+      return `- 路径：${r.rawPath}\n  文件名：${name}\n  摘录：${excerpt || '（空）'}`;
+    }).join('\n');
+    const prompt = [
+      '你是知识库内容分类专家。下方给定若干领域（名称+描述），以及一批文件（路径、文件名、内容摘录）。',
+      '请逐文件判定它属于哪个或哪几个领域。判定要点：',
+      '- 每文件至少归入一个领域；若内容同时涉及多个领域，domains 列多个',
+      '- **文件名是强信号**：文件名含明确主题词（如「系统迁移」「资金安全」「充电桩」）时，优先按文件名归类，置信度给高',
+      '- 仅当文件名与摘录都完全无法指向任何领域时，才放进 unassigned',
+      '- confidence：对归类的把握，0~1 之间的小数；文件名或摘录能明确指向领域，置信度应≥0.8',
+      '',
+      '=== 领域清单 ===',
+      domainLines,
+      '',
+      '=== 文件清单 ===',
+      fileLines,
+      '',
+      '只输出一个 JSON 对象，不要输出其他任何内容：',
+      '{ "assignments": { "<文件路径>": { "domains": ["领域名"], "confidence": 0.92 } }, "unassigned": ["<文件路径>"] }',
+    ].join('\n');
+    try {
+      const answer = await chatOnce(settings, [
+        { role: 'system', content: getPrompt(settings, 'tplGenPrompt') },
+        { role: 'user', content: prompt },
+      ], undefined, onDelta);
+      const raw = extractJson(answer);
+      const validNames = new Set(list.map((d) => d.name));
+      const asg = raw && raw.assignments && typeof raw.assignments === 'object' ? raw.assignments : {};
+      const una = new Set(Array.isArray(raw && raw.unassigned) ? raw.unassigned : []);
+      for (const r of batch) {
+        const key = r.rawPath;
+        if (una.has(key)) { merged.unassigned.push(key); continue; }
+        const entry = asg[key];
+        let names = entry && Array.isArray(entry.domains) ? entry.domains.filter((n) => validNames.has(n)) : [];
+        if (!names.length) { merged.unassigned.push(key); continue; }
+        let conf = parseFloat(entry.confidence);
+        if (!isFinite(conf)) conf = 0.5;
+        conf = Math.max(0, Math.min(1, conf));
+        merged.assignments[key] = { domains: names, confidence: conf };
+      }
+    } catch (_) {
+      // 该批失败：整批进 unassigned，不丢文件
+      for (const r of batch) merged.unassigned.push(r.rawPath);
+    }
+  }
+  return merged;
+}
+
+module.exports = { listTemplates, saveTemplate, removeTemplate, matchPrompt, matchTemplate, preMatchTemplate, generateTemplate, suggestTemplateName, suggestOntologyProfile, suggestDomains, assignDomains };
