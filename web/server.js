@@ -176,7 +176,9 @@ async function handleRequest(req, res) {
       const assetsRoot = paths.assetsDir();
       const legacyAssets = path.join(paths.legacyUserData(), 'assets');
       const noteRoot = require(path.join(SRC, 'main', 'notes', 'store')).notesRoot();
-      const allowed = p.startsWith(assetsRoot + path.sep) || p.startsWith(legacyAssets + path.sep) || p.startsWith(noteRoot + path.sep);
+      // 与桌面端 kb-asset 协议同口径：额外放行「当前预览的原始 Markdown 所在目录」内的图片
+      const rawPreview = require(path.join(SRC, 'main', 'raws', 'preview'));
+      const allowed = p.startsWith(assetsRoot + path.sep) || p.startsWith(legacyAssets + path.sep) || p.startsWith(noteRoot + path.sep) || rawPreview.isAllowedAsset(p);
       if (!allowed || !fs.existsSync(p) || !fs.statSync(p).isFile()) {
         return sendJson(res, 404, { error: 'Not Found' });
       }

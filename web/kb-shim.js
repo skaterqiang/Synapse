@@ -115,6 +115,8 @@
     rawPickDir: () => Promise.resolve({ ok: false, canceled: false }),
     openExternal: (url) => { try { window.open(url, '_blank'); return Promise.resolve({ ok: true }); } catch (e) { return Promise.resolve({ ok: false, error: e.message }); } },
     rawOpen: () => Promise.resolve({ ok: false, error: '网页模式不支持打开本地文件，请在桌面端使用' }),
+    // 应用内只读预览走服务端读文件，网页模式同样可用
+    rawPreview: (payload) => call('raw:preview', payload),
     rawRemove: (payload) => call('raw:remove', payload),
     rawRemoveDir: (payload) => call('raw:removeDir', payload),
     rawAddFiles: (payload) => call('raw:addFiles', payload),

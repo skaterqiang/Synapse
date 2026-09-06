@@ -2,8 +2,12 @@
 // 说明：所有配置项由渲染层设置弹窗维护并经 IPC payload 传入，主进程不硬编码业务参数
 
 // 数值配置：四舍五入取整并钳制到 [min, max]
+// null / 空串 / 非数值一律视为「未配置」回退默认值：
+// Number(null) 与 Number('') 都是 0，若不显式排除会把「留空」误当成 0（再被钳到 min）
 function num(settings, key, def, min = 0, max = Infinity) {
-  const v = Number(settings && settings[key]);
+  const raw = settings ? settings[key] : undefined;
+  if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) return def;
+  const v = Number(raw);
   if (!Number.isFinite(v)) return def;
   return Math.min(max, Math.max(min, Math.round(v)));
 }

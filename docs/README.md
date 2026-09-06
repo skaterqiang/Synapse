@@ -34,6 +34,7 @@
 | **笔记（Note）** | 你手写的 Markdown 内容，存为 `<数据根目录>/note/` 下的 `.md` 文件，可直接用其他编辑器打开 |
 | **原始文件（Raw）** | 待加工的原始资料（PDF/DOCX/网页等）。本机文件采用**引用式**管理，不复制副本 |
 | **领域模版（Domain Template）** | 告诉 AI「这个领域该抽取什么」的规则集（领域定位、本体体系绑定、领域类），提取知识图谱时作为类型约束注入 |
+| **多领域自动拆分** | 一批来源混合多个互不相关领域时，自动识别全部内聚领域 → 逐文件归类（多归属+置信度）→ 每个领域独立提交一个只跑其文件子集的提取作业，避免异领域内容互相干扰（详见 [6.4.1](06-领域模版.md)） |
 | **知识图谱（Knowledge Graph）** | AI 从笔记与原始文件中抽取的实体与关系网络；本体层支持多套可切换的顶层体系（内置 BFO-Lite / BFO 2020 / ISO 15926，可导入 OWL 2 自定义本体），可视化展示并支持基于图谱的问答 |
 | **作业（Job）** | 所有耗时 AI 任务的后台执行单元，支持队列、并发、状态追踪（成功/失败/警告）、子任务级重试与失败任务单独重跑 |
 ## 典型工作流
@@ -41,6 +42,7 @@
 ```
 ① 收集资料                ② 定义领域规则            ③ AI 加工
 原始文件页添加文件/目录 →  领域模版（可 AI 生成） →  右键「提取笔记」/「提取知识图谱」
+                          ↕ 多领域自动拆分：混合来源自动识别并逐领域独立提取
                                                     ↓
 ④ 后台执行（作业管理）                    ⑤ 使用知识
 队列并发执行，支持警告状态与任务级重试  →      AI 问答 / KG 问答
@@ -89,3 +91,33 @@ npx electron scripts/capture-docs.js     # 逐视图截图并覆盖 docs/images/
 | 提示词管理 | [prompts-manager.png](images/prompts-manager.png) |
 | 设置 · 模型配置 | [settings-ai.png](images/settings-ai.png) |
 | 设置 · MCP | [settings-mcp.png](images/settings-mcp.png) |
+
+---
+
+## 测试
+
+本项目不引入测试框架，主进程各模块有独立的可执行测试套件，统一由运行器逐一以独立子进程执行：
+
+```bash
+npm test                      # 运行全部套件（test/run-all.js）
+node test/graph-ontology.test.js   # 单独运行某一套
+npm run test:mcp              # MCP 客户端专项
+```
+
+每个套件自带隔离沙箱（临时数据目录 + 屏蔽 Electron / 模拟 LLM），运行后打印 `N/M 通过` 汇总。
+
+| 套件 | 覆盖模块 |
+|---|---|
+| `common-core` | 配置解析、路径、通用工具 |
+| `prompts-llm` | 提示词装配、LLM 调用与流式解析 |
+| `templates-domains` | 领域模版、多领域识别/归类、体系匹配 |
+| `owl-import` | OWL 本体导入 |
+| `knowledge-sources` | 知识源收集 |
+| `jobs-tasks` | 作业队列、子任务、重试 |
+| `notes-store` | 笔记文件存取、版本 |
+| `raws-utils` / `raw-preview` | 原始文件工具与应用内预览 |
+| `graph-ontology` | 图谱、本体层、KG 问答 |
+| `skills-runner` | 技能脚本执行器（docx/pptx/xlsx） |
+| `mcp-client` / `db-transaction` / `ask-chain` / `skill-install` | MCP 客户端、数据库事务、问答链、技能安装 |
+
+> **说明**：`mineru-route`、`skill-parse` 依赖外部 MinerU 转换器（Python + mineru 包），未安装时会标记「环境依赖未通过」，属预期、与代码无关；`charge-pile-ontology` 为基线提交即损坏的历史夹具测试（读取提交的 `data/` 图谱，数据已漂移），两者均不阻断 `npm test` 退出码。

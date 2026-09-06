@@ -51,7 +51,12 @@ function parseNoteFile(file) {
         const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/);
         if (m) fm[m[1]] = m[2].trim();
       }
-      body = text.slice(end + 4).replace(/^\n/, '');
+      // serializeNote 的分隔是「--- + 空行 + 正文」，即结尾 --- 后跟两个换行；
+      // 只剥一个会让正文每轮存/读都多出一个前导空行并逐次累积（笔记越存越“空”）。
+      // 因此优先按写盘格式剥掉整段分隔，兼容手写单换行的旧文件。
+      body = text.slice(end + 4);
+      if (body.startsWith('\n\n')) body = body.slice(2);
+      else body = body.replace(/^\n/, '');
     }
   }
   let tags = [];
@@ -316,7 +321,12 @@ function writeNotesToDisk(folders, notes) {
       }
       fs.writeFileSync(target, serializeNote(n), 'utf-8');
       // 笔记自身目录（与笔记文件同名同级），存放该笔记的附件图片
-      fs.mkdirSync(path.join(path.dirname(target), path.basename(target, '.md')), { recursive: true });
+      const attachDir = path.join(path.dirname(target), path.basename(target, '.md'));
+      fs.mkdirSync(attachDir, { recursive: true });
+      // noteDirs 是写盘前扫出的快照，不含本次新建的笔记：不补登记，下面的空目录清理
+      // 会把刚建好的附件目录当「无笔记文件的残留目录」立刻删掉（新笔记存完就没有附件目录）
+      const attachRel = path.relative(root, attachDir).split(path.sep).join('/');
+      if (attachRel) noteDirs.add(attachRel);
     } catch (err) {
       console.error('笔记写盘失败:', n.title, err.message);
     }

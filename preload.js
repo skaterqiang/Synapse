@@ -143,6 +143,7 @@ contextBridge.exposeInMainWorld('kb', {
   revealPath: (payload) => ipcRenderer.invoke('shell:revealPath', payload),
   readDoc: (payload) => ipcRenderer.invoke('docs:read', payload),
   rawOpen: (payload) => ipcRenderer.invoke('raw:open', payload),
+  rawPreview: (payload) => ipcRenderer.invoke('raw:preview', payload),
   rawRemove: (payload) => ipcRenderer.invoke('raw:remove', payload),
   rawRemoveDir: (payload) => ipcRenderer.invoke('raw:removeDir', payload),
   rawAddFiles: (payload) => ipcRenderer.invoke('raw:addFiles', payload),

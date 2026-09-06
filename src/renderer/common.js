@@ -2361,12 +2361,12 @@ function renderAll() {
 
 // 主内容区专题页（设置/作业/图谱/模版/原始文件）统一让位，避免切换导航时旧页残留
 function hideMainViews() {
-  ['settings-view', 'jobs-view', 'graph-view', 'tpl-view', 'tpl-editor-view', 'raw-view', 'prompts-view', 'prompt-editor-view', 'ai-view', 'docs-view'].forEach((id) => { $(id).hidden = true; });
+  ['settings-view', 'jobs-view', 'graph-view', 'tpl-view', 'tpl-editor-view', 'raw-view', 'prompts-view', 'prompt-editor-view', 'ai-view', 'docs-view', 'raw-preview-view'].forEach((id) => { $(id).hidden = true; });
 }
 
 // 设置页/任一主框架专题页打开或用户主动收起时，笔记列表与其分隔条让位（专题页全屏）
 function syncNoteListVisibility() {
-  const mainOpen = ['ai-view', 'jobs-view', 'graph-view', 'raw-view', 'tpl-view', 'tpl-editor-view', 'prompts-view', 'settings-view', 'docs-view'].some((id) => !$(id).hidden);
+  const mainOpen = ['ai-view', 'jobs-view', 'graph-view', 'raw-view', 'tpl-view', 'tpl-editor-view', 'prompts-view', 'settings-view', 'docs-view', 'raw-preview-view'].some((id) => !$(id).hidden);
   const hidden = mainOpen || state.noteListHidden;
   document.querySelector('.note-list-pane').style.display = hidden ? 'none' : '';
   $('notelist-resizer').style.display = hidden ? 'none' : '';

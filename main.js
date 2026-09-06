@@ -85,7 +85,7 @@ async function createWindow() {
   });
   if (process.argv.includes('--kb-debug')) mainWindow.webContents.openDevTools({ mode: 'detach' });
   // 版本 query 使 index.html 自身绕开 file:// 缓存（内部脚本引用另带各自版本号）
-  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'), { query: { v: '20260905q' } });
+  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'), { query: { v: '20260906a' } });
 }
 
 app.whenReady().then(async () => {
@@ -96,6 +96,7 @@ app.whenReady().then(async () => {
   const assetsRoot = paths.assetsDir();
   const legacyAssets = path.join(paths.legacyUserData(), 'assets');
   const noteRoot = require('./src/main/notes/store').notesRoot();
+  const rawPreview = require('./src/main/raws/preview');
   protocol.handle('kb-asset', (request) => {
     // 兼容两种历史/现行格式：
     //  新格式 kb-asset://fileD:/<encodeURI 路径>（盘符后带 /，host=fileD，new URL 可解析）
@@ -112,7 +113,9 @@ app.whenReady().then(async () => {
       try { p = path.resolve(decodeURIComponent(raw)); } catch (_) { p = null; }
     }
     if (!p) return new Response('bad request', { status: 400 });
-    const allowed = p.startsWith(assetsRoot + path.sep) || p.startsWith(legacyAssets + path.sep) || p.startsWith(noteRoot + path.sep);
+    // 笔记附件目录 / 旧 assets 目录之外，额外放行「当前预览的原始 Markdown 所在目录」内的图片，
+    // 使 raw 文件正文里的相对图片（![](images/x.png)）在应用内预览时也能显示
+    const allowed = p.startsWith(assetsRoot + path.sep) || p.startsWith(legacyAssets + path.sep) || p.startsWith(noteRoot + path.sep) || rawPreview.isAllowedAsset(p);
     if (!allowed) {
       return new Response('forbidden', { status: 403 });
     }

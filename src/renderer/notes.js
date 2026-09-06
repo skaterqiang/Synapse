@@ -409,6 +409,12 @@ function renderEditor() {
     content.hidden = true;
     return;
   }
+  // 原始文件只读预览页打开时，编辑区让位
+  if (!$('raw-preview-view').hidden) {
+    empty.hidden = true;
+    content.hidden = true;
+    return;
+  }
   // 提示词管理页打开时，编辑区让位
   if (!$('prompts-view').hidden) {
     empty.hidden = true;

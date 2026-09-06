@@ -241,7 +241,10 @@ async function runJob(job) {
   } catch (err) {
     job.status = 'failed';
     job.error = (err && err.name === 'AbortError') ? '用户手动停止作业' : err.message;
-    const st = job.stages.find((s) => s.status === 'running');
+    // 失败阶段定位：优先标正在跑的阶段；若失败发生在任何阶段推进之前
+    // （如「原始来源不存在」「提取范围信息丢失」这类前置校验），阶段全是 pending，
+    // 只标作业状态会让卡片上看不出哪一步失败——此时把第一个待执行阶段标为失败
+    const st = job.stages.find((s) => s.status === 'running') || job.stages.find((s) => s.status === 'pending');
     if (st) { st.status = 'failed'; st.detail = job.error; }
   }
   jobCancel.delete(job.id);

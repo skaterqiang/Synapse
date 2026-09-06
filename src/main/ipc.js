@@ -13,6 +13,7 @@ const mcpClient = mcpMod.mcpClient;
 const graph = require('./graph/graph');
 const templates = require('./graph/templates');
 const raws = require('./raws/raws');
+const rawPreview = require('./raws/preview');
 const { rawsRoot } = require('./raws/root');
 const prompts = require('./ai/prompts');
 const knowledge = require('./knowledge/knowledge');
@@ -524,6 +525,17 @@ function registerIpc(getWindow) {
       : path.join(rawsRoot(settings), String(relPath).replace(/^\//, ''));
     const err = await shell.openPath(abs);
     return err ? { ok: false, error: err } : { ok: true };
+  });
+
+  // 应用内只读预览原始 Markdown（md/markdown）：不写入笔记库，入库仍走「提取笔记」作业。
+  // 返回 dir（文件所在目录）供渲染层解析正文里的相对图片/相对链接；
+  // 该目录同时被登记为图片白名单根，kb-asset 协议（桌面）与 /api/asset（网页）据此放行同级图片
+  ipcMain.handle('raw:preview', (_e, { settings, relPath } = {}) => {
+    try {
+      return { ok: true, ...rawPreview.readMarkdown(settings, relPath) };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
   });
 
   ipcMain.handle('raw:remove', (_e, { settings, relPath }) => {

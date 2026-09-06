@@ -115,6 +115,12 @@ function bindEvents() {
   $('btn-ai-favs').addEventListener('click', showFavorites);
   $('btn-ai-help').addEventListener('click', () => openDocs());
   $('btn-docs-close').addEventListener('click', () => { $('docs-view').hidden = true; });
+  // 原始文件只读预览页（md/markdown 应用内查看）
+  $('btn-raw-preview-close').addEventListener('click', hideRawPreview);
+  $('btn-raw-preview-native').addEventListener('click', () => {
+    if (!rawPreviewRelPath) return;
+    openRawNative(rawPreviewRelPath);
+  });
   $('btn-ai-view-send').addEventListener('click', sendAiViewQuestion);
   // 空态示例问题：点击即作为问题直接发送（去掉装饰引号）
   $('ai-view-welcome').addEventListener('click', (e) => {
@@ -153,6 +159,8 @@ function bindEvents() {
     if (!a) return;
     // 使用手册页内的链接由 docs-view 自行处理（应用内翻页/锚点/外链）
     if (a.closest('#docs-view')) return;
+    // 原始文件预览页内的链接由 raw-preview-view 自行处理（锚点/同级 md 续读/外链/本机打开）
+    if (a.closest('#raw-preview-view')) return;
     const href = a.getAttribute('href') || '';
     if (!href || href.startsWith('#')) return;
     e.preventDefault();

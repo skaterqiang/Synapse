@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: kb-asset: kb-doc: https:;" />
   <title>Synapse</title>
-  <link rel="stylesheet" href="styles.css?v=20260905q" />
+  <link rel="stylesheet" href="styles.css?v=20260906a" />
   <link rel="stylesheet" href="lib/hljs-atom-one-dark.min.css" />
 </head>
 <body>
@@ -484,6 +484,18 @@
           </div>
         </div>
         <div class="docs-body markdown-body" id="docs-body"></div>
+      </div>
+
+      <!-- 原始文件只读预览页（md/markdown 应用内查看，不写入笔记库；复用使用手册的渲染样式） -->
+      <div class="docs-view" id="raw-preview-view" hidden>
+        <div class="tpl-toolbar">
+          <span class="tpl-view-title"><svg class="ico" width="16" height="16"><use href="#i-notes"/></svg><span id="raw-preview-title">预览</span></span>
+          <div class="toolbar-actions">
+            <button class="icon-btn" id="btn-raw-preview-native" title="用本机默认软件打开"><svg class="ico" width="13" height="13"><use href="#i-folder-open"/></svg></button>
+            <button class="icon-btn" id="btn-raw-preview-close" title="关闭预览"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
+          </div>
+        </div>
+        <div class="docs-body markdown-body" id="raw-preview-body"></div>
       </div>
 
       <!-- 设置页（主区域 Tab 分类） -->
@@ -992,13 +1004,13 @@
   <script src="lib/highlight.min.js"></script>
   <!-- 渲染进程按模块分文件加载：常量 → 公共 → 笔记/原始文件/模版 → 问答 → 作业 → 图谱 → 入口 -->
   <script src="renderer/constants.js?v=20260830b"></script>
-  <script src="renderer/common.js?v=20260831b"></script>
-  <script src="renderer/notes.js?v=20260831b"></script>
-  <script src="renderer/raws.js?v=20260905q"></script>
+  <script src="renderer/common.js?v=20260906a"></script>
+  <script src="renderer/notes.js?v=20260906a"></script>
+  <script src="renderer/raws.js?v=20260906a"></script>
   <script src="renderer/chat.js?v=20260830b"></script>
   <script src="renderer/jobs.js?v=20260831c"></script>
   <script src="renderer/ontologyTree.js?v=20260830c"></script>
   <script src="renderer/graph.js?v=20260904b"></script>
-  <script src="renderer/app.js?v=20260831a"></script>
+  <script src="renderer/app.js?v=20260906a"></script>
 </body>
 </html>

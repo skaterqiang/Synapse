@@ -1204,9 +1204,12 @@ function renderRawList() {
     const isLocal = String(r.path).startsWith('local:');
     const isUrl = String(r.path).startsWith('url:');
     const isRef = isLocal || isUrl;
+    // md/markdown 默认在应用内只读预览（Synapse 自带 Markdown 渲染），其余类型仍交本机默认软件
+    const isMd = isRawMarkdown(r.path);
     const delLabel = isRef ? '解除' : '删除';
     const delTitle = isUrl ? '解除该链接的引用' : (isLocal ? '解除该来源的引用（不删除本机文件）' : '删除该原始文件（raw/ 内副本）');
-    const viewTitle = isUrl ? '在浏览器打开该链接' : '用本机默认软件打开该文件';
+    const viewTitle = isUrl ? '在浏览器打开该链接' : (isMd ? '在应用内预览该 Markdown（只读）' : '用本机默认软件打开该文件');
+    const viewAction = isMd ? openRawPreview : openRawNative;
     // 历史吸收状态徽标（旧版吸收功能的存量标记）：已吸收（绿）/ 吸收后文件已修改（橙）
     const badge = r.ingested
       ? (r.ingested.stale
@@ -1229,7 +1232,7 @@ function renderRawList() {
       </span>`;
     row.addEventListener('click', (e) => {
       const act = e.target.dataset && e.target.dataset.act;
-      if (act === 'view') openRawNative(r.path);
+      if (act === 'view') viewAction(r.path);
       if (act === 'del') deleteRaw(r.path);
       if (act === 'rename') renameRawUrl(r);
     });
@@ -1241,7 +1244,7 @@ function renderRawList() {
         { label: '提取笔记', action: () => extractRawNote(r.path) },
         { label: '提取知识图谱', action: () => graphRaw(r.path) },
         { sep: true },
-        { label: isUrl ? '查看（浏览器打开）' : '查看（本机打开）', action: () => openRawNative(r.path) },
+        { label: isUrl ? '查看（浏览器打开）' : (isMd ? '查看（应用内预览）' : '查看（本机打开）'), action: () => viewAction(r.path) },
         ...(isUrl ? [{ label: '改名', action: () => renameRawUrl(r) }] : []),
         { label: isRef ? '解除引用' : '删除', danger: true, action: () => deleteRaw(r.path) },
       ]);
@@ -1386,6 +1389,108 @@ async function graphRawPaths(paths, label) {
 async function openRawNative(relPath) {
   const res = await window.kb.rawOpen({ settings: state.settings, relPath });
   if (!res.ok) toast(res.error || '打开失败', 3000);
+}
+
+// ================= 原始 Markdown 应用内只读预览 =================
+// 默认行为：原始文件页点「查看」时，md/markdown 不再交给系统默认软件，而是用 Synapse 自带的
+// Markdown 渲染视图在应用内打开（只读，不写入笔记库；需要入库仍走右键「提取笔记」）。
+// 其余类型（pdf/docx/图片/txt…）与 url: 链接保持原行为。
+// 当前预览的来源（供工具栏「用本机默认软件打开」复用）
+let rawPreviewRelPath = '';
+
+// 是否走应用内预览：仅本地 md/markdown（url: 链接交浏览器打开）
+function isRawMarkdown(relPath) {
+  const p = String(relPath || '');
+  return !!p && !p.startsWith('url:') && /\.(md|markdown)$/i.test(p);
+}
+
+// 相对资源 → 可访问 URL：桌面端走 kb-asset 协议（主进程已把预览文件所在目录登记为图片白名单根），
+// 网页模式直接走服务端 /api/asset 路由（同白名单口径）。
+// 注意：预览正文里的相对图片是渲染后才改写 src 的，不会经过 renderMarkdown 的 kb-asset 改写，
+// 故网页模式必须在这里直接产出 /api/asset 地址。
+// 桌面端用 kb-asset://file/<绝对路径> 形式（盘符留在 pathname 内），主进程按 /D:/x → D:/x 还原；
+// 不用 kbAssetUrlFor 的 kb-asset://fileD:/… 形式——那种写法盘符会被并入 host 而丢失
+function rawAssetUrl(dir, rel) {
+  const base = String(dir || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const relClean = String(rel || '').replace(/^\.\//, '');
+  const abs = base + '/' + relClean;
+  if (window.__KB_WEB__) return '/api/asset?path=' + encodeURIComponent(abs);
+  return 'kb-asset://file/' + encodeURI(abs).replace(/[()']/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+}
+
+async function openRawPreview(relPath) {
+  const res = await window.kb.rawPreview({ settings: state.settings, relPath });
+  if (!res || !res.ok) { toast('预览失败：' + ((res && res.error) || '未知错误'), 3500); return; }
+  rawPreviewRelPath = relPath;
+  hideMainViews();
+  if (typeof setAiPanelVisible === 'function') setAiPanelVisible(false);
+  $('raw-preview-view').hidden = false;
+  const title = $('raw-preview-title');
+  title.textContent = res.name || '预览';
+  title.title = res.dir ? (String(res.dir).replace(/\\/g, '/') + '/' + (res.name || '')) : (res.name || '');
+  renderRawPreview(res.text || '', res.dir || '');
+  renderEditor();
+  renderSidebar();
+  syncNoteListVisibility();
+}
+
+// 关闭预览：回到原始文件列表页（预览是从该页点「查看」进入的，关闭后应原路返回，
+// 而不是落到笔记编辑区）。showRawView 内部会 hideMainViews 顺带隐藏本预览页并重载列表。
+function hideRawPreview() {
+  rawPreviewRelPath = '';
+  showRawView();
+}
+
+// 渲染预览正文：与使用手册同一套 markdown-body 渲染 + 图片点击放大 + 链接拦截
+function renderRawPreview(text, dir) {
+  const body = $('raw-preview-body');
+  body.innerHTML = renderMarkdown(text);
+  // 相对图片解析到文件所在目录（marked 会把中文/空格文件名 URL 编码，需先解码）
+  body.querySelectorAll('img[src]').forEach((img) => {
+    const src = img.getAttribute('src') || '';
+    if (src && !/^(https?:|data:|kb-asset:|kb-doc:|\/)/i.test(src)) {
+      let rel = src;
+      try { rel = decodeURIComponent(src); } catch (_) { /* 非法编码保留原样 */ }
+      img.src = rawAssetUrl(dir, rel);
+    }
+    img.classList.add('doc-img-zoom');
+    img.addEventListener('click', () => showDocImageOverlay(img.src, src));
+  });
+  // 链接：外链走系统浏览器；相对 .md 继续在应用内预览；其余相对资源交本机默认软件
+  body.querySelectorAll('a[href]').forEach((a) => {
+    const href = a.getAttribute('href') || '';
+    if (!href || href.startsWith('#')) {
+      if (href.startsWith('#')) {
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          const slug = docAnchorSlug(decodeURIComponent(href.slice(1)));
+          const target = Array.from(body.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+            .find((h) => docAnchorSlug(h.textContent) === slug);
+          if (target) target.scrollIntoView({ block: 'start' });
+        });
+      }
+      return;
+    }
+    if (/^(https?:|mailto:)/i.test(href)) {
+      a.addEventListener('click', (e) => { e.preventDefault(); if (window.kb.openExternal) window.kb.openExternal(href); });
+      return;
+    }
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return; // kb-asset: 等自定义协议原样保留
+    let rel = href;
+    try { rel = decodeURIComponent(href); } catch (_) { /* 非法编码保留原样 */ }
+    const abs = (String(dir).replace(/\\/g, '/') + '/' + rel.replace(/^\.\//, '')).replace(/\\/g, '/');
+    if (/\.md($|#)/i.test(href)) {
+      a.addEventListener('click', (e) => { e.preventDefault(); openRawPreview('local:' + abs.split('#')[0]); });
+      return;
+    }
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (DOC_ASSET_IMG_RE.test(rel)) { showDocImageOverlay(rawAssetUrl(dir, rel), rel); return; }
+      if (window.__KB_WEB__) { toast('网页模式不支持打开本机文件，请在桌面端使用', 3000); return; }
+      if (window.kb.openPath) window.kb.openPath({ path: abs });
+    });
+  });
+  body.scrollTop = 0;
 }
 
 async function extractRawNote(relPath) {

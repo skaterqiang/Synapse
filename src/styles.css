@@ -2617,7 +2617,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   border-radius: var(--radius);
 }
 /* 鎵嬪唽鍐呭祵鍥惧彲鐐瑰嚮鏀惧ぇ */
-#docs-body img.doc-img-zoom { cursor: zoom-in; }
+#docs-body img.doc-img-zoom, #raw-preview-body img.doc-img-zoom { cursor: zoom-in; }
 /* 存储位置：等宽字体单行省略，完整路径悬停可见 */
 .ai-artifact-info .p {
   font-size: 11px; color: var(--text-sub); margin-top: 2px;

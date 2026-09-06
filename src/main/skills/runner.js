@@ -38,8 +38,13 @@ function runNodeScript({ code, timeoutMs } = {}) {
       return resolve(JSON.stringify({ ok: false, error: '启动失败：' + e.message, files: [] }));
     }
     const timer = setTimeout(() => { killTree(child); }, ms);
+    // 超时清理进程：非 win32 杀进程组（detached 组首为子进程，-pid 即整组）；
+    // win32 无进程组信号，直接 SIGKILL 终止子进程（无孙子进程时足够），否则超时将失去意义。
     const killTree = (c) => {
-      try { if (process.platform !== 'win32') process.kill(-c.pid, 'SIGKILL'); } catch (_) { try { c.kill('SIGKILL'); } catch (_) {} }
+      try {
+        if (process.platform !== 'win32') process.kill(-c.pid, 'SIGKILL');
+        else c.kill('SIGKILL');
+      } catch (_) { try { c.kill('SIGKILL'); } catch (_) {} }
     };
     child.stdout.on('data', (d) => { stdout = (stdout + d).slice(-4000); });
     child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); });

@@ -944,9 +944,10 @@ function scopeFilter(scope) {
   if (!parts.length || parts.includes('all')) return null;
   const conds = parts.map((p) => {
     const [profile, domain] = p.split('|');
-    if (!domain || domain === '*') return (n) => (n.profile || 'bfo-lite') === profile;
-    if (domain === 'general') return (n) => (n.profile || 'bfo-lite') === profile && !(n.domain && String(n.domain).trim());
-    return (n) => (n.profile || 'bfo-lite') === profile && String(n.domain || '') === domain;
+    // 对空节点（undefined/null）一律视为不匹配，避免谓词在稀疏数组/查找未命中时抛 TypeError
+    if (!domain || domain === '*') return (n) => !!n && (n.profile || 'bfo-lite') === profile;
+    if (domain === 'general') return (n) => !!n && (n.profile || 'bfo-lite') === profile && !(n.domain && String(n.domain).trim());
+    return (n) => !!n && (n.profile || 'bfo-lite') === profile && String(n.domain || '') === domain;
   });
   return (n) => conds.some((c) => c(n));
 }

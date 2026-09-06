@@ -24,6 +24,23 @@ function writable(p) {
   }
 }
 
+// 递归复制目录（手写实现，替代 fs.cpSync）
+// 原因：Windows 下 fs.cpSync(含非 ASCII 的源目录, 目标, {recursive:true}) 会让 Node 进程
+// 直接崩溃（STATUS_STACK_BUFFER_OVERRUN，退出码 -1073740791），无法被 try/catch 捕获。
+// 旧版用户数据目录名恰为「个人知识库助手」，首启迁移必然踩中。手写复制逐项 copyFileSync，
+// 行为可控且跨平台一致（符号链接解引用为普通文件复制，个人附件场景无链接需求）。
+function copyDirSync(src, dst) {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, entry.name);
+    const d = path.join(dst, entry.name);
+    if (entry.isDirectory()) copyDirSync(s, d);
+    else if (entry.isSymbolicLink()) {
+      try { fs.copyFileSync(s, d); } catch (_) { /* 断链忽略，不阻断整体迁移 */ }
+    } else fs.copyFileSync(s, d);
+  }
+}
+
 // 默认根目录候选：安装目录/data → 资源目录/data → 可执行文件目录/data（仅打包版）→ 旧 appData
 function defaultDataRoot() {
   const candidates = [
@@ -72,7 +89,7 @@ function ensureUnifiedRoot() {
     const legacyAssets = path.join(legacy, 'assets');
     const rootAssets = path.join(root, 'assets');
     if (fs.existsSync(legacyAssets) && !fs.existsSync(rootAssets)) {
-      fs.cpSync(legacyAssets, rootAssets, { recursive: true });
+      copyDirSync(legacyAssets, rootAssets);
       fs.renameSync(legacyAssets, legacyAssets + '.migrated');
       assetsRewrite = { from: legacyAssets, to: rootAssets };
     }

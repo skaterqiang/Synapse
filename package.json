@@ -10,6 +10,7 @@
     "start:gui": "node scripts/ensure-mac-sign.js && open -n node_modules/electron/dist/Electron.app --args \"$PWD\"",
     "web": "node web/server.js",
     "serve": "node scripts/start-web.js",
+    "test": "node test/run-all.js",
     "test:mcp": "node test/mcp-client.test.js",
     "sync-libs": "node scripts/sync-libs.js",
     "postinstall": "node scripts/ensure-mac-sign.js && node scripts/sync-libs.js",
