@@ -427,11 +427,20 @@ async function suggestDomains(settings, raws, onDelta) {
     '=== 来源内容摘录 ===',
     text,
   ].join('\n');
-  const answer = await chatOnce(settings, [
-    { role: 'system', content: getPrompt(settings, 'tplGenPrompt') },
+  const sys = getPrompt(settings, 'tplGenPrompt');
+  const msgs = [
+    { role: 'system', content: sys },
     { role: 'user', content: prompt },
-  ], undefined, onDelta);
-  const raw = extractJson(answer);
+  ];
+  let raw;
+  try {
+    raw = extractJson(await chatOnce(settings, msgs, undefined, onDelta));
+  } catch (_) {
+    // 思考型/健谈模型有时首轮只输出散文推理、未给出 JSON；追加一条强约束指令重试一次，
+    // 仍失败才抛错（避免一次抖动就让多领域流程回退成单组通用）。
+    msgs.push({ role: 'user', content: '你刚才的回复不是合法 JSON。请严格只输出一个 JSON 对象（不要任何解释、不要思考过程、不要代码围栏），格式：{ "domains": [ { "name": "领域中文名", "desc": "一句话领域描述" } ] }' });
+    raw = extractJson(await chatOnce(settings, msgs, undefined, onDelta));
+  }
   // 兼容单对象返回 {name, desc} → 包成单元素数组
   let list = Array.isArray(raw.domains) ? raw.domains : (raw.name ? [{ name: raw.name, desc: raw.desc }] : []);
   const seen = new Set();

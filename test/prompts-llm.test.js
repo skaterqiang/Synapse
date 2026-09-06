@@ -74,6 +74,12 @@ function fakeResp(pieces) {
   let e3 = '';
   try { llm.extractJson(''); } catch (e) { e3 = e.message; }
   check('空串抛错', !!e3, e3);
+  // 括号配对鲁棒性（思考型模型散文前言/多组花括号）
+  check('散文前置带花括号，取首个可解析对象', llm.extractJson('我想到了 {示例} 然后给出结果：{"a":7}').a === 7);
+  check('多组花括号跨块不误拼接', llm.extractJson('先看 {"x":1} 再看 {"y":2}').x === 1);
+  check('JSON 后散文带花括号不污染', llm.extractJson('{"ok":true} 这就是结果 {完}').ok === true);
+  check('嵌套配平 + 尾部散文', llm.extractJson('答案 {"d":{"list":[1,{"k":"v"}]}} 说明文字').d.list[1].k === 'v');
+  check('字符串内含花括号不参与配平', llm.extractJson('{"s":"a{b}c"}').s === 'a{b}c');
 
   // ================= llm.ASK_PROTOCOL =================
   section('ai/llm.js — ASK_PROTOCOL 澄清协议');

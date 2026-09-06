@@ -284,6 +284,28 @@ const json = (obj) => ({ status: 200, headers: { 'Content-Type': 'text/event-str
       check('onDelta 收到推理与正文增量', seen.some((x) => x[1]) && seen.some((x) => !x[1]), JSON.stringify(seen.length));
     } finally { await fake.close(); }
   }
+  {
+    // 回归：首轮模型只输出散文（无 JSON）→ 自动追加强约束重试，第二轮给出合法 JSON（复现截图故障）
+    const fake = await startFakeLlm(({ n }) => (n === 1
+      ? { status: 200, headers: { 'Content-Type': 'text/event-stream' }, sse: sseText('让我想想……这些来源涉及好几个领域，我需要分析一下') }
+      : json({ domains: [{ name: '充电桩扩容', desc: '电力' }] })));
+    try {
+      const r = await tpl.suggestDomains(fake.settings(), [{ content: '充电桩扩容' }]);
+      check('首轮散文→自动重试成功', r.domains.length === 1 && r.domains[0].name === '充电桩扩容', JSON.stringify(r.domains));
+      check('共发起 2 次请求', fake.requests.length === 2, String(fake.requests.length));
+      check('重试追加了强约束指令', fake.requests[1].body.messages.some((m) => /不是合法 JSON/.test(m.content)), JSON.stringify(fake.requests[1].body.messages.length));
+    } finally { await fake.close(); }
+  }
+  {
+    // 两轮都非 JSON → 最终抛错（重试不掩盖持续性故障）
+    const fake = await startFakeLlm(() => ({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, sse: sseText('只是散文，没有任何 JSON') }));
+    try {
+      let err = '';
+      try { await tpl.suggestDomains(fake.settings(), [{ content: 'x' }]); } catch (e) { err = e.message; }
+      check('两轮均无 JSON 最终抛「模型未返回 JSON」', err === '模型未返回 JSON', err);
+      check('确实重试过一次', fake.requests.length === 2, String(fake.requests.length));
+    } finally { await fake.close(); }
+  }
 
   // ================= suggestTemplateName =================
   section('suggestTemplateName — 领域名归纳');

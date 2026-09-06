@@ -473,13 +473,48 @@ async function agenticChat(event, settings, messages, tools, toolRouter) {
   }
 }
 
-// 从模型输出中提取 JSON（容忍代码栏包裹与前后杂质）
+// 从模型输出中提取 JSON（容忍代码栏包裹、前后说明文字、以及思考型模型的散文前言）
+// 策略：先去掉代码围栏；再按「括号配对」从每个 '{' 出发找其配对 '}'，优先返回第一个能
+// JSON.parse 成功的候选；都不成功时回退「首个 { 到末个 }」的贪心切片，交给 JSON.parse 报错。
+// 这样可修复两类真实故障：
+//   1) 模型在 JSON 前/后输出散文（其中可能带花括号），贪心切片把散文也框进来 → 解析失败；
+//   2) 模型输出多个独立花括号块，首 { 到末 } 跨块拼接 → 解析失败。
 function extractJson(text) {
   let s = String(text).trim();
   s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+  // 收集所有可能的起始 '{'
+  const starts = [];
+  for (let i = 0; i < s.length; i++) if (s[i] === '{') starts.push(i);
+  if (!starts.length) throw new Error('模型未返回 JSON');
+
+  // 从某个 '{' 出发，按配对深度找其配对 '}' 的位置；找不到返回 -1
+  const matchBrace = (from) => {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = from; i < s.length; i++) {
+      const c = s[i];
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (c === '{') depth++;
+      else if (c === '}') { depth--; if (depth === 0) return i; }
+    }
+    return -1;
+  };
+
+  // 依次尝试每个 '{' 的配对块，返回第一个能解析的
+  for (const st of starts) {
+    const en = matchBrace(st);
+    if (en === -1) continue;
+    try { return JSON.parse(s.slice(st, en + 1)); } catch (_) { /* 尝试下一个起点 */ }
+  }
+
+  // 兜底：首个 { 到末个 } 的贪心切片（保持旧行为的报错路径）
   const start = s.indexOf('{');
   const end = s.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('模型未返回 JSON');
+  if (end === -1) throw new Error('模型未返回 JSON');
   return JSON.parse(s.slice(start, end + 1));
 }
 
