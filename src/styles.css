@@ -1056,6 +1056,13 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .mineru-mode-row .radio-hint { flex: 0 0 auto; white-space: nowrap; }
 /* ===== 提取知识图谱 · AI 自主判定进度流（卡片化） ===== */
 .domain-progress { max-height: 460px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; margin: 8px 0 6px; padding: 14px; background: var(--bg-soft, #f7f8fa); border-radius: 12px; font-size: 14px; line-height: 1.7; }
+/* 领域判定方式选择行：开始判定前展示，让用户选「仅文件名」或「文件名+内容」 */
+.domain-judge-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin: 6px 0 10px; padding: 10px 14px; background: var(--bg-soft, #f7f8fa); border: 1px solid var(--border, #e3e6eb); border-radius: 10px; font-size: 13px; }
+.domain-judge-label { color: var(--text-sub, #8a9099); font-weight: 500; }
+.domain-judge-opt { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; color: var(--text, #2b2f33); }
+.domain-judge-opt input[type="radio"] { accent-color: var(--primary, #1a7f4b); cursor: pointer; margin: 0; }
+.domain-judge-tip { color: var(--text-sub, #8a9099); font-size: 12px; }
+.domain-judge-bar #btn-domain-judge-start { margin-left: auto; }
 /* 步骤卡片：白底圆角卡片承载每一步的标题/结果/思考流 */
 .domain-card { background: var(--panel, #fff); border: 1px solid var(--border, #e3e6eb); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 1px 2px rgba(0,0,0,.04); transition: border-color .2s, box-shadow .2s; }
 .domain-card.running { border-color: var(--primary, #1a7f4b); box-shadow: 0 0 0 3px rgba(26,127,75,.08); }

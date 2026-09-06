@@ -274,12 +274,12 @@ function registerIpc(getWindow) {
   });
 
   // 多领域归纳：识别来源内容包含的全部内聚领域（≤5），供多领域拆分提取的领域清单
-  ipcMain.handle('tpl:suggestDomains', async (_e, { settings, rawPaths, texts }) => {
+  ipcMain.handle('tpl:suggestDomains', async (_e, { settings, rawPaths, texts, judgeBy }) => {
     try {
       const raws = await buildMatchRaws(settings, rawPaths, texts);
       if (!raws.length) return { ok: false, error: '来源内容为空，无法归纳领域' };
       const onDelta = (delta, isReasoning) => { try { _e.sender.send('tpl:suggest-domains-chunk', { text: delta, reasoning: !!isReasoning }); } catch (_) { /* 窗口已关闭 */ } };
-      return { ok: true, ...(await templates.suggestDomains(settings, raws, onDelta)) };
+      return { ok: true, ...(await templates.suggestDomains(settings, raws, onDelta, { judgeBy })) };
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -288,7 +288,7 @@ function registerIpc(getWindow) {
   // 逐文件分类：给定领域清单，按「文件名 + 内容摘录」逐文件判定归属（多归属 + 置信度）
   // 注意：assignDomains 需要按 rawPath 归组，buildMatchRaws 返回的 raws 保留了 rawPath 标识，不能丢
   // inlineSources（笔记图谱的 {label,text}）以 rawPath='inline:<label>' 参与分类，键按此回映射
-  ipcMain.handle('tpl:assignDomains', async (_e, { settings, rawPaths, domains, inlineSources }) => {
+  ipcMain.handle('tpl:assignDomains', async (_e, { settings, rawPaths, domains, inlineSources, judgeBy }) => {
     try {
       const raws = await buildMatchRaws(settings, rawPaths, []);
       for (const s of inlineSources || []) {
@@ -298,7 +298,7 @@ function registerIpc(getWindow) {
       }
       if (!raws.length) return { ok: false, error: '来源内容为空，无法分类' };
       const onDelta = (delta, isReasoning) => { try { _e.sender.send('tpl:assign-domains-chunk', { text: delta, reasoning: !!isReasoning }); } catch (_) { /* 窗口已关闭 */ } };
-      return { ok: true, ...(await templates.assignDomains(settings, raws, domains, onDelta)) };
+      return { ok: true, ...(await templates.assignDomains(settings, raws, domains, onDelta, { judgeBy })) };
     } catch (err) {
       return { ok: false, error: err.message };
     }

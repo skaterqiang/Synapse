@@ -858,6 +858,13 @@
     <div class="modal" style="width:880px; max-width:94vw">
       <h3 id="domain-modal-title">提取知识图谱</h3>
       <p class="modal-tip" id="domain-modal-sub"></p>
+      <!-- 领域判定方式选择：开始判定前可见，选定后隐藏 -->
+      <div class="domain-judge-bar" id="domain-judge-bar">
+        <span class="domain-judge-label">领域判定依据：</span>
+        <label class="domain-judge-opt"><input type="radio" name="domain-judge-by" value="content" checked> 文件名 + 文件内容</label>
+        <label class="domain-judge-opt"><input type="radio" name="domain-judge-by" value="name"> 仅文件名<span class="domain-judge-tip">（更快、更省 token）</span></label>
+        <button class="btn btn-primary" id="btn-domain-judge-start">开始判定</button>
+      </div>
       <div id="domain-progress" class="domain-progress"></div>
       <div class="modal-actions">
         <span class="domain-progress-hint" id="domain-progress-hint">AI 正在判定领域与本体体系…</span>

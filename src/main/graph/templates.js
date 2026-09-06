@@ -411,20 +411,30 @@ async function suggestOntologyProfile(settings, raws, onDelta) {
 
 // 多领域归纳：从来源内容识别出全部内聚领域（数量不限），返回 { domains: [{ name, desc }] }，同名去重
 // 与 suggestTemplateName 的区别：prompt 明确要求「识别所有内聚领域」并返回数组，用于多领域拆分提取
-async function suggestDomains(settings, raws, onDelta) {
-  const text = (raws || []).map((r) => r.content).join('\n').slice(0, 8000);
-  if (!text.trim()) throw new Error('来源内容为空，无法归纳领域');
+// options.judgeBy：'name'=仅按文件名归纳（快、省 token）；'content'=按文件名+内容（默认，更准）
+async function suggestDomains(settings, raws, onDelta, options) {
+  const judgeBy = (options && options.judgeBy) || 'content';
+  // 仅文件名模式：用文件名清单替代内容摘录（文件内容可能为空，文件名总有）
+  const nameLines = (raws || []).map((r) => '- ' + (String(r.rawPath || '').split(/[\\/]/).pop() || r.rawPath)).join('\n');
+  const text = judgeBy === 'name'
+    ? nameLines
+    : (raws || []).map((r) => r.content).join('\n').slice(0, 8000);
+  if (!String(text || '').trim()) throw new Error(judgeBy === 'name' ? '来源文件名为空，无法归纳领域' : '来源内容为空，无法归纳领域');
+  const basis = judgeBy === 'name'
+    ? '下方是用户正要吸收进知识库的来源文件名清单，这些文件名可能围绕单一主题，也可能混合多个互不相关的主题。请仅依据文件名判断。'
+    : '下方是用户正要吸收进知识库的来源内容摘录，这些来源可能围绕单一主题，也可能混合多个互不相关的主题。';
+  const basisLabel = judgeBy === 'name' ? '=== 来源文件名清单 ===' : '=== 来源内容摘录 ===';
   const prompt = [
-    '你是知识库领域建模专家。下方是用户正要吸收进知识库的来源内容摘录，这些来源可能围绕单一主题，也可能混合多个互不相关的主题。',
-    '请识别这些内容所包含的全部内聚知识领域，输出领域数组。判断要点：',
-    '- 内容围绕单一主题 → 只返回一个领域',
-    '- 内容明显混合多个不相关主题 → 返回多个领域（每个内聚、互不重叠）',
+    '你是知识库领域建模专家。' + basis,
+    '请识别这些来源所包含的全部内聚知识领域，输出领域数组。判断要点：',
+    '- 来源围绕单一主题 → 只返回一个领域',
+    '- 来源明显混合多个不相关主题 → 返回多个领域（每个内聚、互不重叠）',
     '- 实际有几个领域就返回几个，不限制数量；名称 2-8 个汉字，是一个内聚的领域（如“充电桩扩容”“细胞代谢”），避免过于宽泛（如“文档”“知识”）',
     '',
     '只输出一个 JSON 对象，不要输出其他任何内容：',
     '{ "domains": [ { "name": "领域中文名", "desc": "一句话领域描述" } ] }',
     '',
-    '=== 来源内容摘录 ===',
+    basisLabel,
     text,
   ].join('\n');
   const sys = getPrompt(settings, 'tplGenPrompt');
@@ -458,7 +468,9 @@ async function suggestDomains(settings, raws, onDelta) {
 // 逐文件分类（多归属 + 置信度）：给定领域清单，按「文件名 + 内容前 300 字」逐文件判定归属
 // 返回 { assignments: { [rawPath]: { domains: [领域名, ...], confidence: 0~1 } }, unassigned: [rawPath] }
 // 文件数 > 20 时分批调用合并结果，防超时与输出截断；非法领域名剔除，剔除后为空 → unassigned
-async function assignDomains(settings, raws, domains, onDelta) {
+// options.judgeBy：'name'=仅按文件名归类（省略内容摘录）；'content'=文件名+内容摘录（默认）
+async function assignDomains(settings, raws, domains, onDelta, options) {
+  const judgeBy = (options && options.judgeBy) || 'content';
   const list = Array.isArray(domains) ? domains.filter((d) => d && d.name) : [];
   if (!list.length) return { assignments: {}, unassigned: (raws || []).map((r) => r.rawPath) };
   // 单领域：无需分类，全部归该领域、置信度 1
@@ -472,19 +484,28 @@ async function assignDomains(settings, raws, domains, onDelta) {
   const merged = { assignments: {}, unassigned: [] };
   for (let i = 0; i < (raws || []).length; i += BATCH) {
     const batch = raws.slice(i, i + BATCH);
-    // 每文件取「文件名 + 内容前 600 字」作为判据，避免全文注入导致 prompt 爆炸
+    // 判据按模式取：name=仅路径+文件名（省 token）；content=文件名 + 内容前 600 字（避免全文注入导致 prompt 爆炸）
     const fileLines = batch.map((r) => {
       const name = String(r.rawPath || '').split(/[\\/]/).pop();
+      if (judgeBy === 'name') return `- 路径：${r.rawPath}\n  文件名：${name}`;
       const excerpt = String(r.content || '').slice(0, 600).replace(/\s+/g, ' ').trim();
       return `- 路径：${r.rawPath}\n  文件名：${name}\n  摘录：${excerpt || '（空）'}`;
     }).join('\n');
+    const intro = judgeBy === 'name'
+      ? '你是知识库内容分类专家。下方给定若干领域（名称+描述），以及一批文件（仅路径、文件名，无内容）。'
+      : '你是知识库内容分类专家。下方给定若干领域（名称+描述），以及一批文件（路径、文件名、内容摘录）。';
+    const basisTip = judgeBy === 'name'
+      ? '- 仅依据文件名归类；文件名含明确主题词（如「系统迁移」「资金安全」「充电桩」）时置信度给高；文件名无法指向任何领域时放进 unassigned'
+      : '- **文件名是强信号**：文件名含明确主题词（如「系统迁移」「资金安全」「充电桩」）时，优先按文件名归类，置信度给高\n- 仅当文件名与摘录都完全无法指向任何领域时，才放进 unassigned';
+    const confTip = judgeBy === 'name'
+      ? '- confidence：对归类的把握，0~1 之间的小数；文件名能明确指向领域时置信度应≥0.8'
+      : '- confidence：对归类的把握，0~1 之间的小数；文件名或摘录能明确指向领域，置信度应≥0.8';
     const prompt = [
-      '你是知识库内容分类专家。下方给定若干领域（名称+描述），以及一批文件（路径、文件名、内容摘录）。',
+      intro,
       '请逐文件判定它属于哪个或哪几个领域。判定要点：',
       '- 每文件至少归入一个领域；若内容同时涉及多个领域，domains 列多个',
-      '- **文件名是强信号**：文件名含明确主题词（如「系统迁移」「资金安全」「充电桩」）时，优先按文件名归类，置信度给高',
-      '- 仅当文件名与摘录都完全无法指向任何领域时，才放进 unassigned',
-      '- confidence：对归类的把握，0~1 之间的小数；文件名或摘录能明确指向领域，置信度应≥0.8',
+      basisTip,
+      confTip,
       '',
       '=== 领域清单 ===',
       domainLines,

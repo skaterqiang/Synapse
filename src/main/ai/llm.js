@@ -167,6 +167,48 @@ function emitDataLine(trimmed, onDelta) {
   }
 }
 
+// Ollama 原生 /api/chat 流（NDJSON，逐行一个 JSON 对象，非 SSE）消费。
+// thinking 在 message.thinking 字段、正文在 message.content 字段，末行带 done_reason。
+// 与 SSE 版同样带停滞保护，回调签名一致 (delta, isReasoning)。
+async function consumeOllamaNdjson(resp, onDelta) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  const stallMs = 60 * 60 * 1000;
+  const handle = (line) => {
+    const t = String(line || '').trim();
+    if (!t) return;
+    try {
+      const j = JSON.parse(t);
+      const msg = j.message || {};
+      if (msg.thinking) onDelta(msg.thinking, true);
+      if (msg.content) onDelta(msg.content, false);
+    } catch (_) { /* 半行忽略 */ }
+  };
+  while (true) {
+    let readResult;
+    let stallTimer;
+    try {
+      readResult = await Promise.race([
+        reader.read(),
+        new Promise((_, rej) => { stallTimer = setTimeout(() => rej(new Error('流式响应停滞超时（60 分钟无数据，连接可能已被对端关闭）')), stallMs); }),
+      ]);
+    } catch (e) {
+      try { reader.cancel(); } catch (_) {}
+      throw e;
+    } finally {
+      clearTimeout(stallTimer);
+    }
+    const { done, value } = readResult;
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) handle(line);
+  }
+  handle(buffer);
+}
+
 // 流式对话：增量经 ai:chunk 推送给渲染进程，错误经 ai:error 上报
 // 本地部署（Ollama 等回环地址）无需 API Key，仅对远端接口强制要求；
 // 否则选用本地模型时会被“尚未配置 API Key”直接拦下
@@ -240,6 +282,56 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
   const baseUrl = (settings.apiBaseUrl || DEFAULTS.apiBaseUrl).replace(/\/$/, '');
   if (!settings.apiKey && requiresApiKey(settings)) throw new Error('尚未配置 API Key，请先在设置中填写。');
   if (signal && signal.aborted) throw abortErr();
+
+  // Ollama：OpenAI 兼容端点 /v1/chat/completions 在显存紧张时会把上下文窗口锁死在
+  // num_ctx=4096（忽略 max_tokens / options.num_ctx，实测 total_tokens 恒为 4096）。
+  // 思考型模型 thinking 动辄上千 token，在仅剩的几百输出预算内被挤爆 → 正文 0 字节、
+  // finish_reason=length → 空返回。原生 /api/chat 不受此锁，可用 options.num_ctx 放大
+  // 上下文，thinking 与正文都能完整产出。策略：先正常试 /v1（保留 mock/远程兼容），
+  // 仅当空返回（4096 锁的典型信号）时升级走原生端点，保留 thinking。
+  const isOllama = String((settings || {}).apiProvider || '') === 'ollama';
+
+  // 原生 /api/chat 兜底：/v1 空返回时升级。NDJSON 流，think:true 保留思考。
+  const tryNativeChat = async () => {
+    const origin = new URL(baseUrl).origin;
+    const numCtx = num(settings, 'ollamaNumCtx', 16384, 2048, 262144);
+    const body = {
+      model: normalizeModel(settings.model),
+      messages,
+      stream: true,
+      think: true,
+      options: { num_ctx: numCtx },
+    };
+    const s = settings || {};
+    if (s.temperature !== undefined && s.temperature !== null && String(s.temperature).trim() !== '') {
+      const t = Number(s.temperature); if (Number.isFinite(t)) body.options.temperature = Math.min(2, Math.max(0, t));
+    }
+    if (s.topP !== undefined && s.topP !== null && String(s.topP).trim() !== '') {
+      const t = Number(s.topP); if (Number.isFinite(t)) body.options.top_p = Math.min(1, Math.max(0, t));
+    }
+    const mt = Number(s.maxTokens);
+    if (Number.isFinite(mt) && mt > 0) body.options.num_predict = Math.round(mt);
+    const resp = await fetch(`${origin}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      dispatcher: llmDispatcher(settings),
+      ...(signal ? { signal } : {}),
+    });
+    if (!resp.ok) {
+      const detail = (await resp.text().catch(() => '')).slice(0, 300);
+      if (resp.status >= 400 && resp.status < 500) throw new Error(`接口错误 (${resp.status})：${detail}`);
+      throw new RetriableError(`接口错误 (${resp.status})：${detail}`);
+    }
+    let text = '';
+    await consumeOllamaNdjson(resp, (delta, isReasoning) => {
+      if (!isReasoning) text += delta;
+      if (onDelta) onDelta(delta, isReasoning);
+    });
+    if (!text) throw new RetriableError('模型返回为空');
+    return text;
+  };
+
   try {
     let resp;
     try {
@@ -275,9 +367,14 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
       if (!isReasoning) text += delta;
       if (onDelta) onDelta(delta, isReasoning);
     });
+    // Ollama 的 /v1 被锁 4096 时会空返回 → 升级原生 /api/chat（不消耗重试次数）
+    if (!text && isOllama) {
+      return await tryNativeChat();
+    }
     if (!text) throw new RetriableError('模型返回为空');
     return text;
   } catch (err) {
+    if (signal && signal.aborted) throw abortErr();
     // 仅可重试错误（网络/5xx/空返回）才重试，4xx 客户端错误直接抛出
     if (left > 0 && err instanceof RetriableError) {
       return chatOnce(settings, messages, left - 1, onDelta, signal); // 透传 signal，重试轮仍可被停止/超时中断

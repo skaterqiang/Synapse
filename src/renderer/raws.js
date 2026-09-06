@@ -152,17 +152,48 @@ function domainCardState(card, state, statusText) {
 async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSources = [] }) {
   const n = rawPaths.length || inlineSources.length || texts.length;
   $('domain-modal-title').textContent = '提取知识图谱';
-  $('domain-modal-sub').textContent = `来源：${label || '当前选择'}${n ? `（${n} 个）` : ''}。AI 正判定领域与本体体系…`;
+  // 显示当前使用的模型与服务商，便于用户确认判定所用的 AI 配置
+  const curModel = (state.settings && state.settings.model) || '';
+  const curProvider = (state.settings && state.settings.apiProvider) || '';
+  const modelTag = curModel ? `模型：${curModel}${curProvider ? `（${curProvider}）` : ''}。` : '';
+  $('domain-modal-sub').textContent = `来源：${label || '当前选择'}${n ? `（${n} 个）` : ''}。${modelTag}请选择领域判定依据后开始判定。`;
   $('domain-progress').innerHTML = '';
   $('domain-modal').hidden = false;
   const confirmBtn = $('btn-domain-confirm');
   confirmBtn.hidden = true;
+  // 判定方式选择行：展示并等待用户点「开始判定」；选定后隐藏并启动判定
+  const judgeBar = $('domain-judge-bar');
+  const judgeStartBtn = $('btn-domain-judge-start');
+  if (judgeBar) judgeBar.hidden = false;
 
   // 多领域分组清单：每元素对应一个待提交作业。同一文件可出现在多个组的 fileRefs（多归属）
   // { key, domainId, tpl, profileId, fileRefs:[{rawPath,confidence}], inlineKeys:[label], checked }
   let groups = [];
   let decided = false; // 是否已提交（避免重复提交）
   let cancelled = false; // 是否已点「取消」（取消后不再展示可确认的下拉/按钮）
+
+  // 等待用户选择判定方式并点「开始判定」。返回 judgeBy；点「取消」返回 null
+  const judgeBy = await new Promise((resolve) => {
+    if (!judgeStartBtn) return resolve('content'); // 无选择 UI（防御）→ 直接默认内容判定
+    const onStart = () => {
+      cleanup();
+      const sel = document.querySelector('input[name="domain-judge-by"]:checked');
+      resolve(sel && sel.value === 'name' ? 'name' : 'content');
+    };
+    const onCancel = () => { cleanup(); resolve(null); };
+    const cleanup = () => {
+      judgeStartBtn.removeEventListener('click', onStart);
+      const cancelBtn = $('btn-domain-close');
+      if (cancelBtn) cancelBtn.removeEventListener('click', onCancel);
+    };
+    judgeStartBtn.addEventListener('click', onStart);
+    const cancelBtn = $('btn-domain-close');
+    if (cancelBtn) cancelBtn.addEventListener('click', onCancel);
+  });
+  if (judgeBy === null) { $('domain-modal').hidden = true; return false; } // 用户在选择阶段取消 → 关闭弹窗
+  if (judgeBar) judgeBar.hidden = true;
+  const judgeByLabel = judgeBy === 'name' ? '仅文件名' : '文件名+文件内容';
+  $('domain-modal-sub').textContent = `来源：${label || '当前选择'}${n ? `（${n} 个）` : ''}。${modelTag}判定依据：${judgeByLabel}。AI 正判定领域与本体体系…`;
 
   // 判定思考过程流：当前活动步骤的思考容器（reasoning 增量逐字追加；正文增量也显示，属最终 JSON 判定）
   // 进行中的步骤自动展开并实时滚动到底；该步骤结束后自动折叠为「查看思考过程 ▸」。parent 为宿主卡片
@@ -420,11 +451,11 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
   };
 
   try {
-    // 卡片①：多领域识别
-    const c1 = domainCard('①', '识别来源包含的领域', 'running');
+    // 卡片①：多领域识别（标题标注本次判定依据）
+    const c1 = domainCard('①', `识别来源包含的领域（${judgeByLabel}）`, 'running');
     domainCardState(c1, 'running', '判定中');
     mkThink(c1);
-    const sug = await window.kb.tplSuggestDomains({ settings: state.settings, rawPaths, texts });
+    const sug = await window.kb.tplSuggestDomains({ settings: state.settings, rawPaths, texts, judgeBy });
     if (cancelled) return false;
     if (!sug.ok || !Array.isArray(sug.domains) || !sug.domains.length) {
       throw new Error(sug.error || '未能识别领域');
@@ -437,7 +468,7 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     const c2 = domainCard('②', '逐文件归类到领域', 'running');
     domainCardState(c2, 'running', '归类中');
     mkThink(c2);
-    const asn = await window.kb.tplAssignDomains({ settings: state.settings, rawPaths, domains: sug.domains, inlineSources });
+    const asn = await window.kb.tplAssignDomains({ settings: state.settings, rawPaths, domains: sug.domains, inlineSources, judgeBy });
     if (cancelled) return false;
     const assignments = (asn && asn.ok && asn.assignments) ? asn.assignments : {};
     const unassigned = (asn && asn.ok && Array.isArray(asn.unassigned)) ? asn.unassigned : [];
