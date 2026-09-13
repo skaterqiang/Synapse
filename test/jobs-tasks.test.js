@@ -121,16 +121,20 @@ const json = (obj) => ({ status: 200, headers: { 'Content-Type': 'text/event-str
 
   const g1 = jobs.submit({ type: 'graph', payload: { settings: gsettings, rawPaths: ['raw/充电桩扩容方案.md'], autoDomain: false, domainId: 'general', domainLabel: '通用', ontologyProfile: 'bfo-lite' } });
   const gj1 = jobs.list().find((j) => j.id === g1.id);
+  const stageOf = (key) => gj1.stages.find((s) => s.key === key);
   check('图谱作业标题带范围', gj1.title === '知识图谱抽取·充电桩扩容方案.md', gj1.title);
-  check('图谱阶段定义为 收集/抽取/存图', gj1.stages.map((s) => s.key).join(',') === 'collect,extract,save');
+  check('图谱阶段定义为 收集/抽取/护栏/推理/存图', gj1.stages.map((s) => s.key).join(',') === 'collect,extract,guard,reason,save', gj1.stages.map((s) => s.key).join(','));
   check('source.kind=原始文件 且 items 留档范围', gj1.source.kind === '原始文件' && gj1.source.items.join(',') === 'raw/充电桩扩容方案.md', JSON.stringify(gj1.source));
   check('source.domain 留档领域与类型约束', gj1.source.domain.id === 'general' && gj1.source.domain.label === '通用' && Array.isArray(gj1.source.domain.entity));
   await tick(2000);
   check('图谱作业跑成功', gj1.status === 'success', gj1.status + ' / ' + gj1.error);
-  check('结果带回节点/边计数与体系名', gj1.result.nodeCount === 2 && gj1.result.edgeCount === 1 && gj1.result.profileName, JSON.stringify(gj1.result));
+  // rawEdgeCount 是抽取出的原始边数（稳定）；edgeCount 含自动推理新增的对称边（相关 是 bfo-lite 的 SymmetricProperty）
+  check('结果带回节点/原始边计数与体系名', gj1.result.nodeCount === 2 && gj1.result.rawEdgeCount === 1 && gj1.result.profileName, JSON.stringify(gj1.result));
   check('节点确实入图', graph.getGraph().nodes.some((x) => x.name === '充电桩'));
-  check('抽取阶段摘要含节点数与体系', /抽取完成：2 节点 \/ 1 关系/.test(gj1.stages[1].detail), gj1.stages[1].detail);
-  check('存图阶段摘要说明已持久化', gj1.stages[2].status === 'success' && /已持久化/.test(gj1.stages[2].detail));
+  check('抽取阶段摘要含节点数与体系', /抽取完成：2 节点 \/ 1 关系/.test(stageOf('extract').detail), stageOf('extract').detail);
+  check('护栏阶段给出确定态摘要', stageOf('guard').status === 'success' && /护栏/.test(stageOf('guard').detail), stageOf('guard').detail);
+  check('推理阶段跑过并给出摘要', stageOf('reason').status === 'success' && /推理/.test(stageOf('reason').detail), stageOf('reason').detail);
+  check('存图阶段摘要说明已持久化', stageOf('save').status === 'success' && /已持久化/.test(stageOf('save').detail), stageOf('save').detail);
   check('作业 source 回写体系徽标', gj1.source.ontologyProfile === 'bfo-lite' && !!gj1.source.ontologyProfileName, JSON.stringify(gj1.source.ontologyProfile));
   check('子任务按来源建立并全部完成', gj1.tasks.length === 1 && gj1.tasks[0].status === 'done' && /【输出】/.test(gj1.tasks[0].output), gj1.tasks[0].output.slice(0, 60));
   check('livePreview 在终态前被清除', gj1.livePreview === undefined);
@@ -225,7 +229,7 @@ const json = (obj) => ({ status: 200, headers: { 'Content-Type': 'text/event-str
   section('jobs.retry / retryTask — 范围恢复回退链');
   check('重试不存在的作业', jobs.retry({ id: 'nope', settings }).error === '作业不存在');
   check('重试非失败作业被拒', jobs.retry({ id: gj1.id, settings }).error === '只能重试失败的作业');
-  check('单任务重跑：非图谱作业被拒', jobs.retryTask({ id: j4.id, taskNo: 1, settings }).error === '仅知识图谱作业支持单任务重跑');
+  check('单任务重跑：非图谱作业被拒', jobs.retryTask({ id: j4.id, taskNo: 1, settings }).error === '仅知识图谱/冲突修复作业支持单任务重跑');
   const hang3 = await startFakeLlm(() => ({ hang: true }));
   const busy = jobs.submit({ type: 'graph', payload: { settings: { ...settings, ...hang3.settings(), llmRequestTimeout: 600 }, rawPaths: ['raw/充电桩扩容方案.md'], autoDomain: false } });
   await tick(300);

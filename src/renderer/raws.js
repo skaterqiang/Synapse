@@ -249,6 +249,9 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     const extras = graphDomainExtras({ id: g.domainId, name: g.tpl ? g.tpl.name : '通用', tpl: g.tpl });
     extras.autoDomain = false;
     if (g.profileId) extras.ontologyProfile = g.profileId;
+    // §6.7：自动推理开关。仅当用户显式取消勾选时才下发 false（未勾选=默认走主进程 reasonEnabled 判定）
+    const rcb = document.getElementById('extract-auto-reason');
+    if (rcb && !rcb.checked) extras.autoReason = false;
     const payload = { settings: state.settings, ...extras };
     const checkedInline = (g.inlineKeys || []).filter((k) => !g.fileChecked || g.fileChecked['inline:' + k] !== false);
     const checkedRefs = (g.fileRefs || []).filter((f) => !g.fileChecked || g.fileChecked[f.rawPath] !== false);
@@ -412,6 +415,16 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
       confirm.appendChild(card);
     }
     if (box) { box.appendChild(confirm); box.scrollTop = box.scrollHeight; }
+    // §6.7：提取完成后自动推理开关（默认开）。推理关闭（设置里关掉或模块不可用）时整行置灰。
+    const reasonRow = document.createElement('label');
+    reasonRow.className = 'checkbox-row reason-entry domain-reason-row';
+    reasonRow.style.marginTop = '8px';
+    const rcb = document.createElement('input');
+    rcb.type = 'checkbox'; rcb.id = 'extract-auto-reason'; rcb.checked = reasonAvailable();
+    const rtxt = document.createElement('span');
+    rtxt.innerHTML = '提取完成后自动运行 OWL 2 RL 推理（推荐，约 1-2s）<i class="radio-hint">提取后自动做一次本地推理物化，把推理边一并写入图谱</i>';
+    reasonRow.append(rcb, rtxt);
+    confirm.appendChild(reasonRow);
     $('domain-modal-sub').textContent = `来源：${label || '当前选择'}${n ? `（${n} 个）` : ''}。勾选要提取的领域，点「确认提取」将为每个领域各提交一个作业。`;
     $('domain-progress-hint').textContent = '可下拉更改领域与体系；点「确认提取」开始，或「取消」放弃本次提取';
     confirmBtn.hidden = false;

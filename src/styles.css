@@ -146,6 +146,17 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   transform: translateY(0);
   box-shadow: var(--shadow-sm);
 }
+/* 禁用态必须 visibly 禁用：此前 .btn 无 :disabled 规则，被 disabled 的主按钮
+   看起来与可点时完全一样（绿色+hover 上浮），用户表现为「点击不生效」 */
+.btn:disabled,
+.btn:hover:disabled,
+.btn:active:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: var(--shadow-sm);
+}
+.icon-btn:disabled { opacity: .4; cursor: not-allowed; }
 .btn-primary {
   background: var(--primary);
   color: #fff;
@@ -2801,3 +2812,124 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .onto-tree-lbl-en{font-size:9px;fill:#8b949e;text-anchor:middle;font-family:inherit}
 .onto-tree-lbl-root{font-size:12.5px;fill:#fff;font-weight:700;text-anchor:middle;font-family:inherit}
 .onto-tree-lbl-desc{font-size:8.5px;fill:#6e7681;text-anchor:middle;font-family:inherit}
+
+/* ================= 推理（融合设计 §6）================= */
+/* §6.1/§6.4 图例与标签 */
+.lg-edge { display:inline-flex; align-items:center; gap:6px; margin:0 8px 4px 0; font-size:11px; color:var(--text-sub); }
+.lg-edge .lg-line { width:22px; height:2px; border-radius:1px; display:inline-block; }
+.lg-edge-inferred .lg-line { background:linear-gradient(90deg, rgba(139,92,246,.9) 50%, transparent 0); background-size:6px 2px; height:2px; }
+.lg-edge-raw .lg-line { background:rgba(138,145,159,.7); }
+.lg-edge .lg-dot { width:6px; height:6px; border-radius:50%; background:#8b5cf6; display:inline-block; }
+/* §6.2 边悬停 tooltip */
+.graph-tooltip { position:fixed; z-index:120; pointer-events:none; background:var(--panel,#fff); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow-lg,0 8px 24px rgba(0,0,0,.12)); padding:10px 12px; max-width:280px; font-size:12px; }
+.graph-tooltip .tt-head { font-weight:600; margin-bottom:6px; }
+.graph-tooltip .tt-sub { color:var(--text-sub); font-size:11px; margin-bottom:4px; }
+.graph-tooltip .tt-sec { margin-top:6px; padding-top:6px; border-top:1px dashed var(--border); }
+.graph-tooltip .tt-row { display:flex; gap:6px; align-items:center; margin:2px 0; }
+.graph-tooltip .tt-rel { font-family:monospace; background:rgba(139,92,246,.08); padding:1px 5px; border-radius:4px; font-size:11px; }
+.graph-tooltip .tt-inferred { color:#8b5cf6; font-weight:600; }
+.graph-tooltip .tt-foot { color:var(--text-sub); font-size:11px; margin-top:4px; }
+/* §6.5 影响面区块 */
+.kg-impact-list { display:flex; flex-direction:column; gap:2px; max-height:220px; overflow-y:auto; }
+.kg-impact-row { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:6px; font-size:12px; cursor:pointer; }
+.kg-impact-row:hover { background:rgba(0,0,0,.04); }
+.kg-impact-depth { flex:none; width:20px; height:20px; border-radius:50%; background:rgba(139,92,246,.12); color:#8b5cf6; font-size:10px; font-weight:600; display:flex; align-items:center; justify-content:center; }
+.kg-impact-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.kg-impact-via { flex:none; font-size:11px; color:var(--text-sub); }
+.kg-impact-inf { flex:none; color:#8b5cf6; font-size:11px; }
+.kg-impact-hint { padding:8px; color:var(--text-sub); font-size:12px; }
+/* §6.8/§6.6 推理事实标记 */
+.kg-fact-inferred { color:#8b5cf6; border-left:2px solid rgba(139,92,246,.4); padding-left:6px; }
+.kg-fact-inferred::before { content:"⚡"; margin-right:4px; }
+/* §6.6 推理 Tab */
+.kg-badge { display:inline-flex; align-items:center; justify-content:center; min-width:16px; height:16px; padding:0 4px; margin-left:4px; border-radius:8px; background:rgba(139,92,246,.15); color:#8b5cf6; font-size:10px; font-weight:600; line-height:1; }
+.kg-badge-warn { background:rgba(239,68,68,.15); color:#ef4444; }
+.kg-reason-block { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px; margin-bottom:12px; }
+.kg-reason-head { font-size:12px; font-weight:600; color:var(--text-sub); margin-bottom:8px; }
+.kg-reason-row { display:flex; gap:8px; font-size:12px; margin:3px 0; }
+.kg-reason-row > span:first-child { color:var(--text-sub); min-width:88px; flex:none; }
+.kg-reason-row > b { font-weight:600; }
+.kg-reason-warn { color:#d97706; }
+.kg-reason-stale { margin:8px 0; padding:8px 10px; background:rgba(217,119,6,.08); border-radius:6px; color:#d97706; font-size:12px; }
+.kg-reason-off { margin:8px 0; padding:8px 10px; background:rgba(107,114,128,.08); border-radius:6px; color:var(--text-sub); font-size:12px; }
+.kg-reason-acts { display:flex; gap:8px; align-items:center; margin-top:10px; }
+.kg-reason-vias { display:flex; flex-wrap:wrap; gap:4px; }
+/* 整体图谱·推理结果摘要条：全图推理结果 + 当前筛选命中数，持久展示（非 toast） */
+.graph-reason-bar { display:flex; align-items:center; gap:14px; padding:8px 12px; margin-bottom:8px; font-size:12px; flex-wrap:wrap; }
+.graph-reason-bar .kg-badge { margin-left:0; }
+.graph-reason-bar .kg-reason-conflict { color:#ef4444; font-weight:600; }
+.graph-reason-bar .kg-reason-ok { color:#059669; }
+.graph-reason-bar .icon-btn { margin-left:auto; }
+.kg-conflict { display:flex; flex-direction:column; gap:3px; padding:6px 8px; border-radius:6px; background:rgba(239,68,68,.05); margin:3px 0; font-size:12px; }
+.kg-conflict-head { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.kg-conflict-rule { flex:none; font-family:monospace; background:rgba(239,68,68,.12); color:#ef4444; padding:1px 5px; border-radius:4px; font-size:11px; }
+.kg-conflict-owner { color:var(--text-sub); font-size:11px; }
+.kg-conflict-zh { color:var(--text); line-height:1.5; }
+.kg-conflict-why { color:var(--text-sub); font-size:11px; line-height:1.5; }
+.kg-conflict em { margin-left:auto; font-style:normal; color:var(--text-sub); flex:none; }
+/* 冲突自动修复（方案2/3）：单条「修复」按钮靠右 + 预览弹窗动作行 */
+.kg-conflict-fix { margin-left:auto; flex:none; padding:1px 8px; font-size:11px; }
+.kg-conflict-acts { margin-top:6px; }
+.repair-act-row { flex-direction:row; align-items:flex-start; gap:8px; cursor:pointer; }
+.repair-act-row input[type="checkbox"] { flex:none; margin-top:3px; }
+.repair-act-row .kg-guard-rel { flex:1; font-family:inherit; font-size:12px; }
+.repair-act-row .kg-guard-why { padding-left:2px; }
+.repair-act-manual { opacity:.75; cursor:default; background:rgba(217,119,6,.06); }
+.kg-guard-tags { display:flex; flex-wrap:wrap; gap:4px; margin:6px 0; }
+.kg-guard-list { display:flex; flex-direction:column; gap:2px; max-height:200px; overflow-y:auto; }
+.kg-guard-item { display:flex; flex-direction:column; gap:2px; padding:6px 8px; border-radius:6px; background:rgba(0,0,0,.02); font-size:12px; }
+.kg-guard-rel { font-family:monospace; font-size:11px; }
+.kg-guard-rel b { color:#8b5cf6; }
+.kg-guard-why { color:var(--text-sub); }
+.kg-guard-fix { color:#059669; font-size:11px; }
+.kg-guard-task { color:var(--text-sub); font-size:11px; }
+/* v1.2.2 问题汇总表（越界边 + 不相交归一表 + 筛选） */
+.kg-vr-filters { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin:8px 0 6px; font-size:12px; }
+.kg-vr-filters label { display:inline-flex; align-items:center; gap:6px; color:var(--text-sub); }
+.kg-vr-filters select { padding:3px 6px; border:1px solid var(--border); border-radius:6px; background:var(--panel); font-size:12px; max-width:260px; }
+.kg-vr-wrap { max-height:340px; overflow:auto; border:1px solid var(--border); border-radius:8px; }
+.kg-vr-table { width:100%; border-collapse:collapse; font-size:12px; }
+.kg-vr-table th, .kg-vr-table td { padding:6px 8px; border-bottom:1px solid var(--border); text-align:left; vertical-align:top; }
+.kg-vr-table thead th { position:sticky; top:0; background:var(--panel); color:var(--text-sub); font-weight:600; font-size:11px; white-space:nowrap; z-index:1; }
+.kg-vr-table tbody tr:hover { background:rgba(0,0,0,.02); }
+.kg-vr-table td:first-child { color:var(--text-sub); width:34px; }
+.kg-vr-table .btn { padding:2px 10px; font-size:11px; white-space:nowrap; }
+.kg-vr-obj { font-family:monospace; font-size:11px; white-space:nowrap; }
+.kg-vr-sub { display:block; color:var(--text-sub); font-size:11px; margin-top:2px; }
+.mini-tag.kg-vr-violation { background:rgba(217,119,6,.12); color:#b45309; }
+.mini-tag.kg-vr-conflict { background:rgba(239,68,68,.12); color:#ef4444; }
+.kg-feat-list { display:flex; flex-direction:column; gap:4px; }
+.mini-tag.kg-feat-transitive { background:rgba(139,92,246,.12); color:#8b5cf6; }
+.mini-tag.kg-feat-symmetric { background:rgba(59,130,246,.12); color:#3b82f6; }
+.mini-tag.kg-feat-functional { background:rgba(16,185,129,.12); color:#10b981; }
+.mini-tag.kg-feat-inverseFunctional { background:rgba(245,158,11,.12); color:#f59e0b; }
+.mini-tag.kg-feat-asymmetric { background:rgba(239,68,68,.12); color:#ef4444; }
+/* §6.11 推理关闭置灰 */
+body.reason-off .reason-entry { opacity:.42; pointer-events:none; user-select:none; }
+body.reason-off .reason-entry::after { content:"（已在设置中关闭）"; font-size:10px; color:var(--text-sub); margin-left:4px; }
+button.reason-entry:disabled { opacity:.42; }
+/* §6.9 OWL 导入预览弹窗 */
+.owl-preview-modal { width:560px; max-height:82vh; display:flex; flex-direction:column; }
+.owl-preview-modal .modal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.owl-preview-modal .modal-body { flex:1; overflow-y:auto; min-height:0; }
+.owl-preview-modal .modal-foot { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; align-items:center; }
+.owl-pv-row { display:flex; gap:8px; font-size:12px; margin:4px 0; }
+.owl-pv-row > span:first-child { color:var(--text-sub); min-width:88px; flex:none; }
+.owl-pv-iri { font-size:11px; background:rgba(0,0,0,.05); padding:1px 5px; border-radius:4px; }
+.owl-pv-sec { font-size:12px; font-weight:600; color:var(--text-sub); margin:12px 0 6px; padding-top:8px; border-top:1px dashed var(--border); }
+.owl-pv-counts { display:flex; flex-wrap:wrap; gap:6px; }
+.owl-pv-tree { width:100%; height:180px; background:var(--bg-soft,#f8f9fa); border-radius:8px; border:1px solid var(--border); }
+.owl-prof-row { display:flex; gap:6px; align-items:center; font-size:12px; margin:3px 0; }
+.owl-prof-row em { font-style:normal; color:var(--text-sub); font-size:11px; }
+.owl-prof-ok { color:#059669; }
+.owl-prof-bad { color:#ef4444; }
+.owl-warn-list { display:flex; flex-direction:column; gap:4px; }
+.owl-warn-item { padding:6px 8px; background:rgba(217,119,6,.06); border-radius:6px; color:#d97706; font-size:12px; }
+/* §6.7 提取弹窗推理行 */
+.domain-reason-row { font-size:12px; }
+.domain-reason-row .radio-hint { margin-left:6px; }
+/* §6.10 作业推理摘要 */
+.job-reason-summary { cursor:pointer; user-select:none; }
+.job-reason-summary:hover { color:#8b5cf6; }
+.job-reason-detail { margin-top:6px; padding:8px 10px; background:rgba(139,92,246,.04); border-radius:6px; }
+.job-reason-line { font-size:12px; color:var(--text-sub); padding:2px 0; }

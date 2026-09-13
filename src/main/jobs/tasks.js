@@ -17,6 +17,8 @@ function makeTaskTracker(job, persist) {
     reset() { (job.tasks || []).forEach((t) => { t.status = 'pending'; t.output = ''; }); push(); },
     setRunning(idx) { if (job.tasks && job.tasks[idx]) { job.tasks[idx].status = 'running'; push(); } },
     setDone(idx) { if (job.tasks && job.tasks[idx]) { job.tasks[idx].status = 'done'; push(); } },
+    // 失败任务：与 done 区分开，前端据此显示 ✗ 并（图谱类作业）提供单任务重跑
+    setFailed(idx) { if (job.tasks && job.tasks[idx]) { job.tasks[idx].status = 'failed'; push(); } },
     setOutput(idx, out) { if (job.tasks && job.tasks[idx]) { job.tasks[idx].output = out; push(); } },
     // 按来源下标（_i）操作
     runAt(i) { this.setRunning(i); },

@@ -365,6 +365,8 @@ async function init() {
   if (state.notes.length) state.selectedNoteId = getFilteredNotes()[0]?.id || state.notes[0].id;
   renderAll();
   loadGraph();
+  // 推理能力状态（§6.11 / F10）：启动即拉一次，决定各推理入口是否置灰
+  refreshReasonAvailability();
   loadTemplates();
   loadRaws();
   window.kb.onJobsUpdate(handleJobsUpdate);

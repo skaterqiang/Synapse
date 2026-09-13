@@ -304,12 +304,28 @@ function submitJob(type, title, stageDefs, payload) {
 const GRAPH_STAGES = [
   { key: 'collect', name: '收集语料' },
   { key: 'extract', name: 'AI 本体抽取' },
+  { key: 'guard', name: '写入护栏' },
+  { key: 'reason', name: '本体推理' },
   { key: 'save', name: '合并存图' },
 ];
 const EXTRACT_NOTE_STAGES = [
   { key: 'extract', name: '解析来源' },
   { key: 'save', name: '写入笔记' },
 ];
+// 图谱冲突修复作业：规划（dry-run 预览已在渲染层完成，这里复核）→ 逐动作施加 → 重推理验证
+const GRAPH_REPAIR_STAGES = [
+  { key: 'plan', name: '复核修复规划' },
+  { key: 'apply', name: '施加修复动作' },
+  { key: 'verify', name: '重推理验证' },
+];
+
+// 护栏拦截原因 → 中文（与 reason/guard.js 的 checkEdge verdict.reason 对齐）
+const GUARD_REASON_TEXT = {
+  'unknown-predicate': '谓词越界',
+  'domain-violation': '定义域越界',
+  'range-violation': '值域越界',
+  'unknown-type': '类型越界',
+};
 
 const JOB_RUNNERS = {
   async 'extract-note'(job) {
@@ -495,6 +511,8 @@ const JOB_RUNNERS = {
       resolveDomain: job.payload.autoDomain === false ? undefined : (raws) => resolveAutoDomain(job, raws, 'collect'),
       readRaw: (rel) => filesMod.readRawText(settings, rel).catch(() => ''),
       taskFilter,
+      // §6.7「抽取后自动推理」复选框：默认勾选，仅当用户显式取消时传 false
+      autoReason: p.autoReason === false ? false : undefined,
     }, (key, detail) => {
       setStage(job, key, 'running', detail);
     }, (detail, preview) => {
@@ -527,8 +545,105 @@ const JOB_RUNNERS = {
     const failNote = res.failedTasks && res.failedTasks.length
       ? `，⚠ ${res.failedTasks.length} 个来源失败（可在作业详情中单独重跑）`
       : '';
-    setStage(job, 'extract', 'success', `抽取完成：${res.nodeCount} 节点 / ${res.edgeCount} 关系（体系「${res.profileName}」）${failNote}`);
-    setStage(job, 'save', 'success', '图谱已持久化到 SQLite');
+    setStage(job, 'extract', 'success', `抽取完成：${res.nodeCount} 节点 / ${res.rawEdgeCount != null ? res.rawEdgeCount : res.edgeCount} 关系（体系「${res.profileName}」）${failNote}`);
+    // 护栏阶段收尾（§6.10 作业摘要行）：无拦截时也要给出「已校验」的确定态，
+    // 否则用户看不出这一步是跑过了还是被跳过了
+    if (res.guard && res.guard.total) {
+      const why = Object.entries(res.guard.byReason || {}).map(([k, v]) => `${GUARD_REASON_TEXT[k] || k} ${v}`).join('、');
+      setStage(job, 'guard', 'success', `护栏拦截 ${res.guard.total} 条越界连线（${why}），已降级为回退谓词`);
+    } else {
+      setStage(job, 'guard', 'success', '护栏校验通过：无越界连线');
+    }
+    // 推理阶段收尾
+    const rr = res.reason;
+    if (!rr) {
+      setStage(job, 'reason', 'success', '未启用自动推理（推理层不可用或用户已关闭）');
+    } else if (rr.skipped) {
+      setStage(job, 'reason', 'success', `推理已跳过：${rr.error || rr.skipReason || '未知原因'}`);
+    } else {
+      const con = (rr.inconsistencies || []).length;
+      setStage(job, 'reason', 'success', `推理完成：新增 ${rr.inferredEdges} 条推理边（${(rr.stats && rr.stats.rounds) || 0} 轮 / ${(rr.stats && rr.stats.elapsedMs) || 0} ms）${con ? `，⚠ 检出 ${con} 处语义冲突` : ''}`);
+    }
+    setStage(job, 'save', 'success', `图谱已持久化到 SQLite（共 ${res.edgeCount} 条边${rr && !rr.skipped && rr.inferredEdges ? `，其中 ${rr.inferredEdges} 条为推理边` : ''}）`);
+    return res;
+  },
+  // 图谱冲突修复作业：每个修复动作一条子任务，逐条施加、逐条落库、逐条回报状态。
+  // 动作清单来自渲染层「修复预览」的勾选结果（planRepairs 是 dry-run，确认后才提交作业）。
+  async 'graph-repair'(job) {
+    const p = job.payload || {};
+    // payload 不入库：重启/重试后从持久化的 source.actions 恢复同一批动作，
+    // 恢复不了就明确失败，绝不静默重新规划（用户勾选的子集会被悄悄换成全量）
+    const actions = (Array.isArray(p.actions) && p.actions.length)
+      ? p.actions
+      : (job.source && Array.isArray(job.source.actions) ? job.source.actions : null);
+    if (!actions || !actions.length) {
+      throw new Error('修复动作清单丢失（应用重启所致），请在「知识图谱 → 推理」页重新规划修复');
+    }
+    const tracker = makeTaskTracker(job, () => { persistJobs(); emitJobs(); });
+    // 单任务重跑：payload 携带 _retryTaskNo 时只重跑该动作，其余任务保留原状态与输出
+    const taskFilter = typeof p._retryTaskNo === 'number' && p._retryTaskNo >= 1 ? p._retryTaskNo : undefined;
+    const runIdxs = taskFilter === undefined
+      ? actions.map((_, i) => i)
+      : [taskFilter - 1].filter((i) => i >= 0 && i < actions.length);
+    if (taskFilter === undefined) {
+      tracker.init(actions.map((a) => `${a.actionZh || a.kind || '修复动作'}`));
+    } else {
+      if (!runIdxs.length) throw new Error('任务编号超出动作清单范围，请重新规划修复');
+      const t = (job.tasks || [])[runIdxs[0]];
+      if (t) { t.status = 'pending'; t.output = (t.output || '') + '\n[重跑] 等待重新执行…'; persistJobs(); emitJobs(); }
+    }
+    const cancelCtrl = jobCancel.get(job.id);
+    const signal = cancelCtrl ? cancelCtrl.signal : null;
+    // 复核阶段：按动作类型汇总，让用户在施加前看清这批动作会做什么
+    const byKind = {};
+    for (const i of runIdxs) { const k = actions[i].kind; byKind[k] = (byKind[k] || 0) + 1; }
+    const KIND_ZH = { 'change-rel': '降级谓词', 'delete-edge': '删除边', 'delete-edges': '删除边', 'retype-node': '改节点类型' };
+    const kindNote = Object.entries(byKind).map(([k, v]) => `${KIND_ZH[k] || k} ${v}`).join('、');
+    setStage(job, 'plan', 'success', taskFilter === undefined
+      ? `已复核 ${actions.length} 个修复动作（${kindNote}）；撤销快照将在施加前保存`
+      : `单任务重跑：仅重跑动作 ${taskFilter}（${kindNote}）；其余任务产物保留`);
+    setStage(job, 'apply', 'running', `施加修复动作（0/${runIdxs.length}）…`);
+    let res;
+    try {
+      res = await graph.applyRepairsStepwise(runIdxs.map((i) => actions[i]), {
+        signal,
+        // 单任务重跑不覆盖撤销快照：撤销点仍指向整批修复前的原图
+        snapshot: taskFilter === undefined,
+        // 回调下标是本次执行批次的序号，需映射回作业任务清单里的原始下标
+        onTask: (k, status, output) => {
+          const i = runIdxs[k];
+          if (status === 'running') { tracker.setRunning(i); return; }
+          if (output !== undefined) tracker.setOutput(i, output);
+          // 跳过（目标边/节点已不存在）按 extract-note 的既有约定记为 done + 输出说明，
+          // 只有真正抛错的动作为 failed（前端 ✗ + 可单条重跑）
+          if (status === 'failed') tracker.setFailed(i); else tracker.setDone(i);
+        },
+        onProgress: (done, total) => setStage(job, 'apply', 'running', `施加修复动作（${done}/${total}）…`),
+      });
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        // 用户停止：已施加的动作每步都已落库，如实告知并给出撤销入口；后续阶段不再执行
+        const pt = err.partial || {};
+        setStage(job, 'apply', 'failed', `已停止：${pt.applied || 0} 个动作已应用并落库（可在「推理」页「撤销上次修复」整体回退）`);
+        setStage(job, 'verify', 'failed', '已停止，未重推理验证');
+      }
+      throw err;
+    }
+    const failNote = (res.failedTasks || []).length ? `，⚠ ${res.failedTasks.length} 个动作失败` : '';
+    const skipNote = (res.skipped || []).length ? `，${res.skipped.length} 个跳过（目标已不存在）` : '';
+    setStage(job, 'apply', 'success', `已应用 ${res.applied}/${runIdxs.length} 个动作${skipNote}${failNote}；图谱现为 ${res.nodes} 节点 / ${res.edges} 边`);
+    const rr = res.rerun;
+    if (!rr) {
+      setStage(job, 'verify', 'success', '未重推理验证');
+    } else if (rr.skipped) {
+      setStage(job, 'verify', 'success', `重推理已跳过：${rr.error || '未知原因'}（剩余冲突数未验证）`);
+    } else {
+      setStage(job, 'verify', 'success', `重推理完成：剩余冲突 ${rr.inconsistencies != null ? rr.inconsistencies : '?'} 处，推理边 ${rr.inferredEdges || 0} 条`);
+    }
+    // 施加结果回写作业卡片（source 持久化），历史里能看到这批动作实际打了多少
+    job.source = { ...(job.source || {}), applied: res.applied, skippedCount: (res.skipped || []).length };
+    persistJobs();
+    emitJobs();
     return res;
   },
 };
@@ -613,10 +728,19 @@ async function resolveAutoDomain(job, raws, stageKey) {
           entity: (tpl.entityTypes || []).map((x) => x.name).filter(Boolean),
           concept: (tpl.conceptTypes || []).map((x) => x.name).filter(Boolean),
         };
-    // 第二步：体系不盲从模版绑定，而是从已有本体定义中按来源内容选最合适的（带相似度与理由）
-    setStage(job, stageKey, 'running', '正在从本体定义中选择最贴合的体系…');
-    const prof = await templates.suggestOntologyProfile(p.settings, raws);
-    const tplProfile = prof.id;
+    // 第二步：体系解析（融合设计 §12.1.1 五级链）——模版绑定存在时**沿用绑定、不调模型**，
+    // 与渲染层入口 raws.js「模版绑定优先，否则按该领域子集内容匹配」保持两入口一致；
+    // 仅当绑定为空时才从已有本体定义中按来源内容动态选择（带相似度与理由）。
+    let tplProfile = tpl.ontologyProfile || '';
+    let prof = null;
+    if (tplProfile) {
+      setStage(job, stageKey, 'running', `体系沿用领域模版「${tpl.name}」的绑定「${tplProfile}」（不再调用模型选择）`);
+    } else {
+      setStage(job, stageKey, 'running', '模版未绑定体系，正在从本体定义中选择最贴合的体系…');
+      prof = await templates.suggestOntologyProfile(p.settings, raws);
+      tplProfile = prof.id;
+      setStage(job, stageKey, 'running', `体系选「${prof.name}」（相似度 ${prof.similarity}%）：${prof.reason}`);
+    }
     writeBack(tpl.id, tpl.name, typeHints, tplProfile);
     // 同步写回 payload：重试（retry 用 {...base} 重排）直接携带已归纳的领域与类型约束，
     // 不再重复走 suggestTemplateName 的 LLM 归纳（避免重试又卡在「寻找领域模版」等本地慢模型响应）
@@ -625,8 +749,8 @@ async function resolveAutoDomain(job, raws, stageKey) {
     p.domainLabel = tpl.name;
     if (tplProfile) p.ontologyProfile = tplProfile;
     persistJobs();
-    setStage(job, stageKey, 'running', `${exist ? '复用' : '已新建'}领域「${tpl.name}」（相似度 ${similarity}%）；体系选「${prof.name}」（相似度 ${prof.similarity}%）：${prof.reason}，本次产物将挂到该领域下`);
-    return { domainId: tpl.id, domainLabel: tpl.name, typeHints, ontologyProfile: tplProfile || undefined, profileReason: prof.reason, profileSimilarity: prof.similarity, domainSimilarity: similarity, domainReason: pickReason };
+    setStage(job, stageKey, 'running', `${exist ? '复用' : '已新建'}领域「${tpl.name}」（相似度 ${similarity}%）；体系「${tplProfile}」${prof ? `（相似度 ${prof.similarity}%）：${prof.reason}` : '（模版绑定）'}，本次产物将挂到该领域下`);
+    return { domainId: tpl.id, domainLabel: tpl.name, typeHints, ontologyProfile: tplProfile || undefined, profileReason: prof ? prof.reason : '', profileSimilarity: prof ? prof.similarity : 0, domainSimilarity: similarity, domainReason: pickReason };
   } catch (err) {
     setStage(job, stageKey, 'running', `自动建域未完成（${err.message}），本次按通用模版处理`);
     return null;
@@ -678,6 +802,18 @@ function submit({ type, payload }) {
       concept: hints.concept || [],
     };
     job.source = source;
+    persistJobs();
+    return { ok: true, id: job.id };
+  }
+  if (type === 'graph-repair') {
+    // 修复作业：动作清单来自渲染层「修复预览」勾选结果（planRepairs dry-run 产物）
+    const actions = (Array.isArray(payload && payload.actions) ? payload.actions : []).filter((a) => a && a.kind && a.kind !== 'manual');
+    if (!actions.length) return { ok: false, error: '没有可自动应用的修复动作' };
+    const conflictN = Number(payload && payload.conflictCount) || 0;
+    const title = conflictN ? `图谱冲突修复·${conflictN} 处冲突 ${actions.length} 个动作` : `图谱冲突修复·${actions.length} 个动作`;
+    const job = submitJob('graph-repair', title.slice(0, 60), GRAPH_REPAIR_STAGES, payload);
+    // 动作清单随 source 持久化（payload 不入库）：重启后重试仍能恢复同一批动作
+    job.source = { kind: '冲突修复', label: `${actions.length} 个修复动作`, items: actions.map((a) => a.actionZh || a.kind), actions };
     persistJobs();
     return { ok: true, id: job.id };
   }
@@ -733,6 +869,14 @@ function retry({ id, settings }) {
     if (baseRaw.length) gpayload.rawPaths = baseRaw;
     return { ok: true, id: requeueJob(src, GRAPH_STAGES, gpayload).id };
   }
+  if (src.type === 'graph-repair') {
+    // 动作清单恢复链：payload.actions → source.actions（持久化列）
+    const acts = Array.isArray(base.actions) && base.actions.length
+      ? base.actions
+      : (src.source && Array.isArray(src.source.actions) ? src.source.actions : []);
+    if (!acts.length) return { ok: false, error: '修复动作清单丢失（应用重启所致），请在「知识图谱 → 推理」页重新规划修复' };
+    return { ok: true, id: requeueJob(src, GRAPH_REPAIR_STAGES, { ...base, settings, actions: acts }).id };
+  }
   return { ok: false, error: '未知作业类型：' + src.type };
 }
 
@@ -741,12 +885,34 @@ function retry({ id, settings }) {
 function retryTask({ id, taskNo, settings }) {
   const src = jobs.find((j) => j.id === id);
   if (!src) return { ok: false, error: '作业不存在' };
-  if (src.type !== 'graph') return { ok: false, error: '仅知识图谱作业支持单任务重跑' };
+  if (src.type !== 'graph' && src.type !== 'graph-repair') return { ok: false, error: '仅知识图谱/冲突修复作业支持单任务重跑' };
   if (src.status === 'running' || src.status === 'queued') return { ok: false, error: '作业进行中，无法重跑单个任务' };
   if (!Array.isArray(src.tasks) || !src.tasks.length) return { ok: false, error: '该作业没有任务列表' };
   const task = src.tasks.find((t) => t.no === taskNo);
   if (!task) return { ok: false, error: '任务不存在' };
   if (task.status !== 'failed') return { ok: false, error: '只能重跑失败的任务' };
+  // 修复作业：动作清单恢复链 payload.actions → source.actions，仅重跑目标动作（不覆盖撤销快照）
+  if (src.type === 'graph-repair') {
+    const base = src.payload || {};
+    const acts = Array.isArray(base.actions) && base.actions.length
+      ? base.actions
+      : (src.source && Array.isArray(src.source.actions) ? src.source.actions : []);
+    if (!acts.length) return { ok: false, error: '修复动作清单丢失（应用重启所致），请在「知识图谱 → 推理」页重新规划修复' };
+    const rpayload = { ...base, settings, actions: acts, _retryTaskNo: taskNo };
+    src.status = 'queued';
+    src.startedAt = 0;
+    src.finishedAt = 0;
+    src.error = '';
+    task.status = 'pending';
+    task.output = (task.output || '') + '\n[重跑] 等待重新执行…';
+    src.stages = GRAPH_REPAIR_STAGES.map((s) => ({ key: s.key, name: s.name, status: 'pending', detail: '' }));
+    src.payload = rpayload;
+    jobQueue.push(src.id);
+    persistJobs();
+    emitJobs();
+    pumpJobQueue();
+    return { ok: true, id: src.id };
+  }
   // 恢复提取范围（与 retry 相同回退链）
   const base = src.payload || {};
   const baseRaw = Array.isArray(base.rawPaths) ? base.rawPaths

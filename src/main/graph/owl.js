@@ -36,15 +36,15 @@ function parseTurtle(text) {
   const constraints = [];
   const prefixes = {};
 
-  // 收集 @prefix
-  for (const m of text.matchAll(/@prefix\s+([a-zA-Z0-9_-]+):\s*<([^>]+)>/g)) {
+  // 收集 @prefix（含默认前缀 `@prefix : <...>` —— Protégé 默认导出即用此写法）
+  for (const m of text.matchAll(/@prefix\s+([a-zA-Z0-9_-]*):\s*<([^>]+)>/g)) {
     prefixes[m[1]] = m[2];
   }
 
   function resolveUri(token) {
     token = token.trim().replace(/^<|>$/g, '');
     if (token.includes('://')) return token; // full URI
-    const m = token.match(/^([a-zA-Z0-9_-]+):(.+)$/);
+    const m = token.match(/^([a-zA-Z0-9_-]*):(.+)$/); // 空前缀名 = 默认前缀 `:local`
     if (m && prefixes[m[1]]) return prefixes[m[1]] + m[2];
     return token;
   }
@@ -55,8 +55,8 @@ function parseTurtle(text) {
     const s = stmt.trim();
     if (!s || s.startsWith('@prefix') || s.startsWith('@base')) continue;
 
-    // 提取主语（第一个 token）
-    const subjMatch = s.match(/^(<[^>]+>|[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+)/);
+    // 提取主语（第一个 token，支持默认前缀 `:Thing`）
+    const subjMatch = s.match(/^(<[^>]+>|[a-zA-Z0-9_-]*:[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+)/);
     if (!subjMatch) continue;
     const subj = resolveUri(subjMatch[1]);
     const subjKey = localName(subj);
@@ -73,7 +73,7 @@ function parseTurtle(text) {
       const cmt = s.match(/rdfs:comment\s+"([^"]+)"/);
       if (cmt) c.desc = cmt[1];
       // subClassOf
-      const sub = s.match(/rdfs:subClassOf\s+(<[^>]+>|[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+)/);
+      const sub = s.match(/rdfs:subClassOf\s+(<[^>]+>|[a-zA-Z0-9_-]*:[a-zA-Z0-9_-]+)/);
       if (sub) c.parent = localName(resolveUri(sub[1]));
       // deprecated
       if (/owl:deprecated\s+true/.test(s)) classes.delete(subjKey);
@@ -87,22 +87,23 @@ function parseTurtle(text) {
       if (lbl) p.label = lbl[1];
       const cmt = s.match(/rdfs:comment\s+"([^"]+)"/);
       if (cmt) p.desc = cmt[1];
-      const dom = s.match(/rdfs:domain\s+(<[^>]+>|[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+)/);
+      const dom = s.match(/rdfs:domain\s+(<[^>]+>|[a-zA-Z0-9_-]*:[a-zA-Z0-9_-]+)/);
       if (dom) p.domain = localName(resolveUri(dom[1]));
-      const rng = s.match(/rdfs:range\s+(<[^>]+>|[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+)/);
+      const rng = s.match(/rdfs:range\s+(<[^>]+>|[a-zA-Z0-9_-]*:[a-zA-Z0-9_-]+)/);
       if (rng) p.range = localName(resolveUri(rng[1]));
-      if (/a\s+owl:TransitiveProperty/.test(s)) p.features.push('transitive');
-      if (/a\s+owl:SymmetricProperty/.test(s)) p.features.push('symmetric');
-      if (/a\s+owl:FunctionalProperty/.test(s)) p.features.push('functional');
-      if (/a\s+owl:InverseFunctionalProperty/.test(s)) p.features.push('inverseFunctional');
+      // 属性特征：既认 `a owl:XxxProperty`，也认逗号并列写法 `, owl:XxxProperty`
+      if (/(?:a|,)\s*owl:TransitiveProperty/.test(s)) p.features.push('transitive');
+      if (/(?:a|,)\s*owl:SymmetricProperty/.test(s)) p.features.push('symmetric');
+      if (/(?:a|,)\s*owl:FunctionalProperty/.test(s)) p.features.push('functional');
+      if (/(?:a|,)\s*owl:InverseFunctionalProperty/.test(s)) p.features.push('inverseFunctional');
     }
 
     // owl:Restriction → constraints（仅记录文本说明）
     if (/a\s+owl:Restriction/.test(s)) {
-      const onProp = s.match(/owl:onProperty\s+(<[^>]+>|[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+)/);
+      const onProp = s.match(/owl:onProperty\s+(<[^>]+>|[a-zA-Z0-9_-]*:[a-zA-Z0-9_-]+)/);
       const card = s.match(/owl:(?:minC|c)?ardinality\s+"?(\d+)"?/);
-      const hasVal = s.match(/owl:hasValue\s+(<[^>]+>|[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+|"[^"]+")/);
-      const some = s.match(/owl:someValuesFrom\s+(<[^>]+>|[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+)/);
+      const hasVal = s.match(/owl:hasValue\s+(<[^>]+>|[a-zA-Z0-9_-]*:[a-zA-Z0-9_-]+|"[^"]+")/);
+      const some = s.match(/owl:someValuesFrom\s+(<[^>]+>|[a-zA-Z0-9_-]*:[a-zA-Z0-9_-]+)/);
       if (onProp) {
         const propKey = localName(resolveUri(onProp[1]));
         let desc = `${propKey} 约束`;

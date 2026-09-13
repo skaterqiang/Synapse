@@ -191,6 +191,22 @@ contextBridge.exposeInMainWorld('kb', {
   graphAsk: (payload) => ipcRenderer.invoke('graph:ask', payload),
   graphImportOwl: (body) => ipcRenderer.invoke('graph:importOwl', body),
   graphRemoveOwlProfile: (payload) => ipcRenderer.invoke('graph:removeOwlProfile', payload),
+  // 推理层（设计文档 §4–§6）
+  graphReasonStatus: () => ipcRenderer.invoke('graph:reasonStatus'),
+  graphReasonState: (profileId) => ipcRenderer.invoke('graph:reasonState', profileId),
+  graphRunInference: (opts) => ipcRenderer.invoke('graph:runInference', opts),
+  graphValidate: (profileId, opts) => ipcRenderer.invoke('graph:validate', profileId, opts),
+  graphClearInferred: () => ipcRenderer.invoke('graph:clearInferred'),
+  // 冲突自动修复（方案2/3）：规划（dry-run）/ 应用 / 撤销
+  graphPlanRepairs: (opts) => ipcRenderer.invoke('graph:planRepairs', opts),
+  graphPlanRepairsForIssues: (issues) => ipcRenderer.invoke('graph:planRepairsForIssues', issues),
+  graphApplyRepairs: (actions, opts) => ipcRenderer.invoke('graph:applyRepairs', actions, opts),
+  graphUndoRepair: (opts) => ipcRenderer.invoke('graph:undoRepair', opts),
+  graphDeleteEdge: (edgeIdx) => ipcRenderer.invoke('graph:deleteEdge', edgeIdx),
+  graphDeleteNode: (nodeId) => ipcRenderer.invoke('graph:deleteNode', nodeId),
+  graphImpactClosure: (nodeId, opts) => ipcRenderer.invoke('graph:impactClosure', { nodeId, opts }),
+  graphPredicateFeatures: (profileId) => ipcRenderer.invoke('graph:predicateFeatures', profileId),
+  graphPreviewOwl: (body) => ipcRenderer.invoke('graph:previewOwl', body),
   onKgFacts: (callback) => {
     const handler = (_e, data) => callback(data);
     ipcRenderer.on('kg:facts', handler);

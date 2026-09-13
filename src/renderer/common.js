@@ -21,6 +21,8 @@ const state = {
   aiSources: { notes: false, graph: false, raws: false }, // AI 问答数据源
   aiGraphProfile: 'all', // 知识图谱源的体系范围：'all'=全部体系，或具体体系 id（多体系共存时按体系隔离召回）
   kg: { tab: 'overview', onto: null, ontoTab: 'classes', entitySel: null, focus: null }, // 知识图谱模块子视图状态；focus = 邻居视图中心节点
+  reasonAvailable: true,              // 推理能力是否可用（模块加载成功且开关未关）；§6.11 置灰判据
+  reasonStatus: null,                 // graph:reasonStatus 的原始返回（available/enabled/reason/timeoutSec/coverage）
   templates: [],                      // 领域模版列表
   raws: [],                           // raw/ 原始来源列表
   folderCollapsed: {},                // 目录树折叠状态
@@ -1802,6 +1804,12 @@ function showSettingsView() {
     $('set-minerumode-mineru').checked = mineruMode === 'mineru';
     // 技能解析开关：未显式保存过的旧数据按默认开启（与主进程 skillParseReady 口径一致）
     $('set-skillparse').checked = s.skillParse !== false;
+    // 推理总开关（§6.11）：同样「未显式关闭即开启」，与主进程 reasonEnabled 口径一致
+    const reasonOn = s.reasonEnabled !== false;
+    $('set-reason-enabled').checked = reasonOn;
+    // 修复 LLM 仲裁（冲突自动处理方案3）：默认关，勾选才落 true（与 reasonEnabled 的反向口径）
+    $('set-repair-llm').checked = !!s.graphRepairLlm;
+    fillReasonStatusTip(reasonOn);
     applyMineruModeUI();
     renderMineruModelOptions();
     $('set-editormode').value = EDITOR_MODES.includes(s.defaultEditorMode) ? s.defaultEditorMode : 'preview';
@@ -2213,6 +2221,15 @@ function saveSettingsFields() {
   if (!mineruCmd) delete s.mineruConvertCmd; else s.mineruConvertCmd = mineruCmd;
   // 技能解析开关：勾选即默认态，删除键（主进程按「未显式关闭」处理），仅取消勾选时落 false
   if ($('set-skillparse').checked) delete s.skillParse; else s.skillParse = false;
+  // 推理总开关（§6.11）：同上口径，勾选即删除键回退默认开启
+  const reasonOn = $('set-reason-enabled').checked;
+  if (reasonOn) delete s.reasonEnabled; else s.reasonEnabled = false;
+  // 修复 LLM 仲裁（方案3）：默认关 → 勾选落 true，取消勾选删键（主进程按 !!settings.graphRepairLlm 读）
+  if ($('set-repair-llm').checked) s.graphRepairLlm = true; else delete s.graphRepairLlm;
+  fillReasonStatusTip(reasonOn);
+  // 开关变化要立刻反映到知识图谱各页的置灰态（F10）；以主进程 reasonStatus 为准
+  // （它同时反映「模块是否可用」与「开关是否打开」，比前端乐观值可靠）
+  refreshReasonAvailability();
   const mode = $('set-editormode').value;
   if (EDITOR_MODES.includes(mode)) {
     s.defaultEditorMode = mode;
@@ -2242,6 +2259,63 @@ function markSettingsSaved() {
   el.textContent = '✓ 已自动保存';
   clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => { el.textContent = ''; }, 2000);
+}
+
+// ---------- 推理可用性（融合设计 §6.11 / F10）----------
+// 「置灰」的唯一判据是 state.reasonAvailable，由 refreshReasonAvailability() 从主进程
+// graph:reasonStatus 拉取（available=模块是否加载成功，enabled=用户开关）。
+// 各推理入口只读这个状态，不各自去问主进程——避免多处口径漂移。
+function reasonAvailable() {
+  return state.reasonAvailable !== false;
+}
+
+// 拉取推理能力状态：桥接缺失/异常时按「可用」处理（静默降级，别把图谱页搞瘫）
+async function refreshReasonAvailability() {
+  let st = null;
+  try {
+    if (typeof window.kb.graphReasonStatus === 'function') st = await window.kb.graphReasonStatus();
+  } catch (_) { st = null; }
+  if (!st || st.ok === false) { state.reasonAvailable = true; state.reasonStatus = null; return state.reasonAvailable; }
+  state.reasonStatus = st;
+  state.reasonAvailable = st.available !== false && st.enabled !== false;
+  applyReasonAvailability(state.reasonAvailable);
+  return state.reasonAvailable;
+}
+
+// 把可用性反映到 DOM：给 body 打 class，CSS 统一置灰所有 .reason-entry
+function applyReasonAvailability(on) {
+  state.reasonAvailable = on !== false;
+  document.body.classList.toggle('reason-off', !state.reasonAvailable);
+  // 「仅推理」筛选项在推理关闭时没有意义（永远筛不出边）→ 直接禁用该 option，
+  // 而不是置灰整个筛选器（「全部 / 仅原始」仍然可用）。
+  const ek = $('kg-g-edgekind');
+  if (ek) {
+    const opt = ek.querySelector('option[value="inferred"]');
+    if (opt) {
+      opt.disabled = !state.reasonAvailable;
+      opt.textContent = state.reasonAvailable ? '仅推理' : '仅推理（已关闭）';
+      // 当前正选中「仅推理」却被关掉 → 退回「全部」，避免画布一片空白让人以为图没了
+      if (!state.reasonAvailable && ek.value === 'inferred') {
+        ek.value = 'all';
+        ek.dispatchEvent(new Event('change'));
+      }
+    }
+  }
+  fillReasonStatusTip(state.reasonAvailable);
+}
+
+// 设置页那行状态提示：区分「用户关掉了」与「模块没装上」两种不可用原因
+function fillReasonStatusTip(on) {
+  const el = $('set-reason-status');
+  if (!el) return;
+  const st = state.reasonStatus || null;
+  if (st && st.available === false) {
+    el.textContent = `⚠ 推理模块不可用：${st.reason || '未知原因'}（开关不影响其余图谱功能）`;
+    return;
+  }
+  el.textContent = on
+    ? `✓ 推理已启用 · 超时 ${st && st.timeoutSec ? st.timeoutSec : ($('set-reason-timeout').value || 30)} 秒`
+    : '推理已在设置中关闭：提取时不自动推理，影响面/推理 Tab/问答影响面 stage 均置灰';
 }
 
 // 生成图谱前的「已生成过则确认重新生成」守卫

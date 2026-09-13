@@ -706,6 +706,105 @@ function registerIpc(getWindow) {
   });
   // 二级范围：列出有抽取节点的具体知识图谱分组（体系→图谱），供问答范围二级选择
   ipcMain.handle('graph:scopes', () => graph.listGraphScopes());
+  // ---------- 推理层（设计文档 §4–§6） ----------
+  // 推理能力状态：前端据此置灰所有推理入口（§6.11）
+  ipcMain.handle('graph:reasonStatus', () => {
+    try { return { ok: true, ...graph.reasonStatus() }; } catch (err) { return { ok: false, error: err.message }; }
+  });
+  // 「推理」Tab 一次性数据：上次运行 / 冲突 / 护栏日志 / 谓词特性（§6.6）
+  ipcMain.handle('graph:reasonState', (_e, profileId) => {
+    try { return { ok: true, ...graph.getReasonState(profileId) }; } catch (err) { return { ok: false, error: err.message }; }
+  });
+  // 手动全图物化推理（§6.6「立即推理」）
+  ipcMain.handle('graph:runInference', async (_e, opts) => {
+    try { return await graph.runInference(null, opts || {}); } catch (err) { return { ok: false, error: err.message }; }
+  });
+  // 全图校验（融合设计 §12.2.3 通道 C）：只读体检，不改图
+  ipcMain.handle('graph:validate', (_e, profileId, opts) => {
+    try {
+      // 兼容 web shim 的单 body 形态：{profileId, opts}
+      const isObj = profileId && typeof profileId === 'object';
+      const pid = isObj ? profileId.profileId : profileId;
+      const o = isObj ? (profileId.opts || {}) : (opts || {});
+      return graph.validateGraph(pid, o);
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  // 冲突自动修复（方案2/3）：规划（dry-run）→ 应用 → 撤销
+  // 规划不落库，只返回动作清单供 UI 预览；应用会先存撤销快照再改图并重推理。
+  ipcMain.handle('graph:planRepairs', async (_e, opts) => {
+    try { return await graph.planRepairs(opts || {}); } catch (err) { return { ok: false, error: err.message }; }
+  });
+  // 问题汇总表行级修复（v1.2.2）：入参为 validate 报告的问题条目子集
+  ipcMain.handle('graph:planRepairsForIssues', async (_e, issuesOrBody) => {
+    try {
+      const isObj = issuesOrBody && typeof issuesOrBody === 'object' && !Array.isArray(issuesOrBody) && Array.isArray(issuesOrBody.issues);
+      const issues = isObj ? issuesOrBody.issues : issuesOrBody;
+      return await graph.planRepairsForIssues(issues);
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('graph:applyRepairs', async (_e, actionsOrBody, opts) => {
+    try {
+      // 兼容两种形态：invoke(ch, actions, opts) 与 web shim 的单 body {actions, opts}
+      const isObj = actionsOrBody && typeof actionsOrBody === 'object' && !Array.isArray(actionsOrBody) && Array.isArray(actionsOrBody.actions);
+      const actions = isObj ? actionsOrBody.actions : actionsOrBody;
+      const o = isObj ? (actionsOrBody.opts || {}) : (opts || {});
+      return await graph.applyRepairs(actions, o);
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('graph:undoRepair', async (_e, opts) => {
+    try { return await graph.undoRepair(opts || {}); } catch (err) { return { ok: false, error: err.message }; }
+  });
+  // 清除全部推理边（§9 风险 3）
+  ipcMain.handle('graph:clearInferred', () => {
+    try { return graph.clearInferredEdges(); } catch (err) { return { ok: false, error: err.message }; }
+  });
+  // 删边/删点 + 级联清理推理边（§5.3）
+  ipcMain.handle('graph:deleteEdge', (_e, edgeIdx) => {
+    try { return graph.deleteEdgeWithCascade(edgeIdx); } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('graph:deleteNode', (_e, nodeId) => {
+    try { return graph.deleteNodeWithCascade(nodeId); } catch (err) { return { ok: false, error: err.message }; }
+  });
+  // 单节点影响面（§6.5 实体详情面板）
+  // 两种调用形态：桌面端 invoke('graph:impactClosure', nodeId, opts)；
+  // web shim 只转发单个 body → {nodeId, opts}。这里统一兼容，避免网页模式拿到 undefined。
+  ipcMain.handle('graph:impactClosure', (_e, nodeIdOrBody, opts) => {
+    try {
+      const isObj = nodeIdOrBody && typeof nodeIdOrBody === 'object';
+      const nodeId = isObj ? nodeIdOrBody.nodeId : nodeIdOrBody;
+      const o = isObj ? (nodeIdOrBody.opts || {}) : (opts || {});
+      return graph.impactClosureFor(nodeId, o);
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  // 谓词特性表（§6.6 区块 4）
+  ipcMain.handle('graph:predicateFeatures', (_e, profileId) => {
+    try { return { ok: true, features: graph.predicateFeatures(profileId) }; } catch (err) { return { ok: false, error: err.message }; }
+  });
+  // OWL 导入预览：只解析不落库（§6.9）
+  ipcMain.handle('graph:previewOwl', async (e, body) => {
+    try {
+      let filePath = body && body.filePath;
+      if (!filePath) {
+        const { dialog, BrowserWindow } = require('electron');
+        let win = null;
+        try { win = (BrowserWindow && BrowserWindow.fromWebContents) ? BrowserWindow.fromWebContents(e.sender) : null; } catch (_) { win = null; }
+        const r = await dialog.showOpenDialog(win, {
+          title: '预览 OWL 本体文件',
+          filters: [{ name: 'OWL 本体', extensions: ['owl', 'rdf', 'ttl', 'ofn', 'omn', 'xml', 'n3'] }],
+          properties: ['openFile'],
+        });
+        if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
+        filePath = r.filePaths[0];
+      }
+      return await graph.previewOwlImport(filePath, {
+        displayName: body && body.fileName ? body.fileName : undefined,
+        forceLegacy: !!(body && body.forceLegacy),
+        forceFormat: body && body.forceFormat ? body.forceFormat : undefined,
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
   // OWL 导入（Electron：dialog 选文件；web：通过上传接口走后由 body.filePath 传入）
   ipcMain.handle('graph:importOwl', async (e, body) => {
     try {
@@ -717,14 +816,27 @@ function registerIpc(getWindow) {
         try { win = (BrowserWindow && BrowserWindow.fromWebContents) ? BrowserWindow.fromWebContents(e.sender) : null; } catch (_) { win = null; }
         const r = await dialog.showOpenDialog(win, {
           title: '导入 OWL 本体文件',
-          filters: [{ name: 'OWL 本体', extensions: ['owl', 'rdf', 'ttl', 'xml'] }],
+          filters: [{ name: 'OWL 本体', extensions: ['owl', 'rdf', 'ttl', 'ofn', 'omn', 'xml', 'n3'] }],
           properties: ['openFile'],
         });
         if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
         filePath = r.filePaths[0];
       }
-      const result = graph.importOwl(filePath, body && body.fileName ? { displayName: body.fileName } : undefined);
-      return { ok: true, profile: result.profile, report: result.report };
+      const result = await graph.importOwl(filePath, {
+        displayName: body && body.fileName ? body.fileName : undefined,
+        forceLegacy: !!(body && body.forceLegacy),
+        forceFormat: body && body.forceFormat ? body.forceFormat : undefined,
+      });
+      // profileCheck（OWL 2 子语言判定）/ preview（导入预览）/ via（实际解析器）
+      // 供 §6.9 预览弹窗展示；旧前端只读 profile/report，多带字段不影响。
+      return {
+        ok: true,
+        profile: result.profile,
+        report: result.report,
+        profileCheck: result.profileCheck || null,
+        preview: result.preview || null,
+        via: result.via || 'owl.js',
+      };
     } catch (err) {
       return { ok: false, error: err.message };
     }

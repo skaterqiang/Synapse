@@ -119,10 +119,98 @@ function fallbackRel(profileId) {
 }
 
 const GRAPH_KEY = 'graph';
+// 推理元数据独立存一个 kv 键（设计文档 §5.4）：图谱本体与推理状态分离，
+// 清图谱时一并清掉，避免「图已空但仍显示上次推理时间」的错觉。
+const GRAPH_META_KEY = 'graph.meta';
 // 单批送入模型的语料上限（字符），控制 token 与抽取质量
 const BATCH_CHARS = 6000;
 // 单个来源截断长度，避免超长页面挤占批次
 const SOURCE_CHARS = 1500;
+
+// ---------- 推理层（reason/ 子目录，设计文档 §3–§5） ----------
+// 惰性 require：protege-js 缺失或 reason 层损坏时，图谱的抽取/问答主链路必须照常工作
+// （§9 风险 1/2：推理是增强项，不是前置依赖）。
+let _reason = null;
+let _reasonError = '';
+function reason() {
+  if (_reason) return _reason;
+  if (_reasonError) return null;
+  try {
+    _reason = {
+      infer: require('./reason/infer'),
+      guard: require('./reason/guard'),
+      impact: require('./reason/impact'),
+      bridge: require('./reason/bridge'),
+      owlImport: require('./reason/owlImport'),
+      profile: require('./reason/profile'),
+      validate: require('./reason/validate'),
+      repair: require('./reason/repair'),
+    };
+  } catch (err) {
+    _reasonError = String((err && err.message) || err);
+    _reason = null;
+  }
+  return _reason;
+}
+/** 推理层是否可用（含 protege-js 是否装好）。不可用时所有推理入口静默降级。 */
+function reasonReady() {
+  const r = reason();
+  return !!(r && r.infer && typeof r.infer.reasonerAvailable === 'function' && r.infer.reasonerAvailable());
+}
+/** 推理层不可用的原因（供 UI 显示，而不是静默失效）。 */
+function reasonUnavailableReason() {
+  if (_reasonError) return `推理模块加载失败：${_reasonError}`;
+  const r = reason();
+  if (!r) return '推理模块不可用';
+  if (!r.infer || typeof r.infer.reasonerAvailable !== 'function') return '推理模块接口不完整';
+  if (!r.infer.reasonerAvailable()) return 'protege-js 未安装或加载失败，本地推理不可用';
+  return '';
+}
+
+// materializeGraph 的 skipReason → 面向用户的人话（作业阶段行/推理 Tab 共用）
+const SKIP_REASON_TEXT = {
+  'reasoner-unavailable': 'protege-js 不可用，无法本地推理',
+  'empty-graph': '图谱为空，无内容可推理',
+  'bridge-failed': '图谱桥接为三元组失败',
+  'no-rule-fuel': '该体系没有传递/对称/互逆/domain/range/类层级声明，推理不会产生新边',
+  'aborted': '已被用户中止',
+  'materialize-failed': '物化过程出错',
+  'timeout': '推理超时（已保留原始图谱，可在设置中调大超时）',
+};
+
+/** 总开关：settings.reasonEnabled，默认开（设计文档 §6.11 / §11 开放问题 2 倾向默认开）。 */
+function reasonEnabled(settings) {
+  if (!reasonReady()) return false;
+  const v = settings && settings.reasonEnabled;
+  return v === undefined || v === null || v === '' ? true : !!v;
+}
+/** 推理超时（秒）：settings.reasonTimeout，默认 30，范围 5–120（§6.11）。 */
+function reasonTimeoutSec(settings) {
+  return num(settings || {}, 'reasonTimeout', 30, 5, 120);
+}
+
+// ---------- 推理元数据（kv 'graph.meta'） ----------
+function getGraphMeta() {
+  try {
+    const m = JSON.parse(db.getKv(GRAPH_META_KEY) || 'null');
+    if (!m || typeof m !== 'object') return { lastInferredAt: 0, inferredStale: false, lastStats: null, lastGuard: null };
+    return {
+      lastInferredAt: Number(m.lastInferredAt) || 0,
+      inferredStale: !!m.inferredStale,
+      lastStats: m.lastStats || null,
+      lastGuard: m.lastGuard || null,
+    };
+  } catch (_) {
+    return { lastInferredAt: 0, inferredStale: false, lastStats: null, lastGuard: null };
+  }
+}
+
+function setGraphMeta(patch) {
+  const m = Object.assign(getGraphMeta(), patch || {});
+  db.setKv(GRAPH_META_KEY, JSON.stringify(m));
+  db.flush();
+  return m;
+}
 
 // ---------- 持久化 ----------
 function getGraph() {
@@ -143,6 +231,10 @@ function saveGraph(nodes, edges) {
 
 function clearGraph() {
   db.setKv(GRAPH_KEY, JSON.stringify({ nodes: [], edges: [], updatedAt: Date.now() }));
+  // §5.4：清图谱同时清推理元数据，避免残留「上次推理时间/护栏日志」误导 UI
+  db.setKv(GRAPH_META_KEY, JSON.stringify({ lastInferredAt: 0, inferredStale: false, lastStats: null, lastGuard: null }));
+  // 修复撤销点也一并清掉：图都清空了，恢复旧快照只会「复活」整张图
+  try { db.setKv(REPAIR_UNDO_KEY, ''); } catch (_) { /* 键不存在时忽略 */ }
   db.flush();
   return { ok: true };
 }
@@ -166,10 +258,16 @@ function collectSources() {
 // 逐批调用模型抽取节点/边，合并去重后持久化；onStage 回调用于作业阶段进度展示
 // resolveDomain(raws)：未命中特定领域时由作业层决定最终领域（可新建/复用领域模版），
 // 返回 { domainId, domainLabel, typeHints }；graph 层不直接依赖 templates
-async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile, signal, taskFilter }, onStage, onProgress, onTasks) {
+async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile, signal, taskFilter, autoReason: autoReasonOpt }, onStage, onProgress, onTasks) {
   // 作业停止信号：批次开始前检查 + 透传给 chatOnce 中断在途模型请求
   const mkAbort = () => Object.assign(new Error('用户手动停止作业'), { name: 'AbortError' });
-  // 生效体系优先级：弹窗显式指定 > 命中模板的体系绑定（resolveDomain 回填）> settings 全局默认 > bfo-lite
+  // 生效体系优先级（融合设计 §12.1.1 五级链，两入口 renderer/raws.js 与 jobs/jobs.js 一致）：
+  //   ① 弹窗显式指定（ontologyProfile 入参，即 explicitPid）
+  //   ② 领域模版绑定（resolveDomain 回填的 tplProfile，见下方 :309 附近）
+  //   ③ 模型动态选择（suggestOntologyProfile，在调用方完成，同样以 explicitPid 形态传入）
+  //   ④ settings.ontologyProfile —— v4 起设置页已无该入口，仅作历史数据兜底（死层）
+  //   ⑤ bfo-lite 硬兜底
+  // graph.js 只消费最终结果，无法区分「弹窗选的」与「模型选的」（两者都走 explicitPid）。
   const explicitPid = ontologyProfile || '';
   let sources;
   if (Array.isArray(inlineSources) && inlineSources.length) {
@@ -218,7 +316,8 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
       if (tpl && tpl.ontologyProfile) tplProfile = tpl.ontologyProfile;
     } catch (_) {}
   }
-  // 体系解析放在领域判定之后：弹窗显式指定优先，其次命中模板的体系绑定，最后全局默认
+  // 体系解析放在领域判定之后：① 弹窗显式 > ② 命中模板的体系绑定 > ④ settings 历史兜底 > ⑤ bfo-lite
+  // （③ 模型动态选择在调用方已折进 explicitPid；完整五级链见函数头部注释与 §12.1.1）
   const pid = explicitPid || tplProfile || (settings && settings.ontologyProfile) || 'bfo-lite';
   const onto = resolveOntology(pid);
   const profileId = onto.id;
@@ -261,6 +360,19 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
   const rels = relationsList(profileId);
   const fbType = fallbackType(profileId);
   const fbRel = fallbackRel(profileId);
+
+  // ---------- 写入护栏（设计文档 §4.3） ----------
+  // 抽取阶段就拦掉「谓词定义域/值域越界」的连线，降级为回退谓词并留痕，
+  // 而不是等推理阶段才发现图里全是语义非法边。
+  // 护栏依赖体系的 domain/range 声明；内置三体系里只有 bfo / iso15926 各 2 个谓词有，
+  // bfo-lite 一个都没有 —— 此时护栏自然不拦截（coverage 0%），属预期行为，不是失效。
+  const guardOn = reasonEnabled(settings);
+  const guardLog = [];
+  const R = guardOn ? reason() : null;
+  const guardProfile = (R && R.guard) ? onto : null;
+  // 抽取结束后是否自动跑一次物化推理（§6.7 的 `extract-auto-reason` 复选框，默认勾选）。
+  // 与护栏共用同一个总开关：推理层不可用时两者一起静默降级。
+  const doReason = guardOn && autoReasonOpt !== false;
   const ensureNode = (name, type, desc, srcLabel, srcDomain) => {
     const key = nodeKey(name);
     if (!key) return null;
@@ -389,10 +501,63 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
     for (const e of parsed.edges || []) {
       const from = ensureNode(e.from, null, null, null);
       const to = ensureNode(e.to, null, null, null);
-      const rel = rels.includes(e.rel) ? e.rel : fbRel;
+      let rel = rels.includes(e.rel) ? e.rel : fbRel;
       if (!from || !to || from.id === to.id) continue;
+      // 护栏：domain/range 越界 → 降级为回退谓词并留痕（§4.3）
+      let guardBlocked = null;
+      if (guardProfile && R.guard) {
+        try {
+          const verdict = R.guard.checkEdge(guardProfile, from, rel, to);
+          if (verdict && !verdict.ok) {
+            guardBlocked = verdict;
+            guardLog.push({
+              taskNo: curTask ? curTask.no : 0,
+              from: from.name, fromType: from.type,
+              rel, to: to.name, toType: to.type,
+              reason: verdict.reason || 'constraint-violation',
+              detail: verdict.detail || '',
+              downgradedTo: fbRel,
+            });
+            rel = fbRel;
+          }
+        } catch (_) { /* 护栏自身异常绝不能拖死抽取主链路 */ }
+      }
+      // 护栏·写侧互斥预检（冲突自动处理方案1）：即使 domain/range 校验通过，
+      // 若谓词的定义域/值域会把端点强制归入与其声明类型互斥的类
+      // （prp-dom/prp-rng + DisjointClasses ⇒ 推理时必报 cax-dw），
+      // 同样降级为回退谓词——把冲突消灭在写库前，而不是事后修复。
+      // 典型触发场景：导入的 OWL 体系同时声明了 subclass 与 disjoint（体系自身不一致），
+      // 或两阶段细分把节点类型改深后与谓词约束撞上互斥对。
+      if (guardProfile && R.guard && rel !== fbRel) {
+        try {
+          // 与推理器/修复规划同口径（guard.forcingProbes）：强制类型含逆谓词物化，
+          // 否则「bearer_of 无约束但逆 inheres_in 有 domain」这类边会漏拦截、入库后必报 cax-dw
+          const probes = R.guard.forcingProbes(guardProfile, rel)
+            .map((p) => ({ node: p.node === 'from' ? from : to, type: (p.node === 'from' ? from : to).type, forced: p.forced, via: p.via, inverseRel: p.inverse ? p.rel : '' }));
+          for (const p of probes) {
+            if (!p.type || !p.forced.length) continue;
+            let hit = null;
+            for (const f of p.forced) {
+              const d = R.guard.checkDisjoint(guardProfile, p.type, f);
+              if (d && d.conflict) { hit = { f, d }; break; }
+            }
+            if (!hit) continue;
+            guardLog.push({
+              taskNo: curTask ? curTask.no : 0,
+              from: from.name, fromType: from.type,
+              rel, to: to.name, toType: to.type,
+              reason: 'disjoint-type-forcing',
+              detail: `「${p.node.name}」声明类型 ${p.type}，但谓词 ${p.inverseRel ? `${rel} 的逆谓词 ${p.inverseRel}` : rel} 的${p.via === 'domain' ? '定义域' : '值域'}会把它强制归入互斥类 ${hit.f}${hit.d.detail ? `（${hit.d.detail}）` : ''}`,
+              downgradedTo: fbRel,
+            });
+            rel = fbRel;
+            break;
+          }
+        } catch (_) { /* 护栏自身异常绝不能拖死抽取主链路 */ }
+      }
       const key = `${from.id}|${to.id}|${rel}`;
       if (!edges.has(key)) edges.set(key, { from: from.id, to: to.id, rel });
+      else if (guardBlocked) { /* 已有同键边，护栏记录仍保留供 UI 汇总 */ }
     }
     // 来源标签挂到批次内被提及的节点（按名称包含粗匹配），同时继承本次解析出的领域归属
     for (const s of batches[i]) {
@@ -473,11 +638,100 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
   const putEdge = (e) => { const k = `${e.from}|${e.to}|${e.rel}`; if (!mergedEdges.has(k)) mergedEdges.set(k, { ...e }); };
   // 先放已有图谱（跨体系保留），再放本次抽取（本体系内合并）
   for (const n of existing.nodes || []) if (n && n.id) putNode(n);
-  for (const e of existing.edges || []) if (e && e.from && e.to) putEdge(e);
+  // 旧推理边不参与合并：本轮统一重算（§5.4）。
+  // 若不过滤，上一轮的推理产物会被当成「原始边」再喂给推理器，形成自我循环论证。
+  for (const e of existing.edges || []) if (e && e.from && e.to && !e.inferred) putEdge(e);
   for (const n of nodes.values()) putNode(n);
   for (const e of edges.values()) putEdge(e);
-  saveGraph([...mergedNodes.values()], [...mergedEdges.values()]);
-  return { nodeCount: mergedNodes.size, edgeCount: mergedEdges.size, sourceCount: sources.length, sourceLabels: sources.map((s) => s.label), profileId, profileName: onto.name, failedTasks };
+
+  const mergedNodeList = [...mergedNodes.values()];
+  const rawEdgeList = [...mergedEdges.values()];
+  // 先落原始图：推理是增强项，失败/超时/被关闭都不能让用户丢掉抽取结果（§9 风险 2）
+  saveGraph(mergedNodeList, rawEdgeList);
+
+  // ---------- 自动推理（设计文档 §4.2 / §5.1 / §6.7） ----------
+  const guardSummary = guardLog.length
+    ? (R && R.guard ? R.guard.summarizeGuardLog(guardLog) : { total: guardLog.length, byReason: {}, byRel: {}, entries: guardLog.slice(0, 200), truncated: false })
+    : null;
+  if (onStage && guardSummary) {
+    onStage('guard', `护栏拦截 ${guardSummary.total} 条越界连线（已降级为「${fbRel}」）`);
+  }
+
+  let reasonResult = null;
+  if (doReason) {
+    if (onStage) onStage('reason', '本地物化推理中（OWL 2 RL 前向链）…');
+    try {
+      const mat = await R.infer.materializeGraph(
+        { nodes: mergedNodeList, edges: rawEdgeList },
+        onto,
+        {
+          timeoutMs: reasonTimeoutSec(settings) * 1000,
+          signal,
+          onProgress: (info) => { if (onStage && info && info.phase) onStage('reason', info.phase); },
+        }
+      );
+      if (mat.skipped) {
+        reasonResult = { skipped: true, skipReason: mat.skipReason || 'unknown', stats: mat.stats || null };
+        if (onStage) onStage('reason', `推理已跳过：${SKIP_REASON_TEXT[mat.skipReason] || mat.skipReason || '未知原因'}`);
+      } else {
+        const merged = R.infer.mergeInferredEdges(rawEdgeList, mat.inferredEdges);
+        saveGraph(mergedNodeList, merged.edges);
+        reasonResult = {
+          skipped: false,
+          stats: mat.stats,
+          inferredEdges: merged.edges.length - rawEdgeList.length,
+          bound: merged.bound,
+          dropped: merged.dropped,
+          inconsistencies: mat.inconsistencies || [],
+        };
+        if (onStage) {
+          const nInf = reasonResult.inferredEdges;
+          const nCon = (mat.inconsistencies || []).length;
+          onStage('reason', `推理完成：新增 ${nInf} 条推理边（${mat.stats.rounds} 轮 / ${mat.stats.elapsedMs} ms）`
+            + (nCon ? `，检出 ${nCon} 处语义冲突` : ''));
+        }
+      }
+    } catch (err) {
+      // 推理异常绝不影响抽取作业的成功判定：原始图已落库，这里只记录原因
+      reasonResult = { skipped: true, skipReason: 'exception', error: String((err && err.message) || err) };
+      if (onStage) onStage('reason', `推理失败（已保留原始图谱）：${reasonResult.error.slice(0, 160)}`);
+    }
+    setGraphMeta({
+      lastInferredAt: reasonResult && !reasonResult.skipped ? Date.now() : getGraphMeta().lastInferredAt,
+      inferredStale: false,
+      lastStats: reasonResult ? {
+        skipped: !!reasonResult.skipped,
+        skipReason: reasonResult.skipReason || '',
+        inferredEdges: reasonResult.inferredEdges || 0,
+        inconsistencies: (reasonResult.inconsistencies || []).length,
+        inconsistencyDetails: capInconsistencies(reasonResult.inconsistencies || []),
+        elapsedMs: (reasonResult.stats && reasonResult.stats.elapsedMs) || 0,
+        rounds: (reasonResult.stats && reasonResult.stats.rounds) || 0,
+        profileId,
+        at: Date.now(),
+      } : null,
+      lastGuard: guardSummary ? {
+        total: guardSummary.total, byReason: guardSummary.byReason, byRel: guardSummary.byRel,
+        entries: (guardSummary.entries || []).slice(0, 50), profileId, at: Date.now(),
+      } : getGraphMeta().lastGuard,
+    });
+  } else if (guardSummary) {
+    setGraphMeta({ lastGuard: { total: guardSummary.total, byReason: guardSummary.byReason, byRel: guardSummary.byRel, entries: (guardSummary.entries || []).slice(0, 50), profileId, at: Date.now() } });
+  }
+
+  const finalGraph = getGraph();
+  return {
+    nodeCount: mergedNodes.size,
+    edgeCount: finalGraph.edges.length,
+    rawEdgeCount: rawEdgeList.length,
+    sourceCount: sources.length,
+    sourceLabels: sources.map((s) => s.label),
+    profileId,
+    profileName: onto.name,
+    failedTasks,
+    guard: guardSummary ? { total: guardSummary.total, byReason: guardSummary.byReason, byRel: guardSummary.byRel } : null,
+    reason: reasonResult,
+  };
 }
 
 // ---------- 问答上下文注入 ----------
@@ -680,10 +934,30 @@ function removeOntologyItem(kind, keyOrIndex, profileId) {
 // 管线：LLM 抽取实体 → 匹配本体节点（多层兑底）→ BFS 邻居事实 → 沿节点 sources 回溯笔记原文 → 事实+材料约束流式回答，并下发引用清单
 async function kgAsk(event, { settings, question, hops, withFacts }) {
   try {
-    const g = getGraph();
+    let g = getGraph();
     if (!g.nodes.length) {
       event.sender.send('ai:error', '知识图谱为空，请先在「整体图谱」页运行「抽取本体层」。');
       return;
+    }
+    // §5.4 惰性重推理：删除节点/边会标记 inferredStale=true，问答前重跑一次物化。
+    // 与约束 D4 一致——「问答时若图未变直接读缓存的 inferred 边，变了才重跑」：
+    // 不在每次写边时实时推理（批处理），只在读侧（问答）发现图变脏时补跑。
+    if (getGraphMeta().inferredStale && reasonEnabled(settings)) {
+      event.sender.send('kg:stage', '检测到图谱已变更，重新物化推理…');
+      try {
+        const rr = await runInference(settings, {
+          onProgress: (info) => { if (info && info.phase) event.sender.send('kg:stage', info.phase); },
+        });
+        if (rr && rr.ok && !rr.skipped) {
+          event.sender.send('kg:stage', `推理已刷新：新增 ${rr.inferredEdges} 条推理边`);
+        } else if (rr && rr.skipped) {
+          event.sender.send('kg:stage', `推理刷新跳过：${SKIP_REASON_TEXT[rr.skipReason] || rr.skipReason || '未知原因'}`);
+        }
+        g = getGraph();   // 重推理会重写图，必须重读
+      } catch (err) {
+        // 推理失败不阻断问答（§9：推理是增强项）
+        event.sender.send('kg:stage', `推理刷新失败（按现有图谱继续作答）：${String((err && err.message) || err)}`);
+      }
     }
     const maxHops = Math.max(1, Math.min(5, Number(hops) || 3));
     event.sender.send('kg:stage', '解析问题并抽取实体…');
@@ -764,6 +1038,76 @@ async function kgAsk(event, { settings, question, hops, withFacts }) {
     const uniqFacts = [...new Set(facts)].slice(0, 80);
     event.sender.send('kg:stage', `邻居事实扩展完成（${maxHops} 跳内）：共 ${uniqFacts.length} 条事实`);
 
+    // ---------- 影响面扩展（设计文档 §4.4 / §11 开放问题 4：关键词触发） ----------
+    // BFS 只给「N 跳内的直接邻居」，回答「变压器故障会波及什么」这类问题时，
+    // 需要沿**传递谓词**做闭包（含推理边），并把传导路径写进事实里。
+    // 仅在问题命中影响类关键词时触发，避免每次问答都跑闭包。
+    let impactFacts = [];
+    let impactInfo = null;
+    const RR = reasonEnabled(settings) ? reason() : null;
+    if (RR && RR.impact && seeds.length) {
+      let intent = { hit: false, keywords: [] };
+      try { intent = RR.impact.detectImpactIntent(question) || intent; } catch (_) {}
+      if (intent.hit) {
+        event.sender.send('kg:stage', `检测到影响面提问（${intent.keywords.join('、')}），沿传递谓词做闭包扩展…`);
+        try {
+          // 种子可能跨体系：按 profile 分组，各自用自己的体系解析谓词特性。
+          // 节点 id 形如 `${profileId}:${key}`（见 ensureNode），profile 字段缺失时从 id 前缀还原。
+          const pidOf = (n) => String(n.profile || (String(n.id || '').split(':')[0]) || entityPid || 'bfo-lite');
+          const byProfile = new Map();
+          for (const s of seeds) {
+            const pid = pidOf(s);
+            if (!byProfile.has(pid)) byProfile.set(pid, []);
+            byProfile.get(pid).push(s);
+          }
+          const allImpacted = [];
+          const summaries = [];
+          for (const [pid, list] of byProfile) {
+            let prof = null;
+            try { prof = resolveOntology(pid); } catch (_) { prof = null; }
+            if (!prof) continue;
+            for (const seed of list.slice(0, 5)) {   // 每个体系至多取 5 个种子，防止闭包爆炸
+              const impacted = RR.impact.impactClosure(g, prof, seed.id, {
+                maxDepth: Math.max(2, maxHops + 2),
+                direction: 'downstream',
+                includeInferred: true,
+              });
+              if (!impacted || !impacted.length) continue;
+              allImpacted.push(...impacted);
+              summaries.push(RR.impact.impactSummary(prof, impacted, {}));
+              impactFacts.push(...RR.impact.impactToFacts(g, seed, impacted, { limit: 20 }));
+            }
+          }
+          impactFacts = [...new Set(impactFacts)].slice(0, 40);
+          impactInfo = {
+            keywords: intent.keywords,
+            nodeCount: allImpacted.length,
+            factCount: impactFacts.length,
+            inferredCount: allImpacted.filter((x) => x && x.inferred).length,
+            summaries: [...new Set(summaries)],
+          };
+          event.sender.send('kg:stage', impactFacts.length
+            ? `影响面扩展完成：${impactInfo.nodeCount} 个下游节点（其中 ${impactInfo.inferredCount} 个来自推理边），生成 ${impactFacts.length} 条传导事实`
+            : '影响面扩展完成：未发现可传导的下游节点（该体系未声明传递谓词，或图谱中无相应连线）');
+        } catch (err) {
+          // 影响面是增强项：失败只报一行，绝不影响问答主链路
+          event.sender.send('kg:stage', `影响面扩展失败（已跳过）：${String((err && err.message) || err).slice(0, 120)}`);
+        }
+      }
+    }
+    // BFS 事实与影响面事实措辞略有差异（`—包含→` vs `—包含 →（1 跳，⚡推理）`），
+    // 按字符串去重会漏掉语义相同的行、白白占用提示词额度。这里用「归一化键」去重：
+    // 抹平箭头两侧空格与尾部括注（跳数/推理标记），并保留信息更丰富的影响面版本。
+    const factKey = (f) => String(f).replace(/\s*→\s*/g, '→').replace(/（[^）]*）\s*$/, '').trim();
+    let askFacts = uniqFacts;
+    if (impactFacts.length) {
+      const byKey = new Map();
+      const order = [];
+      for (const f of uniqFacts) { const k = factKey(f); if (!byKey.has(k)) order.push(k); byKey.set(k, f); }
+      for (const f of impactFacts) { const k = factKey(f); if (!byKey.has(k)) order.push(k); byKey.set(k, f); }
+      askFacts = order.map((k) => byKey.get(k)).slice(0, 120);
+    }
+
     // 沿本体节点的 sources 回溯笔记原文，作为回答材料与引用明细
     event.sender.send('kg:stage', '沿本体层回溯笔记原文…');
     const visited = [...seen].map((id) => byId.get(id)).filter(Boolean);
@@ -774,11 +1118,12 @@ async function kgAsk(event, { settings, question, hops, withFacts }) {
 
     event.sender.send('kg:facts', {
       matched: seeds.map((n) => n.name),
-      facts: withFacts ? uniqFacts : [],
+      facts: withFacts ? askFacts : [],
       refs: refs.map((r) => ({ kind: r.kind, label: r.label, path: r.path })),
+      impact: impactInfo,
     });
     event.sender.send('kg:stage', '基于事实与原文生成回答…');
-    const factBlock = withFacts && uniqFacts.length ? `【知识图谱事实】\n${uniqFacts.join('\n')}` : '';
+    const factBlock = withFacts && askFacts.length ? `【知识图谱事实】\n${askFacts.join('\n')}` : '';
     const matBlock = refs.length
       ? `【原文材料】\n${refs.map((r, i) => `材料${i + 1}（笔记·${r.label}，路径 ${r.path}）：\n${r.content}`).join('\n\n')}`
       : '';
@@ -848,11 +1193,27 @@ function resolveSources(settings, labels) {
 
 // ---------- OWL 导入 ----------
 // 导入 OWL 文件：解析 → 生成 profile → 存入 kv.owlProfiles（同名覆盖）→ 源文件复制到 data/ontology/ 留存
-function importOwl(filePath, opts) {
-  const { parseOwlFile } = require('./owl');
+//
+// 设计文档 §4.5/§9 风险 5：优先走 protege-js（reason/owlImport.js 的 importOwlExtended），
+// 它能产出 OWLOntology，从而附带 OWL 2 子语言判定（profileCheck）与导入预览（preview）；
+// protege-js 不可用或解析失败时，owlImport 内部自动降级到既有正则解析器 owl.js。
+// 因此这里**不再直接** require('./owl')——降级逻辑统一收敛在 owlImport 内部，避免两条路径分叉。
+//
+// ⚠️ 本函数是 async：IPC 侧必须 await（graph:importOwl 已是 async handler）。
+async function importOwl(filePath, opts) {
   const path = require('path');
   const fs = require('fs');
-  const { profile, report } = parseOwlFile(filePath, opts);
+  const R = reason();
+  let parsed;
+  if (R && R.owlImport && typeof R.owlImport.importOwlExtended === 'function') {
+    parsed = await R.owlImport.importOwlExtended(filePath, opts || {});
+  } else {
+    // 推理层整体不可用时的最后兜底：直接用 owl.js（与旧行为一致）
+    const { parseOwlFile } = require('./owl');
+    const { profile, report } = parseOwlFile(filePath, opts);
+    parsed = { profile, report, via: 'owl.js', profileCheck: null, preview: null };
+  }
+  const { profile, report } = parsed;
   const kv = readOntologyKv();
   kv.owlProfiles = kv.owlProfiles || [];
   const idx = kv.owlProfiles.findIndex((p) => p.id === profile.id);
@@ -866,7 +1227,14 @@ function importOwl(filePath, opts) {
     const dest = path.join(ontoDir, path.basename(filePath));
     if (path.resolve(dest) !== path.resolve(filePath)) fs.copyFileSync(filePath, dest);
   } catch (_) { /* 留存失败不影响导入结果 */ }
-  return { profile, report };
+  // 透传 profileCheck / preview / via，供 §6.9 导入预览弹窗展示子语言判定与降级说明
+  return {
+    profile,
+    report,
+    profileCheck: parsed.profileCheck || null,
+    preview: parsed.preview || null,
+    via: parsed.via || 'owl.js',
+  };
 }
 
 // 删除 OWL 体系；可选连带清除该体系图谱节点
@@ -890,6 +1258,21 @@ function removeOwlProfile(profileId, clearGraphNodes) {
   return { ok: true, removed: { id: removed.id, name: removed.name }, clearedNodes };
 }
 
+// domain（模版 id）→ 知识图谱显示名。general → 「通用（未匹配领域）」。
+// 带缓存的惰性 require：templates 依赖本模块的 resolveOntology，顶层 require 会循环依赖。
+let _domainLabelCache = null;
+function domainLabelOf(domain) {
+  const d = (domain && String(domain).trim()) || 'general';
+  if (d === 'general') return '通用（未匹配领域）';
+  if (!_domainLabelCache) {
+    _domainLabelCache = new Map();
+    try {
+      for (const t of require('./templates').listTemplates()) _domainLabelCache.set(t.id, t.name || t.id);
+    } catch (_) { /* 模版模块不可用时回退到 domain 原值 */ }
+  }
+  return _domainLabelCache.get(d) || d;
+}
+
 // ---------- 两级范围：体系 → 具体知识图谱 ----------
 // 列出「有抽取节点」的具体知识图谱分组，供问答范围二级选择。
 // 维度：profile（体系）→ 其下按 domain（领域/图谱）分组；domain 为空归入 (general)。
@@ -898,15 +1281,7 @@ function listGraphScopes() {
   const g = getGraph();
   const profiles = listProfiles();
   const nameOf = (pid) => { const p = profiles.find((x) => x.id === pid); return p ? (p.name || pid) : pid; };
-  // 领域中文名映射：domain 存的是模版 id（如 ev_charger_application），需要查模版的 name（如「充电桩报装」）
-  // 惰性 require 避免循环依赖（templates 依赖本模块的 resolveOntology）
-  let tplNameOf = (id) => id;
-  try {
-    const templates = require('./templates');
-    const tpls = templates.listTemplates();
-    const byId = new Map(tpls.map((t) => [t.id, t.name || t.id]));
-    tplNameOf = (id) => byId.get(id) || id;
-  } catch (_) { /* 模版模块不可用时回退到 id */ }
+  // 领域中文名映射统一走模块级 domainLabelOf（带缓存）
   const groups = new Map(); // key -> scope
   const nodeIds = new Map(); // key -> Set(nodeId) 用于数边
   for (const n of g.nodes || []) {
@@ -917,7 +1292,7 @@ function listGraphScopes() {
     if (!groups.has(key)) {
       groups.set(key, {
         id: key, profile, profileName: nameOf(profile), domain,
-        label: domain === 'general' ? '通用（未匹配领域）' : tplNameOf(domain),
+        label: domainLabelOf(domain),
         nodeCount: 0, edgeCount: 0,
       });
       nodeIds.set(key, new Set());
@@ -952,4 +1327,733 @@ function scopeFilter(scope) {
   return (n) => conds.some((c) => c(n));
 }
 
-module.exports = { getGraph, saveGraph, clearGraph, extractGraph, contextFor, recallFor, getOntology, setOntologyProfile, saveOntologyItem, removeOntologyItem, listProfiles, resolveOntology, kgAsk, resolveSources, importOwl, removeOwlProfile, listGraphScopes, scopeFilter };
+// ===========================================================================
+// 推理层对外接口（设计文档 §4–§6）
+//
+// 设计约束 D3：推理结果一律**返回给本模块**，由 saveGraph 单点落库；
+//             reason/ 下的模块绝不直接写 kv。
+// 设计约束 D4：推理是**批处理**（抽取后自动一次 / 用户手动点一次），不做实时增量。
+// ===========================================================================
+
+/** 推理层总体状态，供前端置灰入口（§6.11）与「推理」Tab 头部（§6.6）。 */
+function reasonStatus() {
+  const ready = reasonReady();
+  const r = reason();
+  let coverage = null;
+  if (ready && r && r.guard) {
+    try {
+      const kv = readOntologyKv();
+      coverage = r.guard.coverage(resolveOntology(kv.profileId || 'bfo-lite'));
+    } catch (_) { coverage = null; }
+  }
+  return {
+    available: ready,
+    enabled: reasonEnabled(readSettingsSafe()),
+    reason: ready ? '' : reasonUnavailableReason(),
+    timeoutSec: reasonTimeoutSec(readSettingsSafe()),
+    coverage,
+  };
+}
+
+// settings 读取的容错包装：设置模块异常时回退空对象，
+// 让推理入口按「默认开」处理，而不是整个图谱页崩掉
+function readSettingsSafe() {
+  try { return require('../common/settings').getSettings() || {}; } catch (_) { return {}; }
+}
+
+/**
+ * 手动跑一次全图物化推理（§6.6「立即推理」按钮）。
+ *
+ * 多体系共存：图里可能同时有 bfo-lite / bfo / owl:xxx 的节点。
+ * 谓词特性（传递/对称/互逆）是**按体系**声明的，跨体系混在一起物化会张冠李戴，
+ * 因此按 profile 分组、各跑各的子图，最后把推理边一次性并入全量原始边数组
+ * （inferredFrom 的下标必须相对最终数组，见 mergeInferredEdges）。
+ *
+ * @param {object} [settings]
+ * @param {object} [opts] {onProgress, signal, maxRounds, timeoutMs, profileId}
+ * @returns {Promise<{ok:boolean, skipped?:boolean, skipReason?:string, error?:string,
+ *                    inferredEdges?:number, bound?:number, dropped?:number,
+ *                    inconsistencies?:Array, stats?:object, perProfile?:Array, total?:object}>}
+ */
+async function runInference(settings, opts = {}) {
+  const s = settings || readSettingsSafe();
+  if (!reasonReady()) return { ok: false, skipped: true, skipReason: 'reasoner-unavailable', error: reasonUnavailableReason() };
+  if (!reasonEnabled(s)) return { ok: false, skipped: true, skipReason: 'disabled', error: '推理功能已在设置中关闭' };
+  const R = reason();
+  const g = getGraph();
+  if (!g.nodes.length) return { ok: false, skipped: true, skipReason: 'empty-graph', error: '图谱为空' };
+
+  const report = (phase, pct) => {
+    if (typeof opts.onProgress === 'function') { try { opts.onProgress({ phase, pct }); } catch (_) {} }
+  };
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : reasonTimeoutSec(s) * 1000;
+
+  // 只保留原始边作为推理输入（§5.4：上一轮推理产物本轮重算）
+  const rawEdges = (g.edges || []).filter((e) => e && e.from && e.to && !e.inferred);
+  const nodeById = new Map(g.nodes.map((n) => [n && n.id, n]));
+
+  // 按 profile 分组
+  const groups = new Map(); // pid -> {nodes:[], nodeIds:Set}
+  for (const n of g.nodes || []) {
+    if (!n || !n.id) continue;
+    const pid = String(n.profile || String(n.id).split(':')[0] || 'bfo-lite');
+    if (!groups.has(pid)) groups.set(pid, { nodes: [], nodeIds: new Set() });
+    const grp = groups.get(pid);
+    grp.nodes.push(n);
+    grp.nodeIds.add(n.id);
+  }
+  // 显式指定 profileId 时只跑该体系
+  const pids = opts.profileId ? [...groups.keys()].filter((p) => p === opts.profileId) : [...groups.keys()];
+
+  const perProfile = [];
+  const allInferred = [];
+  const allInconsistencies = [];
+  // domain（模版 id）→ 知识图谱显示名，供冲突归属标注
+  const scopeLabelOf = domainLabelOf;
+  let gi = 0;
+  for (const pid of pids) {
+    gi++;
+    const grp = groups.get(pid);
+    if (!grp || !grp.nodes.length) continue;
+    let prof = null;
+    try { prof = resolveOntology(pid); } catch (_) { prof = null; }
+    if (!prof) { perProfile.push({ profileId: pid, skipped: true, skipReason: 'unknown-profile' }); continue; }
+    // 子图：两端都属于该体系的边
+    const subEdges = rawEdges.filter((e) => grp.nodeIds.has(e.from) && grp.nodeIds.has(e.to));
+    report(`推理体系「${prof.name || pid}」（${gi}/${pids.length}）…`, Math.round((gi / pids.length) * 100));
+    let mat;
+    try {
+      mat = await R.infer.materializeGraph({ nodes: grp.nodes, edges: subEdges }, prof, {
+        timeoutMs,
+        maxRounds: opts.maxRounds,
+        signal: opts.signal || null,
+        scopeLabelOf,
+        onProgress: (info) => report(info && info.phase ? `[${prof.name || pid}] ${info.phase}` : '', info && info.pct),
+      });
+    } catch (err) {
+      perProfile.push({ profileId: pid, profileName: prof.name, skipped: true, skipReason: 'exception', error: String((err && err.message) || err) });
+      continue;
+    }
+    if (mat.skipped) {
+      perProfile.push({ profileId: pid, profileName: prof.name, skipped: true, skipReason: mat.skipReason, stats: mat.stats || null });
+      continue;
+    }
+    allInferred.push(...(mat.inferredEdges || []));
+    for (const c of (mat.inconsistencies || [])) allInconsistencies.push({ ...c, profileId: pid, profileName: prof.name });
+    perProfile.push({
+      profileId: pid, profileName: prof.name, skipped: false,
+      inferredEdges: (mat.inferredEdges || []).length,
+      inconsistencies: (mat.inconsistencies || []).length,
+      stats: mat.stats,
+    });
+  }
+
+  const ran = perProfile.filter((p) => !p.skipped);
+  if (!ran.length) {
+    const first = perProfile[0] || {};
+    setGraphMeta({ inferredStale: false, lastStats: { skipped: true, skipReason: first.skipReason || 'no-rule-fuel', at: Date.now() } });
+    return { ok: true, skipped: true, skipReason: first.skipReason || 'no-rule-fuel', perProfile, total: countInferredSafe(g) };
+  }
+
+  const merged = R.infer.mergeInferredEdges(rawEdges, allInferred);
+  saveGraph(g.nodes, merged.edges);
+  const stats = {
+    inferredEdges: merged.edges.length - rawEdges.length,
+    bound: merged.bound,
+    dropped: merged.dropped,
+    inconsistencies: allInconsistencies.length,
+    rounds: ran.reduce((a, p) => a + ((p.stats && p.stats.rounds) || 0), 0),
+    elapsedMs: ran.reduce((a, p) => a + ((p.stats && p.stats.elapsedMs) || 0), 0),
+    profiles: ran.length,
+    skippedProfiles: perProfile.length - ran.length,
+  };
+  setGraphMeta({
+    lastInferredAt: Date.now(),
+    inferredStale: false,
+    // inconsistencyDetails 是「推理」Tab 冲突区块的数据源（§6.6）：
+    // lastStats.inconsistencies 只存条数（前端徽标用），明细单独存且限量，
+    // 避免一次大推理产生上千条冲突把 kv 撑爆。
+    lastStats: { skipped: false, ...stats, inconsistencyDetails: capInconsistencies(allInconsistencies), at: Date.now() },
+  });
+  return { ok: true, skipped: false, ...stats, inconsistencies: allInconsistencies, perProfile, total: countInferredSafe(getGraph()) };
+}
+
+function countInferredSafe(g) {
+  const R = reason();
+  if (!R || !R.infer) return { total: (g.edges || []).length, inferred: 0, raw: (g.edges || []).length, byVia: {} };
+  try { return R.infer.countInferred(g); } catch (_) { return { total: (g.edges || []).length, inferred: 0, raw: (g.edges || []).length, byVia: {} }; }
+}
+
+// 冲突明细限量落库（§6.6「推理」Tab 冲突区块的数据源）。
+// 只保留前 50 条 + 总数，避免大推理产生上千条冲突把 kv 撑爆；
+// 每条保留 UI 需要的字段（rule/message/中文说明/归属体系与知识图谱）
+// + 修复定位需要的 nodeIds/raw（repair.js 靠 raw 里的谓词 IRI 与 nodeIds 找到具体边）。
+const INCONSISTENCY_DETAIL_CAP = 50;
+function capInconsistencies(list) {
+  const arr = Array.isArray(list) ? list : [];
+  return {
+    total: arr.length,
+    truncated: arr.length > INCONSISTENCY_DETAIL_CAP,
+    items: arr.slice(0, INCONSISTENCY_DETAIL_CAP).map((c) => ({
+      rule: (c && c.rule) || '',
+      message: (c && c.message) || '',
+      messageZh: (c && c.messageZh) || '',
+      reasonZh: (c && c.reasonZh) || '',
+      profileId: (c && c.profileId) || '',
+      profileName: (c && c.profileName) || '',
+      nodeIds: ((c && c.nodeIds) || []).slice(0, 10),
+      raw: String((c && c.raw) || '').slice(0, 400),
+      nodeNames: (c && c.nodeNames) || [],
+      scopes: ((c && c.scopes) || []).map((s) => ({ profile: s.profile, domain: s.domain, label: s.label })),
+    })),
+  };
+}
+
+/**
+ * 「推理」Tab 的一次性数据（§6.6 四个区块）：
+ * 上次运行 / 语义冲突 / 护栏日志 / 谓词特性。
+ */
+function getReasonState(profileId) {
+  const meta = getGraphMeta();
+  const g = getGraph();
+  const counts = countInferredSafe(g);
+  const st = reasonStatus();
+  const R = reason();
+  let features = [];
+  let cov = null;
+  try {
+    const pid = profileId || readOntologyKv().profileId || 'bfo-lite';
+    const prof = resolveOntology(pid);
+    if (R && R.guard) {
+      cov = R.guard.coverage(prof);
+      features = predicateFeatures(pid);
+    }
+  } catch (_) { /* 体系解析失败时留空，不影响其余区块 */ }
+  return {
+    available: st.available,
+    enabled: st.enabled,
+    unavailableReason: st.reason,
+    timeoutSec: st.timeoutSec,
+    meta,
+    counts,
+    coverage: cov,
+    features,
+    lastInconsistencies: (meta.lastStats && meta.lastStats.inconsistencies) || 0,
+    // 修复入口状态（冲突自动处理方案2/3）：LLM 仲裁开关 + 是否有撤销点
+    repairLlm: repairLlmEnabled(readSettingsSafe()),
+    repairUndoAvailable: repairUndoAvailable(),
+  };
+}
+
+/**
+ * 谓词特性表（§6.6 区块 4）：把「体系声明了什么」摊平给用户看，
+ * 解释为什么某些边会被推理出来、某些不会。
+ * 数据来源是 normalizeProfile —— 它同时合并 predicates[].features 与 axioms[]，
+ * 单看任一处都会漏（实测 iso15926.composedOf 只有公理、没有 features 字段）。
+ */
+function predicateFeatures(profileId) {
+  const R = reason();
+  if (!R || !R.bridge) return [];
+  const pid = profileId || readOntologyKv().profileId || 'bfo-lite';
+  let prof;
+  try { prof = resolveOntology(pid); } catch (_) { return []; }
+  let m;
+  try { m = R.bridge.normalizeProfile(prof); } catch (_) { return []; }
+  const out = [];
+  for (const p of m.predicates) {
+    const feats = [...(m.features.get(p.key) || [])];
+    // ⚠️ inverseOf / domain / range 的值都是 **Set**（见 bridge.normalizeProfile），
+    //    必须展开成数组才能 JSON 序列化过 IPC，否则前端拿到 {} 空对象。
+    const invs = [...(m.inverseOf.get(p.key) || [])];
+    const dom = [...(m.domain.get(p.key) || [])];
+    const rng = [...(m.range.get(p.key) || [])];
+    if (!feats.length && !invs.length && !dom.length && !rng.length) continue;
+    out.push({
+      key: p.key,
+      label: p.label || p.key,
+      features: feats,
+      inverseOf: invs,
+      domain: dom,
+      range: rng,
+      domainLabels: dom.map((k) => m.classLabel.get(k) || k),
+      rangeLabels: rng.map((k) => m.classLabel.get(k) || k),
+    });
+  }
+  return out;
+}
+
+/** 清除全部推理边（§9 风险 3 的「清除所有推理边」按钮）。 */
+function clearInferredEdges() {
+  const R = reason();
+  const g = getGraph();
+  if (!R || !R.infer) {
+    // 推理层不可用时也要能清：直接按 inferred 标记过滤，不依赖 infer.js
+    const kept = (g.edges || []).filter((e) => e && !e.inferred);
+    const removed = (g.edges || []).length - kept.length;
+    saveGraph(g.nodes, kept);
+    setGraphMeta({ lastInferredAt: 0, inferredStale: false });
+    return { ok: true, removed, total: kept.length };
+  }
+  const res = R.infer.stripInferred(g);
+  saveGraph(g.nodes, res.edges);
+  setGraphMeta({ lastInferredAt: 0, inferredStale: false });
+  return { ok: true, removed: res.removed, total: res.edges.length };
+}
+
+/**
+ * 删除一条边并级联清理依赖它的推理边（§5.3）。
+ * @param {number} edgeIdx  当前 graph.edges 数组下标
+ */
+function deleteEdgeWithCascade(edgeIdx) {
+  const g = getGraph();
+  const idx = Number(edgeIdx);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= (g.edges || []).length) return { ok: false, error: '边下标越界' };
+  const target = g.edges[idx];
+  const R = reason();
+  let removed = 1, cascaded = 0, kept;
+  if (R && R.infer) {
+    const res = R.infer.removeEdgeWithCascade(g, idx);
+    removed = res.removed; cascaded = res.cascaded; kept = res.edges;
+  } else {
+    kept = g.edges.filter((_, i) => i !== idx);
+  }
+  saveGraph(g.nodes, kept);
+  // §5.4：删除后推理结果不再完整 → 标记过期，UI 提示「图谱已变更，建议重新推理」
+  setGraphMeta({ inferredStale: true });
+  return { ok: true, removed, cascaded, total: kept.length, edge: target ? { from: target.from, to: target.to, rel: target.rel } : null };
+}
+
+/** 删除一个节点并级联清理（§5.3）。 */
+function deleteNodeWithCascade(nodeId) {
+  const g = getGraph();
+  const id = String(nodeId || '');
+  if (!id) return { ok: false, error: '未指定节点' };
+  const before = (g.nodes || []).length;
+  const nodes = (g.nodes || []).filter((n) => n && n.id !== id);
+  if (nodes.length === before) return { ok: false, error: '节点不存在：' + id };
+  const R = reason();
+  let removed = 0, cascaded = 0, kept;
+  if (R && R.infer) {
+    const res = R.infer.removeNodeWithCascade(g, id);
+    removed = res.removed; cascaded = res.cascaded;
+    kept = (g.edges || []).filter((e) => e && e.from !== id && e.to !== id);
+  } else {
+    kept = (g.edges || []).filter((e) => e && e.from !== id && e.to !== id);
+    removed = (g.edges || []).length - kept.length;
+  }
+  saveGraph(nodes, kept);
+  setGraphMeta({ inferredStale: true });
+  return { ok: true, nodeId: id, removedEdges: removed, cascaded, nodeCount: nodes.length, edgeCount: kept.length };
+}
+
+/**
+ * 单节点影响面（§6.5 实体详情面板的「影响面」区块）。
+ * @param {string} nodeId
+ * @param {object} [opts] {maxDepth, maxNodes, direction, followSymmetric, includeInferred}
+ */
+function impactClosureFor(nodeId, opts = {}) {
+  const R = reason();
+  if (!R || !R.impact) return { ok: false, error: reasonUnavailableReason() || '推理模块不可用' };
+  const g = getGraph();
+  const id = String(nodeId || '');
+  const seed = (g.nodes || []).find((n) => n && n.id === id);
+  if (!seed) return { ok: false, error: '节点不存在：' + id };
+  const pid = String(seed.profile || id.split(':')[0] || 'bfo-lite');
+  let prof;
+  try { prof = resolveOntology(pid); } catch (err) { return { ok: false, error: '体系解析失败：' + err.message }; }
+  let rel;
+  try { rel = R.impact.impactRelations(prof); } catch (_) { rel = { transitive: [], symmetric: [], inverseOf: {}, usable: false }; }
+  if (!rel || !rel.usable) {
+    return { ok: true, usable: false, profileId: pid, profileName: prof.name, nodes: [], facts: [], summary: '',
+      hint: '该体系未声明传递/互逆谓词，无法做影响面闭包' };
+  }
+  let impacted;
+  try {
+    impacted = R.impact.impactClosure(g, prof, id, {
+      maxDepth: opts.maxDepth,
+      maxNodes: opts.maxNodes,
+      direction: opts.direction || 'downstream',
+      followSymmetric: !!opts.followSymmetric,
+      includeInferred: opts.includeInferred !== false,
+    });
+  } catch (err) { return { ok: false, error: '闭包计算失败：' + err.message }; }
+  let facts = [];
+  try { facts = R.impact.impactToFacts(g, seed, impacted, { limit: Number(opts.limit) || 40 }); } catch (_) {}
+  let summary = '';
+  try { summary = R.impact.impactSummary(prof, impacted, {}); } catch (_) {}
+  return {
+    ok: true, usable: true,
+    profileId: pid, profileName: prof.name,
+    seed: { id: seed.id, name: seed.name, type: seed.type },
+    nodes: impacted,
+    facts,
+    summary,
+    inferredCount: impacted.filter((x) => x && x.inferred).length,
+  };
+}
+
+/**
+ * OWL 导入预览（§6.9）：只解析不落库，让用户先看到类/谓词/子语言判定/降级说明，
+ * 再决定是否真正导入（真正导入走 importOwl）。
+ */
+async function previewOwlImport(filePath, opts = {}) {
+  const R = reason();
+  if (R && R.owlImport && typeof R.owlImport.importOwlExtended === 'function') {
+    const res = await R.owlImport.importOwlExtended(filePath, { ...opts, previewOnly: true });
+    return { ok: true, ...res };
+  }
+  const { parseOwlFile } = require('./owl');
+  const { profile, report } = parseOwlFile(filePath, opts);
+  return { ok: true, profile, report, profileCheck: null, preview: null, via: 'owl.js' };
+}
+
+/**
+ * 全图校验（融合设计 §12.2.3 通道 C）：对已落库的整张图按指定体系重跑
+ * 未知谓词 / domain / range 三类检查 + 节点不相交归属检查（cax-dw 的只读等价）。
+ *
+ * 边界：**只读、只报告**——不改 rel、不删边、不写 inferredStale。修复动作留给用户。
+ * 不依赖推理器：reason/validate.js 纯 guard 逻辑，protege-js 缺失时照常可跑
+ * （降级探针拦截 reason/* 时本入口返回 {ok:false}，不抛错）。
+ *
+ * @param {string} [profileId] 缺省取当前绑定体系（readOntologyKv）
+ * @param {object} [opts]      { includeInferred=true, strictUnknownType=false }
+ * @returns {{ok:boolean, profileId:string, profileName:string, checked:number,
+ *            violations:Array, byReason:object, byRel:object, disjointConflicts:Array,
+ *            coverage:object, truncated:boolean, at:number}}  // 11 字段硬契约
+ */
+function validateGraph(profileId, opts = {}) {
+  const R = reason();
+  if (!R || !R.validate || !R.guard) {
+    return { ok: false, error: reasonUnavailableReason() || '校验模块不可用', at: Date.now() };
+  }
+  const pid = profileId || readOntologyKv().profileId || 'bfo-lite';
+  let prof;
+  try { prof = resolveOntology(pid); } catch (err) {
+    return { ok: false, error: String((err && err.message) || err), at: Date.now() };
+  }
+  const g = getGraph();
+  try {
+    const result = R.validate.validateGraph(g, prof, opts || {});
+    // 给越界边与不相交归属冲突补「知识图谱（domain）」的展示名（模版名），
+    // 与推理 Tab 冲突列表 / listGraphScopes 口径一致；reason/ 内为纯版本回退标签
+    if (result && Array.isArray(result.disjointConflicts)) {
+      for (const c of result.disjointConflicts) {
+        if (c) c.scopeLabel = domainLabelOf(c.domain);
+      }
+    }
+    if (result && Array.isArray(result.violations)) {
+      for (const x of result.violations) {
+        if (x) x.scopeLabel = domainLabelOf(x.domain);
+      }
+    }
+    return result;
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err), at: Date.now() };
+  }
+}
+
+// ===========================================================================
+// 冲突自动修复（冲突自动处理方案2/3）：规划 → 应用 → 撤销
+//
+// 数据流：上次推理落库的 lastStats.inconsistencyDetails（capInconsistencies 产物，
+//   含 nodeIds/raw）→ repair.planRepairs 生成动作清单（纯函数，不落库）
+//   → 用户在 UI 预览确认 → applyRepairs 落库 + 重推理 → 冲突数应下降。
+// 撤销：应用前把 nodes/edges 快照进 kv 'graph.repairUndo'，undoRepair 原样恢复。
+//   只保留最近一次快照（一步撤销）——修复本身可重复执行，多步历史收益低、
+//   而整图快照很占 kv。
+// LLM 语义仲裁（方案3）：settings.graphRepairLlm 开启且调用方 opts.llmArbitrate
+//   不为 false 时，对「降级谓词 vs 改节点类型」多解冲突征询模型；失败静默退回
+//   确定性动作（repair.planOne 内部已兜底）。
+// ===========================================================================
+const REPAIR_UNDO_KEY = 'graph.repairUndo';
+
+/** LLM 仲裁开关：settings.graphRepairLlm，默认关（修复要可预期，模型参与是显式选择）。 */
+function repairLlmEnabled(settings) {
+  return !!(settings && settings.graphRepairLlm);
+}
+
+/**
+ * 规划修复动作（dry-run，不改任何数据）。
+ * @param {object} [opts]
+ * @param {number[]} [opts.conflictIdxs]  只规划指定下标的冲突（明细列表中的序号）；缺省全部
+ * @param {boolean}  [opts.llmArbitrate]  是否允许 LLM 仲裁（还要 settings.graphRepairLlm 开启）
+ * @param {boolean}  [opts.refresh]       true = 先重跑一轮推理取最新冲突再规划（默认用上次落库的明细）
+ */
+async function planRepairs(opts = {}) {
+  const R = reason();
+  if (!R || !R.repair) return { ok: false, error: reasonUnavailableReason() || '修复模块不可用' };
+  const s = readSettingsSafe();
+  if (!reasonEnabled(s)) return { ok: false, error: '推理功能已在设置中关闭，无法规划修复' };
+
+  let conflicts = [];
+  if (opts.refresh) {
+    const r = await runInference(s, {});
+    if (!r || !r.ok) return { ok: false, error: (r && r.error) || '重推理失败，无法获取最新冲突' };
+    conflicts = r.inconsistencies || [];
+  } else {
+    const det = (getGraphMeta().lastStats || {}).inconsistencyDetails;
+    conflicts = (det && det.items) || [];
+  }
+  if (opts.conflictIdxs && opts.conflictIdxs.length) {
+    const want = new Set(opts.conflictIdxs.map(Number));
+    conflicts = conflicts.filter((_, i) => want.has(i));
+  }
+  if (!conflicts.length) {
+    return { ok: true, actions: [], byKind: {}, autoCount: 0, manualCount: 0, conflictCount: 0, hint: '没有待修复的冲突（先运行推理/校验）' };
+  }
+  // 旧版本落库的冲突明细没有 nodeIds/raw（修复定位靠这两个字段），
+  // 直接规划会得到「N 处冲突 → 0 个动作」的死胡同。这里显式给出可操作提示，
+  // 而不是让用户对着空预览猜原因。点「一键修复」（refresh:true）或「立即推理」即可刷新明细。
+  const legacyDetails = !opts.refresh && conflicts.every((c) => !c || !Array.isArray(c.nodeIds) || !c.nodeIds.length);
+
+  const g = getGraph();
+  const profCache = new Map();
+  const resolveProfile = (pid) => {
+    if (profCache.has(pid)) return profCache.get(pid);
+    let p = null;
+    try { p = resolveOntology(pid); } catch (_) { p = null; }
+    profCache.set(pid, p);
+    return p;
+  };
+
+  const planOpts = {};
+  if (opts.llmArbitrate !== false && repairLlmEnabled(s)) {
+    planOpts.arbitrate = async (q) => {
+      const ans = await chatOnce(s, [
+        {
+          role: 'system',
+          content: '你是知识图谱本体一致性仲裁器。给定一个节点与其声明类型、以及推理强制归入的候选互斥类，判断该节点语义上更应属于哪个类。只输出类名本身，不要解释。',
+        },
+        {
+          role: 'user',
+          content: `节点「${q.nodeName}」（描述：${(q.nodeDesc || '无').slice(0, 200)}）当前声明类型为「${q.nodeType}」。\n`
+            + `本体冲突（${q.rule}）：${q.reasonZh}\n`
+            + `推理通过边的 domain/range 把它强制归入的候选类：${q.candidates.join('、')}。\n`
+            + `问题：该节点语义上更应属于「${q.nodeType}」还是候选类之一？若应改类型，从候选类中选出最贴切的一个并只输出其类名；若当前类型正确（应保留边降级方案），只输出「${q.nodeType}」。`,
+        },
+      ], undefined, undefined, undefined);
+      return String(ans || '').trim().split(/[\n。，,;；]/)[0].trim();
+    };
+  }
+
+  try {
+    const plan = await R.repair.planRepairs(conflicts, g, resolveProfile, planOpts);
+    const out = { ok: true, ...plan, llmArbitrate: !!planOpts.arbitrate, at: Date.now() };
+    if (legacyDetails && !(out.actions || []).length) {
+      out.hint = '冲突明细是旧版本推理留下的（缺少定位所需的节点信息），无法直接规划修复。请先点「立即推理」刷新，或用「一键修复」自动重推理后再规划。';
+    }
+    return out;
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err), at: Date.now() };
+  }
+}
+
+/**
+ * 问题汇总表行级修复入口（v1.2.2）：入参是 validate.js 产出的问题条目子集
+ * （violations / disjointConflicts 的行），dry-run 规划，不落库。
+ * 与 planRepairs 的区别：不按「推理冲突明细」规划，而按「体检报告的行」规划，
+ * 让用户对 195 条越界边里的某一条单独点「修复」。
+ * @param {Array} issues validate.js 的 violation / disjointConflicts 条目
+ */
+async function planRepairsForIssues(issues) {
+  const R = reason();
+  if (!R || !R.repair) return { ok: false, error: reasonUnavailableReason() || '修复模块不可用' };
+  const s = readSettingsSafe();
+  if (!reasonEnabled(s)) return { ok: false, error: '推理功能已在设置中关闭，无法规划修复' };
+  const list = Array.isArray(issues) ? issues.filter(Boolean) : [];
+  if (!list.length) return { ok: true, actions: [], byKind: {}, autoCount: 0, manualCount: 0, conflictCount: 0, hint: '没有选中的问题行' };
+  const g = getGraph();
+  const profCache = new Map();
+  const resolveProfile = (pid) => {
+    if (profCache.has(pid)) return profCache.get(pid);
+    let p = null;
+    try { p = resolveOntology(pid); } catch (_) { p = null; }
+    profCache.set(pid, p);
+    return p;
+  };
+  try {
+    const plan = await R.repair.planIssues(list, g, resolveProfile);
+    return { ok: true, ...plan, llmArbitrate: false, at: Date.now() };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err), at: Date.now() };
+  }
+}
+
+/**
+ * 应用修复动作：快照撤销点 → 施加动作 → 落库 → 重推理验证。
+ * @param {Array} actions  planRepairs 返回的动作（UI 可让用户勾选子集）
+ * @param {object} [opts]  { rerun=true 修复后是否立即重推理 }
+ */
+async function applyRepairs(actions, opts = {}) {
+  const R = reason();
+  if (!R || !R.repair) return { ok: false, error: reasonUnavailableReason() || '修复模块不可用' };
+  const list = Array.isArray(actions) ? actions.filter((a) => a && a.kind && a.kind !== 'manual') : [];
+  if (!list.length) return { ok: false, error: '没有可自动应用的动作' };
+  const g = getGraph();
+  let res;
+  try { res = R.repair.applyActions(g, list); } catch (err) {
+    return { ok: false, error: '施加动作失败：' + String((err && err.message) || err) };
+  }
+  if (!res.applied.length) {
+    return { ok: false, error: '所有动作都无法定位目标（图谱可能已变化），请重新规划', skipped: res.skipped };
+  }
+  // 撤销快照：一步撤销，整图 nodes/edges（大图也就几 MB，kv 可承受；与图谱同生命周期）
+  try {
+    db.setKv(REPAIR_UNDO_KEY, JSON.stringify({ at: Date.now(), nodes: g.nodes, edges: g.edges }));
+  } catch (_) { /* 快照失败不阻断修复，只是没有撤销点 */ }
+  saveGraph(res.nodes, res.edges);
+  setGraphMeta({ inferredStale: true });
+  const out = {
+    ok: true,
+    applied: res.applied.length,
+    appliedZh: res.applied.map((a) => a.actionZh || ''),
+    skipped: res.skipped || [],
+    nodes: res.nodes.length,
+    edges: res.edges.length,
+    rerun: null,
+  };
+  // 修复后重推理：验证冲突是否消除，并刷新推理边（§5.4 旧推理产物一律重算）
+  if (opts.rerun !== false) {
+    try {
+      const r = await runInference(null, {});
+      out.rerun = r && r.ok
+        ? { skipped: !!r.skipped, inconsistencies: r.skipped ? 0 : (r.inconsistencies || []).length, inferredEdges: r.inferredEdges || 0 }
+        : { skipped: true, error: (r && r.error) || '重推理失败' };
+    } catch (err) {
+      out.rerun = { skipped: true, error: String((err && err.message) || err) };
+    }
+  }
+  return out;
+}
+
+/**
+ * 逐动作应用修复（作业版）：与 applyRepairs 同一套语义（快照 → 施加 → 落库 → 重推理），
+ * 但每个动作独立施加、独立落库、独立回调，供「图谱冲突修复」作业把每个动作呈现为一条子任务。
+ * 单个动作失败/无法定位不中断整个作业：记入 failed/skipped，作业终态为 warning（部分失败）。
+ * @param {Array} actions  planRepairs 产出的动作（UI 勾选后的子集）
+ * @param {object} [opts]
+ * @param {(i:number,status:'running'|'done'|'failed'|'skipped',output?:string)=>void} [opts.onTask]
+ * @param {(done:number,total:number)=>void} [opts.onProgress]
+ * @param {AbortSignal} [opts.signal]  作业停止信号：已应用的动作保留（每步已落库），剩余不再执行
+ * @param {boolean} [opts.rerun]  修复后是否重推理验证（默认 true）
+ */
+async function applyRepairsStepwise(actions, opts = {}) {
+  const R = reason();
+  if (!R || !R.repair) return { ok: false, error: reasonUnavailableReason() || '修复模块不可用' };
+  const list = (Array.isArray(actions) ? actions : []).filter((a) => a && a.kind && a.kind !== 'manual');
+  if (!list.length) return { ok: false, error: '没有可自动应用的动作' };
+  const g0 = getGraph();
+  // 撤销快照先于任何改动：作业中途停止/部分失败时，仍可一步回到修复前。
+  // opts.snapshot === false（单任务重跑）不覆盖既有快照——撤销点仍指向整批修复前的原图
+  if (opts.snapshot !== false) {
+    try {
+      db.setKv(REPAIR_UNDO_KEY, JSON.stringify({ at: Date.now(), nodes: g0.nodes, edges: g0.edges }));
+    } catch (_) { /* 快照失败不阻断修复，只是没有撤销点 */ }
+  }
+  let work = { nodes: g0.nodes, edges: g0.edges };
+  const applied = [];
+  const skipped = [];
+  const failed = [];   // { taskNo, label, error } —— 与作业 warning 语义对齐
+  let aborted = false;
+  for (let i = 0; i < list.length; i++) {
+    if (opts.signal && opts.signal.aborted) { aborted = true; break; }
+    const a = list[i];
+    const label = a.actionZh || a.kind;
+    if (opts.onTask) { try { opts.onTask(i, 'running'); } catch (_) {} }
+    try {
+      // 单动作施加：applyActions 是纯函数，逐条调用可精确定位「哪一步没打上」
+      const r = R.repair.applyActions(work, [a]);
+      if (r.applied.length) {
+        work = { nodes: r.nodes, edges: r.edges };
+        applied.push(a);
+        saveGraph(work.nodes, work.edges); // 每步落库：停止/崩溃时已应用部分不丢
+        if (opts.onTask) { try { opts.onTask(i, 'done', `已应用：${label}`); } catch (_) {} }
+      } else {
+        const why = (r.skipped && r.skipped[0] && r.skipped[0].reason) || '目标不存在（图谱可能已变化）';
+        skipped.push({ actionZh: label, reason: why });
+        if (opts.onTask) { try { opts.onTask(i, 'skipped', `已跳过：${why}`); } catch (_) {} }
+      }
+    } catch (err) {
+      const msg = String((err && err.message) || err);
+      failed.push({ taskNo: i + 1, label, error: msg });
+      if (opts.onTask) { try { opts.onTask(i, 'failed', '失败：' + msg); } catch (_) {} }
+    }
+    if (opts.onProgress) { try { opts.onProgress(i + 1, list.length); } catch (_) {} }
+  }
+  if (aborted) {
+    const err = new Error('用户手动停止作业');
+    err.name = 'AbortError';
+    err.partial = { applied: applied.length, skipped, failed, nodes: work.nodes.length, edges: work.edges.length };
+    throw err;
+  }
+  if (!applied.length && !skipped.length) {
+    // 全部动作都抛错：按作业失败处理（没有任何产出）
+    const e = new Error(`全部 ${failed.length} 个修复动作执行失败：${failed[0] ? failed[0].error : '未知错误'}`);
+    e.failedTasks = failed;
+    throw e;
+  }
+  setGraphMeta({ inferredStale: true });
+  const out = {
+    ok: true,
+    applied: applied.length,
+    appliedZh: applied.map((a) => a.actionZh || ''),
+    skipped,
+    // failedTasks 非空 → runJob 把作业标为 warning（部分失败），卡片上可看到哪条动作没打上
+    failedTasks: failed,
+    nodes: work.nodes.length,
+    edges: work.edges.length,
+    rerun: null,
+  };
+  if (opts.rerun !== false) {
+    try {
+      const r = await runInference(null, {});
+      out.rerun = r && r.ok
+        ? { skipped: !!r.skipped, inconsistencies: r.skipped ? 0 : (r.inconsistencies || []).length, inferredEdges: r.inferredEdges || 0 }
+        : { skipped: true, error: (r && r.error) || '重推理失败' };
+    } catch (err) {
+      out.rerun = { skipped: true, error: String((err && err.message) || err) };
+    }
+  }
+  return out;
+}
+
+/** 撤销最近一次修复：恢复快照的 nodes/edges 并重推理。 */
+async function undoRepair(opts = {}) {
+  let snap = null;
+  try { snap = JSON.parse(db.getKv(REPAIR_UNDO_KEY) || 'null'); } catch (_) { snap = null; }
+  if (!snap || !Array.isArray(snap.nodes) || !Array.isArray(snap.edges)) {
+    return { ok: false, error: '没有可撤销的修复记录（只保留最近一次）' };
+  }
+  saveGraph(snap.nodes, snap.edges);
+  try { db.setKv(REPAIR_UNDO_KEY, ''); } catch (_) { /* 清掉撤销点，防止重复撤销 */ }
+  setGraphMeta({ inferredStale: true });
+  const out = { ok: true, nodes: snap.nodes.length, edges: snap.edges.length, at: snap.at || 0, rerun: null };
+  if (opts.rerun !== false) {
+    try {
+      const r = await runInference(null, {});
+      out.rerun = r && r.ok
+        ? { skipped: !!r.skipped, inconsistencies: r.skipped ? 0 : (r.inconsistencies || []).length, inferredEdges: r.inferredEdges || 0 }
+        : { skipped: true, error: (r && r.error) || '重推理失败' };
+    } catch (err) {
+      out.rerun = { skipped: true, error: String((err && err.message) || err) };
+    }
+  }
+  return out;
+}
+
+/** 是否存有撤销点（UI 用来置灰「撤销修复」按钮）。 */
+function repairUndoAvailable() {
+  try {
+    const snap = JSON.parse(db.getKv(REPAIR_UNDO_KEY) || 'null');
+    return !!(snap && Array.isArray(snap.nodes));
+  } catch (_) { return false; }
+}
+
+module.exports = { getGraph, saveGraph, clearGraph, extractGraph, contextFor, recallFor, getOntology, setOntologyProfile, saveOntologyItem, removeOntologyItem, listProfiles, resolveOntology, kgAsk, resolveSources, importOwl, removeOwlProfile, listGraphScopes, scopeFilter,
+  // ---------- 推理层对外接口（设计文档 §4–§6） ----------
+  runInference, getReasonState, clearInferredEdges, deleteEdgeWithCascade, deleteNodeWithCascade,
+  impactClosureFor, predicateFeatures, reasonStatus, previewOwlImport, validateGraph,
+  // ---------- 冲突自动修复（方案2/3） ----------
+  planRepairs, planRepairsForIssues, applyRepairs, applyRepairsStepwise, undoRepair, repairUndoAvailable,
+  // 内部工具（测试与调试用）
+  getGraphMeta, setGraphMeta, reasonReady, reasonEnabled, reasonUnavailableReason, SKIP_REASON_TEXT };

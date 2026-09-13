@@ -38,12 +38,26 @@ function withModelParams(body, settings) {
   return body;
 }
 
+// 思考链总开关：settings.thinkingEnabled === false 时全局关闭思考（默认开启，保持既有行为）。
+// 用途：本地小显存/慢速模型跑批量作业（如样例案例 runner）时，思考链会把单次抽取从
+// 数十秒拖到数分钟（实测 27B Q4 抽取任务 74s→37s，长资料批次 8min→约 4min），
+// 而结构化抽取/图谱问答的质量由提示词与图谱事实兜底，不依赖模型自述推理。
+function thinkingWanted(settings) {
+  return (settings || {}).thinkingEnabled !== false;
+}
+
 // 推理增量开关：各服务商默认行为不一（Ollama 需 think:true，DashScope/百炼 Qwen3.8 需 enable_thinking:true），
 // 未显式配置时按 provider 自动开启，使判定类请求（领域匹配/体系匹配等）也能把思考过程实时推给进度弹窗。
 function withThinking(body, settings) {
   if (body.think !== undefined || body.enable_thinking !== undefined) return body; // 调用方已显式指定（含 false）
   const s = settings || {};
   const provider = String(s.apiProvider || '');
+  if (!thinkingWanted(s)) {
+    // 显式关闭：必须下发 false，否则思考型模型可能按自身默认继续思考
+    if (provider === 'ollama') body.think = false;
+    else if (provider === 'dashscope' || provider === 'aliyun' || provider === 'bailian') body.enable_thinking = false;
+    return body;
+  }
   if (provider === 'ollama') {
     body.think = true;
   } else if (provider === 'dashscope' || provider === 'aliyun' || provider === 'bailian') {
@@ -299,7 +313,7 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
       model: normalizeModel(settings.model),
       messages,
       stream: true,
-      think: true,
+      think: thinkingWanted(settings),
       options: { num_ctx: numCtx },
     };
     const s = settings || {};
@@ -331,6 +345,13 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
     if (!text) throw new RetriableError('模型返回为空');
     return text;
   };
+
+  // 实测（qwen3.8:27b @ Ollama）：/v1/chat/completions 会忽略 think:false，思考型模型照样
+  // 输出 reasoning（同一提示 366s/8473 字思考 vs 原生端点 71s/0 字）；只有原生 /api/chat
+  // 真正尊重 think:false。因此「显式关闭思考 + Ollama」时直接走原生端点，不再先试 /v1。
+  if (isOllama && !thinkingWanted(settings)) {
+    return await tryNativeChat();
+  }
 
   try {
     let resp;

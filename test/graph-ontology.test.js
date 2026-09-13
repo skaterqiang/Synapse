@@ -229,7 +229,8 @@ const json = (obj) => ({ status: 200, headers: { 'Content-Type': 'text/event-str
   // ---------- 8. importOwl / removeOwlProfile ----------
   section('importOwl / removeOwlProfile');
   const owlFile = writeFile(path.join(dir, 'mini.ttl'), makeTurtle(3));
-  const imp = graph.importOwl(owlFile);
+  // importOwl 已改为 async（走 reason/owlImport.js 的 protege-js 路径，失败自动降级 owl.js）
+  const imp = await graph.importOwl(owlFile);
   check('导入返回 profile 与 report', imp.profile.id === 'owl:mini' && imp.report.classCount === 4, JSON.stringify(imp.report));
   check('源文件复制到 data/ontology', fs.existsSync(path.join(env.dataRoot, 'ontology', 'mini.ttl')));
   check('导入后可切换体系', graph.setOntologyProfile('owl:mini').profileId === 'owl:mini');

@@ -154,6 +154,22 @@
     graphAsk: (payload) => call('graph:ask', payload),
     graphImportOwl: (body) => call('graph:importOwl', body),
     graphRemoveOwlProfile: (payload) => call('graph:removeOwlProfile', payload),
+    // 推理层（设计文档 §4–§6）
+    graphReasonStatus: () => call('graph:reasonStatus'),
+    graphReasonState: (profileId) => call('graph:reasonState', profileId),
+    graphRunInference: (opts) => call('graph:runInference', opts),
+    graphValidate: (profileId, opts) => call('graph:validate', { profileId, opts }),
+    graphClearInferred: () => call('graph:clearInferred'),
+    // 冲突自动修复（方案2/3）：web 端 call 只传单 body，applyRepairs 走 {actions, opts} 对象形态
+    graphPlanRepairs: (opts) => call('graph:planRepairs', opts || {}),
+    graphPlanRepairsForIssues: (issues) => call('graph:planRepairsForIssues', { issues: issues || [] }),
+    graphApplyRepairs: (actions, opts) => call('graph:applyRepairs', { actions, opts: opts || {} }),
+    graphUndoRepair: (opts) => call('graph:undoRepair', opts || {}),
+    graphDeleteEdge: (edgeIdx) => call('graph:deleteEdge', edgeIdx),
+    graphDeleteNode: (nodeId) => call('graph:deleteNode', nodeId),
+    graphImpactClosure: (nodeId, opts) => call('graph:impactClosure', { nodeId, opts }),
+    graphPredicateFeatures: (profileId) => call('graph:predicateFeatures', profileId),
+    graphPreviewOwl: (body) => call('graph:previewOwl', body),
     onKgFacts: on('kg:facts'),
     onKgStage: on('kg:stage'),
 

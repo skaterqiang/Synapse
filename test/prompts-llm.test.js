@@ -297,6 +297,27 @@ function fakeResp(pieces) {
     } finally { await fake.close(); }
   }
   {
+    // thinkingEnabled:false 显式关闭思考链（settings 级总开关）
+    // ollama：/v1 实测忽略 think:false（思考型模型照样输出 reasoning），必须直连原生 /api/chat
+    const fake = await startFakeLlm(({ url }) => (url === '/api/chat'
+      ? { status: 200, sse: [JSON.stringify({ message: { content: '原生回答' } }) + '\n'] }
+      : { status: 200, headers: { 'Content-Type': 'text/event-stream' }, sse: sseText('v1回答') }));
+    try {
+      const text = await llm.chatOnce(fake.settings({ apiProvider: 'ollama', thinkingEnabled: false }), [{ role: 'user', content: 'q' }]);
+      check('ollama+关思考 直连原生 /api/chat', fake.requests[0].url === '/api/chat', fake.requests[0].url);
+      check('原生请求体 think:false', fake.requests[0].body.think === false, JSON.stringify(fake.requests[0].body.think));
+      check('原生请求体带 options.num_ctx', fake.requests[0].body.options && Number(fake.requests[0].body.options.num_ctx) > 0, JSON.stringify(fake.requests[0].body.options));
+      check('返回原生端点正文', text === '原生回答', text);
+      // 非 ollama provider：留在 /v1，显式下发关闭标志
+      await llm.chatOnce(fake.settings({ apiProvider: 'dashscope', thinkingEnabled: false }), []);
+      check('dashscope+关思考 附加 enable_thinking:false', fake.requests[1].body.enable_thinking === false, JSON.stringify(fake.requests[1].body.enable_thinking));
+      check('dashscope+关思考 仍走 /v1', fake.requests[1].url === '/v1/chat/completions', fake.requests[1].url);
+      // 默认（未设置）不受影响：ollama 仍走 /v1 + think:true
+      await llm.chatOnce(fake.settings({ apiProvider: 'ollama' }), []);
+      check('默认行为不变：ollama 走 /v1 且 think:true', fake.requests[2].url === '/v1/chat/completions' && fake.requests[2].body.think === true, fake.requests[2].url + ' think=' + fake.requests[2].body.think);
+    } finally { await fake.close(); }
+  }
+  {
     // baseUrl 末尾斜杠归一
     const fake = await startFakeLlm(() => ({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, sse: sseText('x') }));
     try {

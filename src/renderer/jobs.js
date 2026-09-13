@@ -160,14 +160,14 @@ function buildJobCard(job) {
   if (job.status === 'running' || job.status === 'queued') {
     actions.appendChild(jobActionBtn(icoSvg('stop', 12) + ' 停止', 'danger', () => stopJob(job), '停止该作业：中断在途任务，未开始的批次不再执行'));
   }
-  // 失败可重试：lint / 图谱（payload 带来源即可重跑）/ 已保存来源的吸收作业
+  // 失败可重试：lint / 图谱（payload 带来源即可重跑）/ 冲突修复（source 持久化了动作清单）/ 已保存来源的吸收作业
   const hasRaw = (job.rawPaths && job.rawPaths.length) || (job.payload && job.payload.rawPaths && job.payload.rawPaths.length);
-  if (job.status === 'failed' && (job.type === 'lint' || job.type === 'graph' || job.type === 'extract-note' || hasRaw)) {
+  if (job.status === 'failed' && (job.type === 'lint' || job.type === 'graph' || job.type === 'graph-repair' || job.type === 'extract-note' || hasRaw)) {
     actions.appendChild(jobActionBtn(icoSvg('refresh', 12) + ' 重试', '', () => retryJob(job), '重新提交该作业'));
   }
   // 警告状态（部分任务失败）：重跑失败任务（仅对失败任务重新执行，不影响成功任务产物）
   const failedTaskNos = (job.result && Array.isArray(job.result.failedTasks)) ? job.result.failedTasks.map((f) => f.taskNo) : [];
-  if (job.status === 'warning' && failedTaskNos.length && job.type === 'graph') {
+  if (job.status === 'warning' && failedTaskNos.length && (job.type === 'graph' || job.type === 'graph-repair')) {
     actions.appendChild(jobActionBtn(icoSvg('refresh', 12) + ' 重跑失败任务', 'warn', () => retryFailedTasks(job), `重跑 ${failedTaskNos.length} 个失败任务：仅对这些来源重新抽取，成功任务产物保留`));
   }
   // MinerU 失败回退内置：提供「用 MinerU 重跑」，强制 MinerU 解析（不回退），原地更新笔记产物
@@ -275,12 +275,14 @@ function buildJobDetail(job) {
       row.className = 'job-task ' + (t.status || '') + (t.output ? ' has-out' : '');
       const chev = t.output ? `<span class="task-chev">${collapsed ? '▸' : '▾'}</span>` : '';
       row.innerHTML = `${t.no ? `<span class="job-task-no">${t.no}</span>` : ''}${chev}${ico}<span class="job-task-label">${escapeHtml(t.label)}</span>`;
-      // 失败任务：重跑按钮（仅图谱作业、非进行中状态）
-      if (t.status === 'failed' && job.type === 'graph' && job.status !== 'running' && job.status !== 'queued') {
+      // 失败任务：重跑按钮（图谱/冲突修复作业、非进行中状态）
+      if (t.status === 'failed' && (job.type === 'graph' || job.type === 'graph-repair') && job.status !== 'running' && job.status !== 'queued') {
         const rt = document.createElement('button');
         rt.className = 'task-retry';
         rt.textContent = '重跑';
-        rt.title = '重新执行该任务（仅对该来源重新抽取，不影响其他任务产物）';
+        rt.title = job.type === 'graph-repair'
+          ? '重新执行该修复动作（其余动作产物保留）'
+          : '重新执行该任务（仅对该来源重新抽取，不影响其他任务产物）';
         rt.addEventListener('click', (e) => { e.stopPropagation(); retryTask(job, t.no); });
         row.appendChild(rt);
       }
@@ -370,6 +372,40 @@ function buildJobDetail(job) {
     sum.className = 'job-summary';
     sum.textContent = '摘要：' + job.result.summary;
     detail.appendChild(sum);
+  }
+  // §6.10：图谱作业的推理摘要行 + 点击展开（推理边 + 护栏拦截），与推理 Tab 数据源一致
+  if (job.type === 'graph' && job.status === 'success' && job.result && job.result.reason) {
+    const rs = job.result.reason;
+    const guard = job.result.guard;
+    const sum = document.createElement('div');
+    sum.className = 'job-summary job-reason-summary';
+    const parts = [];
+    if (rs.skipped) {
+      parts.push(`推理：已跳过（${escapeHtml(rs.skipReason || '')}）`);
+    } else {
+      parts.push(`推理：+${Number(rs.inferredEdges) || 0} 条推理边`);
+      if (rs.rounds) parts.push(`（${Number(rs.rounds) || 0} 轮收敛${rs.elapsedMs ? `，${((Number(rs.elapsedMs) || 0) / 1000).toFixed(1)}s` : ''}）`);
+    }
+    if (guard && guard.total) parts.push(` · 护栏拦 ${Number(guard.total) || 0} 条`);
+    sum.textContent = parts.join('');
+    detail.appendChild(sum);
+    // 点击展开推理明细
+    const exp = document.createElement('div');
+    exp.className = 'job-reason-detail';
+    exp.hidden = true;
+    const lines = [];
+    if (rs.inferredEdges != null) lines.push(`新增推理边 ${Number(rs.inferredEdges) || 0} 条`);
+    if (rs.inconsistencies != null) lines.push(`检出冲突 ${Number(rs.inconsistencies) || 0} 处`);
+    if (rs.profileId) lines.push(`来源体系 ${escapeHtml(rs.profileId)}`);
+    if (guard && guard.byReason) {
+      const br = Object.entries(guard.byReason).map(([k, v]) => `${escapeHtml(k)}×${v}`).join('，');
+      if (br) lines.push(`护栏拦截明细：${br}`);
+    }
+    exp.innerHTML = lines.length ? lines.map((l) => `<div class="job-reason-line">${l}</div>`).join('') : '<div class="gd-desc">（无明细）</div>';
+    sum.style.cursor = 'pointer';
+    sum.title = '点击展开推理明细';
+    sum.addEventListener('click', (e) => { e.stopPropagation(); exp.hidden = !exp.hidden; });
+    detail.appendChild(exp);
   }
   return detail;
 }
@@ -475,6 +511,19 @@ function handleJobsUpdate(list) {
       if (j.status === 'success') toast('知识图谱抽取完成');
       else if (j.status === 'warning') toast('知识图谱抽取完成，部分任务失败', 4000);
       else if (j.status === 'failed') toast('知识图谱抽取失败：' + (j.error || ''), 4000);
+    }
+    // 修复作业终态：图谱已被改动（含部分应用/停止），刷新图谱与推理页；撤销按钮可用性同步刷新
+    if (j.type === 'graph-repair' && isDone && wasActive) {
+      loadGraph();
+      const r = j.result || {};
+      if (j.status === 'success') {
+        const rr = r.rerun || {};
+        toast(`修复完成：已应用 ${r.applied || 0} 个动作${rr.skipped ? '' : `，剩余冲突 ${rr.inconsistencies != null ? rr.inconsistencies : '?'}`}`, 4000);
+      } else if (j.status === 'warning') {
+        toast(`修复完成：已应用 ${r.applied || 0} 个动作，${(r.failedTasks || []).length} 个失败（可单条重跑）`, 4000);
+      } else if (j.status === 'failed') {
+        toast('修复作业失败：' + (j.error || '') + '（已应用的动作可在「推理」页撤销）', 5000);
+      }
     }
   }
   state.jobs = list;

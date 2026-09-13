@@ -18,6 +18,9 @@ const NUM_SETTING_FIELDS = {
   maxToolRounds: ['set-toolrounds', 1, 12],
   logTailLines: ['set-loglines', 1, 500],
   mineruTimeout: ['set-minerutimeout', 10, 21600],
+  // 推理超时（融合设计 §6.11）：范围与主进程 reasonTimeoutSec 的 num(...,30,5,120) 完全一致，
+  // 两边不同步会导致「设置里能填但主进程静默钳回」。
+  reasonTimeout: ['set-reason-timeout', 5, 120],
 };
 
 // ---------- 模型服务商 ----------
@@ -60,12 +63,48 @@ function graphGenColor(index) {
 // 图谱面板 Tab 名称
 const KG_TAB_NAMES = { overview: '概览', entities: '实体浏览', graph: '整体图谱', ontology: '本体定义', ask: '自然语言问答' };
 
+// ---------- 推理边（融合设计 §6.1/§6.4）----------
+// 推理边统一用紫色虚线，与原始边（灰色实线）在画布/图例/标签/详情四处共用同一套色值，
+// 保证「哪条边是推理得出的」在任何视图里都能一眼对上。
+const INFERRED_EDGE = {
+  color: '#8b5cf6',              // 紫色主色（标签/图例/徽标）
+  stroke: 'rgba(139,92,246,0.45)', // 画布连线
+  arrow: 'rgba(139,92,246,0.6)',   // 画布箭头
+  width: 1.2,
+  dash: [5, 4],                    // 虚线节奏
+};
+const RAW_EDGE = {
+  stroke: 'rgba(138,145,159,0.5)',
+  arrow: 'rgba(138,145,159,0.7)',
+  color: '#8a919f',
+  width: 1,
+};
+// 推导方式（边的 inferredVia）→ 中文说明，用于悬停 tooltip。
+// 取值来自 reason/bridge.js:justify()（symmetric/inverse/transitive/transitive+/
+// subproperty/equivalent-property/unknown）与 reason/infer.js 的兜底。
+const INFERRED_VIA_NAMES = {
+  transitive: '传递闭包（A→B→C ⇒ A→C）',
+  'transitive+': '传递闭包（多跳）',
+  symmetric: '对称反转（A↔B）',
+  inverse: '互逆反转（P 与 P⁻¹）',
+  subproperty: '子谓词继承',
+  'equivalent-property': '等价谓词',
+  unknown: '推理器得出（未记录推导路径）',
+};
+function inferredViaName(via) {
+  if (!via) return '';
+  return INFERRED_VIA_NAMES[via] || via;
+}
+// 注意：影响面闭包（reason/impact.js）里节点的 via 是**谓词名**（如「包含」），
+// 不是上面这套推导方式枚举，两者不要混用。
+
 // ---------- 作业 ----------
 // 作业类型图标：统一使用 index.html 顶部 SVG sprite 中的线性图标
 const JOB_TYPE_ICONS = {
   'extract-note': 'notes',
   ingest: 'download',
   graph: 'kg',
+  'graph-repair': 'clean',
   lint: 'checklist',
 };
 
