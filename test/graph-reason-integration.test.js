@@ -576,7 +576,8 @@ ex:knows a owl:ObjectProperty ; rdfs:label "认识" ; rdfs:domain ex:Thing ; rdf
   graph.clearGraph();
   const ttlPath = writeFile(path.join(env.dir, 'prev.ttl'), TTL_PREVIEW);
   const pv = await graph.previewOwlImport(ttlPath, {});
-  check('previewOwlImport 恰好 6 个字段', J(Object.keys(pv)) === '["ok","profile","report","profileCheck","preview","via"]', J(Object.keys(pv)));
+  check('previewOwlImport 恰好 7 个字段（新增 filePath 供前端确认导入复用）', J(Object.keys(pv)) === '["ok","profile","report","profileCheck","preview","via","filePath"]', J(Object.keys(pv)));
+  check('previewOwlImport 透传 filePath', pv.filePath === ttlPath, J(pv.filePath));
   check('走 protege-js 解析器（via="protege-js"）', pv.ok === true && pv.via === 'protege-js', J({ ok: pv.ok, via: pv.via }));
   check('preview 恰好 18 个字段', pv.preview && Object.keys(pv.preview).length === 18, J(pv.preview && Object.keys(pv.preview)));
   check('preview.counts = 2 类 / 1 谓词 / 4 公理 / 4 约束 / 0 个体 / 1 根', J(pv.preview.counts) === '{"classes":2,"predicates":1,"axioms":4,"constraints":4,"individuals":0,"roots":1}', J(pv.preview.counts));

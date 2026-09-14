@@ -2813,7 +2813,57 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .onto-tree-lbl-root{font-size:12.5px;fill:#fff;font-weight:700;text-anchor:middle;font-family:inherit}
 .onto-tree-lbl-desc{font-size:8.5px;fill:#6e7681;text-anchor:middle;font-family:inherit}
 
-/* ================= 推理（融合设计 §6）================= */
+/* ================= OWLViz 风格本体层级图 ================= */
+/* 容器复用 onto-tree-wrap 的卡片框，但用浅色面板底（贴合 Synapse 浅色主题） */
+.onto-viz-wrap{background:var(--panel);height:480px;cursor:grab}
+.onto-viz-wrap:active{cursor:grabbing}
+.onto-viz-wrap svg{display:block;width:100%;height:100%}
+/* 节点：圆角椭圆（fill/stroke 由 JS 按深度内联设置，此处只放交互/文本） */
+.ovz-node{cursor:pointer}
+.ovz-node ellipse{transition:filter .15s;stroke-width:1.4}
+.ovz-node.is-root ellipse{stroke-width:2}
+.ovz-node:hover ellipse{filter:brightness(.95) saturate(1.1)}
+.ovz-node,.ovz-edge,.ovz-edge-lbl{transition:opacity .15s}
+/* is-a 边：曲线 + 空心三角箭头 */
+.ovz-edge{stroke:#c3ccd9;stroke-width:1.4;fill:none}
+.ovz-edge.is-hl{stroke:var(--primary);stroke-width:2}
+.ovz-arrow-head{fill:var(--panel);stroke:#c3ccd9;stroke-width:1.2}
+/* 文本 */
+.ovz-lbl{font-size:12.5px;fill:var(--text);font-weight:600;text-anchor:middle;font-family:inherit}
+.ovz-lbl-en{font-size:9.5px;fill:var(--text-sub);text-anchor:middle;font-family:inherit}
+.ovz-lbl-cnt{font-size:8.5px;fill:var(--text-muted);text-anchor:middle;font-family:inherit}
+.ovz-edge-lbl{font-size:9px;fill:var(--text-muted);text-anchor:middle;font-family:ui-monospace,Consolas,monospace;font-style:italic}
+/* 选中态（与左侧 class hierarchy 双向联动） */
+.ovz-node.is-selected ellipse{stroke:var(--primary);stroke-width:2.6;filter:drop-shadow(0 0 5px rgba(16,185,129,.55))}
+/* 深度过滤角标 */
+.ovz-trunc-badge{font-size:10.5px;fill:var(--text-muted);text-anchor:end;font-family:inherit}
+
+/* OWLViz 两栏布局：左 class hierarchy 树 + 右画布（仿 Protégé 分栏） */
+.onto-viz-wrap{display:flex;gap:0;padding:0;cursor:default}
+.onto-viz-wrap:active{cursor:default}
+.och-pane{flex:0 0 240px;min-width:200px;max-width:300px;border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;background:var(--sidebar-bg)}
+.ovz-pane{flex:1;min-width:0;position:relative;cursor:grab}
+.ovz-pane:active{cursor:grabbing}
+.ovz-pane svg{display:block;width:100%;height:100%}
+/* class hierarchy 树（仿 Protégé 左侧面板） */
+.och-head{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--panel)}
+.och-head-title{font-size:12px;font-weight:600;color:var(--text)}
+.och-head-sub{font-size:10px;color:var(--text-muted);padding:1px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg)}
+.och-tree{flex:1;overflow:auto;padding:6px 4px;font-size:12.5px}
+.och-empty{padding:20px;text-align:center;color:var(--text-muted);font-size:12px}
+.och-row{display:flex;align-items:center;gap:5px;padding:2px 8px 2px calc(8px + var(--d,0)*16px);border-radius:6px;cursor:pointer;white-space:nowrap;line-height:1.9;color:var(--text);width:max-content;min-width:100%}
+.och-row:hover{background:var(--primary-lighter)}
+.och-row.is-selected{background:var(--primary-light);color:var(--primary-hover);font-weight:600}
+.och-caret{flex:none;width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text-muted)}
+.och-caret::before{content:'';border-left:4px solid currentColor;border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;transform:rotate(90deg);transition:transform .12s}
+.och-caret.is-collapsed::before{transform:rotate(0)}
+.och-caret-leaf::before{content:'';border:none}
+.och-caret-leaf{cursor:default}
+.och-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--primary);opacity:.85}
+.och-dot.is-custom{background:transparent;border:1.6px solid var(--warning);opacity:1}
+.och-lbl{flex:none}
+.och-cnt{margin-left:8px;flex:none;font-size:10px;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:0 6px;line-height:1.5}
+.och-kids{margin-left:0}
 /* §6.1/§6.4 图例与标签 */
 .lg-edge { display:inline-flex; align-items:center; gap:6px; margin:0 8px 4px 0; font-size:11px; color:var(--text-sub); }
 .lg-edge .lg-line { width:22px; height:2px; border-radius:1px; display:inline-block; }

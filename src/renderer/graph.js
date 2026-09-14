@@ -497,6 +497,7 @@ function renderKgTab() {
   else if (tab === 'entities') renderKgEntities();
   else if (tab === 'graph') startGraphSim();
   else if (tab === 'ontology') renderKgOntology();
+  else if (tab === 'reason') renderKgReasonTab($('kg-reason-body'), state.kg.onto && state.kg.onto.profileId);
 }
 
 function kgCard(icon, num, label, sub) {
@@ -729,52 +730,110 @@ async function renderKgOntology() {
     kgCard('mcp', o.stats.edgeCount, '关系总数', '全部体系') +
     kgCard('table', o.stats.axiomCount || 0, '逻辑公理', o.profileName);
 
-  // 视图切换：结构树 / 列表
-  const view = state.kg.ontoView || 'tree';
-  const treeWrap = $('onto-tree-wrap');
+  // 视图切换：OWLViz / 列表（'tree' 已废弃，归一为 'viz'）
+  let view = state.kg.ontoView || 'viz';
+  if (view !== 'viz' && view !== 'list') view = 'viz';
+  state.kg.ontoView = view;
+  const vizWrap = $('onto-viz-wrap');
   const listBar = $('onto-list-bar');
   const listBody = $('kg-onto-body');
   document.querySelectorAll('#onto-view-tabs button').forEach((x) => x.classList.toggle('active', x.dataset.ov === view));
-  if (treeWrap) treeWrap.hidden = view !== 'tree';
+  if (vizWrap) vizWrap.hidden = view !== 'viz';
   if (listBar) listBar.hidden = view !== 'list';
   if (listBody) listBody.hidden = view !== 'list';
-  // 公理 tab 只读：隐藏「新增」按钮；推理 tab 是观测面板，同样无「新增」
+  // 公理 tab 只读：隐藏「新增」按钮
   const btnOntoAdd = $('btn-onto-add');
-  if (btnOntoAdd) btnOntoAdd.hidden = view === 'list' && (state.kg.ontoTab === 'axioms' || state.kg.ontoTab === 'reason');
+  if (btnOntoAdd) btnOntoAdd.hidden = view === 'list' && state.kg.ontoTab === 'axioms';
   // 列表视图时同步 Tab 高亮（外部代码直接改 state.kg.ontoTab 后 render 也要生效）
   if (view === 'list') {
     document.querySelectorAll('#kg-onto-tabs button').forEach((x) => x.classList.toggle('active', x.dataset.ot === state.kg.ontoTab));
   }
 
-  // 顶层本体结构树（设计 §7.1）
-  if (view === 'tree' && treeWrap && window.renderOntologyTree) {
-    treeWrap.innerHTML = '<svg id="onto-tree-svg" role="img" aria-label="本体结构树"></svg>';
-    const svg = $('onto-tree-svg');
-    const ontoForTree = {
-      classes: (o.classes || []).map((c) => ({ key: c.key, label: c.label, desc: c.desc, parent: c.parent || null, custom: !!c.custom })),
+  // 点击类节点：切到列表视图并高亮对应类卡片
+  const jumpToClassCard = (cls) => {
+    state.kg.ontoView = 'list';
+    state.kg.ontoTab = 'classes';
+    document.querySelectorAll('#kg-onto-tabs button').forEach((x) => x.classList.toggle('active', x.dataset.ot === 'classes'));
+    renderKgOntology();
+    setTimeout(() => {
+      const cards = document.querySelectorAll('#kg-onto-body .kg-class');
+      for (const card of cards) {
+        const code = card.querySelector('code');
+        if (code && code.textContent === cls.key) {
+          card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          card.style.outline = '1.5px solid var(--accent)';
+          card.style.outlineOffset = '2px';
+          setTimeout(() => { card.style.outline = ''; card.style.outlineOffset = ''; }, 1800);
+          break;
+        }
+      }
+    }, 30);
+  };
+  // OWLViz 风格横向 is-a 层级图（默认图形视图）
+  if (view === 'viz' && vizWrap && window.renderOntologyViz) {
+    // 两栏布局：左 class hierarchy 树 + 右 OWLViz 画布（仿 Protégé），共享 selectedKey 双向联动
+    vizWrap.innerHTML = '<div class="och-pane" id="onto-class-hierarchy"></div><div class="ovz-pane" id="onto-viz-canvas"></div>';
+    const hierPane = $('onto-class-hierarchy');
+    const canvasPane = $('onto-viz-canvas');
+    const vizClasses = (o.classes || []).map((c) => ({ key: c.key, label: c.label, desc: c.desc, parent: c.parent || null, custom: !!c.custom, instances: c.instances || 0 }));
+    // 共享选中态（跨重渲保持）；focusKey 控制 OWLViz 深度聚焦子图
+    if (!state.kg.vizSel) state.kg.vizSel = { key: null, collapsed: {} };
+    const sel = state.kg.vizSel;
+    const ontoForViz = { classes: vizClasses };
+
+    // 渲染右侧 OWLViz 画布（可重入：聚焦/取消聚焦时重建 SVG）
+    // focusKey 有值 → 画该节点前 3 级祖先 + 后 3 级子孙；无值 → 默认前 3 级
+    const renderVizCanvas = (focusKey) => {
+      canvasPane.innerHTML = '<svg id="onto-viz-svg" role="img" aria-label="本体 OWLViz 层级图"></svg>';
+      const svg = $('onto-viz-svg');
+      window.renderOntologyViz(svg, ontoForViz, {
+        focusKey: focusKey || null,
+        maxDepth: 3, upDepth: 3, downDepth: 3,
+        onSelect: (cls) => {
+          // 反向联动：点 OWLViz 节点 → 选中 + 树定位 + 聚焦该节点子图
+          sel.key = cls.key;
+          renderVizCanvas(cls.key);
+          renderHier();
+          const row = hierPane.querySelector(`.och-row[data-key="${CSS.escape(cls.key)}"]`);
+          if (row) row.scrollIntoView({ block: 'nearest' });
+        },
+        onBackgroundDblClick: () => {
+          // 双击空白 → 退出聚焦，回默认前 3 级全览并清选中
+          sel.key = null;
+          renderVizCanvas(null);
+          renderHier();
+        },
+      });
+      // 渲染后若已有选中节点，恢复其高亮（重渲会丢 DOM 选中类）
+      if (sel.key && svg.__selectNode) {
+        // 不居中（避免每次重渲都跳动），仅补高亮描边
+        const node = svg.querySelector(`.ovz-node[data-key="${CSS.escape(sel.key)}"]`);
+        if (node) node.classList.add('is-selected');
+      }
     };
-    window.renderOntologyTree(svg, ontoForTree, {
-      onSelect: (cls) => {
-        // 切到列表视图并高亮对应类卡片
-        state.kg.ontoView = 'list';
-        state.kg.ontoTab = 'classes';
-        document.querySelectorAll('#kg-onto-tabs button').forEach((x) => x.classList.toggle('active', x.dataset.ot === 'classes'));
-        renderKgOntology();
-        setTimeout(() => {
-          const cards = document.querySelectorAll('#kg-onto-body .kg-class');
-          for (const card of cards) {
-            const code = card.querySelector('code');
-            if (code && code.textContent === cls.key) {
-              card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              card.style.outline = '1.5px solid var(--accent)';
-              card.style.outlineOffset = '2px';
-              setTimeout(() => { card.style.outline = ''; card.style.outlineOffset = ''; }, 1800);
-              break;
-            }
-          }
-        }, 30);
-      },
-    });
+
+    // 渲染左侧层级树；选中/悬停 → 联动右侧 OWLViz
+    const renderHier = () => {
+      if (!window.renderClassHierarchy) return;
+      window.renderClassHierarchy(hierPane, ontoForViz, {
+        collapsed: sel.collapsed,
+        selectedKey: sel.key,
+        onSelect: (cls) => {
+          sel.key = cls.key;
+          // 树选中 → 聚焦该节点的前后 3 级子图
+          renderVizCanvas(cls.key);
+          renderHier(); // 重渲树以更新选中高亮
+        },
+        onHover: (cls) => {
+          const svg = $('onto-viz-svg');
+          if (!svg) return;
+          if (!cls) { if (svg.__clearHover) svg.__clearHover(); return; }
+          if (svg.__hoverNode) svg.__hoverNode(cls.key);
+        },
+      });
+    };
+    renderHier();
+    renderVizCanvas(sel.key);
   }
   // 内置基座项只读（无操作按钮），用户自定义项可编辑删除并带徽标
   const acts = (attr, readonly) => readonly
@@ -828,10 +887,6 @@ async function renderKgOntology() {
   } else if (state.kg.ontoTab === 'axioms') {
     const typeNames = { DisjointClasses: '不相交类', SubClassOf: '子类于', TransitiveProperty: '传递属性', SymmetricProperty: '对称属性', AsymmetricProperty: '非对称属性', InverseProperties: '互逆属性', PropertyDomain: '属性定义域', PropertyRange: '属性值域', FunctionalProperty: '函数属性', InverseFunctionalProperty: '反函数属性', ReflexiveProperty: '自反属性', IrreflexiveProperty: '反自反属性' };
     body.innerHTML = (o.axioms || []).length ? (o.axioms || []).map((a) => `<div class="kg-class"><div class="kg-class-head"><code class="axiom-type">${escapeHtml(typeNames[a.type] || a.type)}</code><b>${escapeHtml(a.subject || '')}${a.object ? ' ⇄ ' + escapeHtml(a.object) : ''}</b><span>${escapeHtml(a.desc || '')}</span><span class="kg-class-acts"><span class="mini-tag" style="opacity:.55">公理</span></span></div></div>`).join('') : '<div class="gd-desc">当前体系未定义逻辑公理。</div>';
-  } else if (state.kg.ontoTab === 'reason') {
-    // 融合设计 §6.6：推理是「可观测子系统」——统计 / 冲突 / 护栏日志 / 谓词特性四区块
-    body.innerHTML = '<div class="gd-desc">加载推理状态…</div>';
-    await renderKgReasonTab(body, o.profileId);
   }
   renderOntoPrompts(o);
 }
@@ -840,6 +895,7 @@ async function renderKgOntology() {
 // 数据源：IPC graph:reasonState → getReasonState(profileId)，一次拿齐四区块所需的全部字段。
 // 注意 lastStats.inconsistencies 是「条数」，明细在 lastStats.inconsistencyDetails.items。
 async function renderKgReasonTab(body, profileId) {
+  if (!body) return;
   // 静默降级：桥接层没有这个绑定（旧版 preload / web shim 未同步）时如实说明，不抛错
   if (typeof window.kb.graphReasonState !== 'function') {
     body.innerHTML = '<div class="gd-desc">当前环境不支持推理状态查询（缺少 graphReasonState 桥接）。</div>';
@@ -1012,11 +1068,13 @@ async function renderKgReasonTab(body, profileId) {
   if (runBtn) runBtn.addEventListener('click', async () => {
     await runGraphInference();
     renderKgOntology();
+    if (state.kg.tab === 'reason') renderKgReasonTab($('kg-reason-body'), profileId);
   });
   const clearBtn = $('btn-reason-clear');
   if (clearBtn) clearBtn.addEventListener('click', async () => {
     await clearAllInferredEdges();
     renderKgOntology();
+    if (state.kg.tab === 'reason') renderKgReasonTab($('kg-reason-body'), profileId);
   });
   const valBtn = $('btn-reason-validate');
   if (valBtn) valBtn.addEventListener('click', async () => {
@@ -1154,6 +1212,7 @@ async function undoLastRepair() {
     const rr = r.rerun || {};
     toast(`已恢复到修复前（${r.nodes} 节点 / ${r.edges} 边）${rr.skipped ? '' : `，剩余冲突 ${rr.inconsistencies != null ? rr.inconsistencies : '?'}`}`, 4000);
     renderKgOntology();
+    if (state.kg.tab === 'reason') renderKgReasonTab($('kg-reason-body'), state.kg.onto && state.kg.onto.profileId);
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -1541,8 +1600,9 @@ async function switchOntoProfile(profileId) {
   const res = await window.kb.ontoSetProfile(profileId);
   if (!res.ok) { toast('切换失败：' + res.error, 4000); return; }
   state.kg.onto = res.ontology;
-  state.kg.ontoView = 'tree'; // 切换体系后回到结构树视图，直观看到层级
+  state.kg.ontoView = 'viz'; // 切换体系后回到 OWLViz 层级图，直观看到层级
   state.kg.ontoCollapsed = {}; // 新体系重置子树折叠状态
+  state.kg.vizSel = null;    // 重置选中态/折叠，避免跨体系残留
   renderKgOntology();
 }
 
@@ -2306,10 +2366,8 @@ function showGraphValidateBar(v, profileId, inferred) {
   bindClose();
   const gotoBtn = $('btn-graph-goto-validate');
   if (gotoBtn) gotoBtn.addEventListener('click', async () => {
-    // 冲突/校验明细在本体定义·列表视图·推理 Tab；跳转后就地展开同一份报告，省一次点击
-    state.kg.ontoView = 'list';
-    state.kg.ontoTab = 'reason';
-    switchKgTab('ontology');
+    // 冲突/校验明细已移到一级菜单「推理与校验」；跳转后就地展开同一份报告，省一次点击
+    switchKgTab('reason');
     for (let i = 0; i < 20 && !$('btn-reason-validate'); i++) await new Promise((r) => setTimeout(r, 100));
     const box = $('kg-validate-body');
     if (box) {
@@ -2339,10 +2397,8 @@ function showGraphReasonBar(r) {
   $('btn-graph-reasonbar-x').addEventListener('click', () => { bar.hidden = true; });
   const gotoBtn = $('btn-graph-goto-conflict');
   if (gotoBtn) gotoBtn.addEventListener('click', () => {
-    // 冲突明细在本体定义·列表视图·推理 Tab
-    state.kg.ontoView = 'list';
-    state.kg.ontoTab = 'reason';
-    switchKgTab('ontology');
+    // 冲突明细已移到一级菜单「推理与校验」
+    switchKgTab('reason');
   });
 }
 
@@ -2496,12 +2552,25 @@ function bindGraphEvents() {
     if (pv && pv.canceled) return;  // 用户在系统对话框里取消了选文件
     showOwlPreviewModal(pv, {
       onConfirm: async () => {
-        const r = await window.kb.graphImportOwl(body);
+        // BUG 修复：原先确认时原样透传 body（Electron 下为 {}），主进程会**二次弹出**
+        // 文件选择对话框，用户以为「已经选过文件」而取消 → 导入静默终止、无任何报错。
+        // 预览结果现已携带 filePath（owlImport.js 透传），确认时直接复用，不再弹窗。
+        const confBody = (pv && pv.filePath) ? { filePath: pv.filePath, fileName: body && body.fileName } : body;
+        const r = await window.kb.graphImportOwl(confBody);
         await handleImportResult(r);
       },
     });
   };
+  // Electron 原生文件对话框滞留守卫：对话框打开期间主窗口失焦（blur），
+  // 用户若不处理对话框又点导入按钮，会再叠一个对话框且按钮一直 disabled，表现为「按钮坏了」。
+  let nativeDialogOpen = false;
+  window.addEventListener('blur', () => { nativeDialogOpen = true; });
+  window.addEventListener('focus', () => { nativeDialogOpen = false; });
   if (btnImportOwl) btnImportOwl.addEventListener('click', async () => {
+    if (!window.__KB_WEB__ && nativeDialogOpen) {
+      toast('还有未处理的文件选择对话框，请先在系统对话框中选择文件或取消');
+      return;
+    }
     try {
       btnImportOwl.disabled = true;
       // Web 模式（无 Electron dialog）：隐藏文件选择器 → 上传 → 拿服务端路径

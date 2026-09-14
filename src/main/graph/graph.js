@@ -1704,7 +1704,8 @@ async function previewOwlImport(filePath, opts = {}) {
   }
   const { parseOwlFile } = require('./owl');
   const { profile, report } = parseOwlFile(filePath, opts);
-  return { ok: true, profile, report, profileCheck: null, preview: null, via: 'owl.js' };
+  // filePath 透传（与 owlImport 路径一致）：前端「确认导入」复用它，避免二次弹文件对话框
+  return { ok: true, profile, report, profileCheck: null, preview: null, via: 'owl.js', filePath };
 }
 
 /**

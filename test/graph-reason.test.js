@@ -804,7 +804,8 @@ SubClassOf(:A ObjectComplementOf(:B))
   check('forceLegacy 的 preview.notes 说明使用了内置正则解析器', rLegacy.preview.notes.some((n) => /内置正则解析器/.test(n)) && rLegacy.preview.notes.some((n) => /仅类层级/.test(n)), J(rLegacy.preview.notes));
   check('forceLegacy 的 report 无 axiomCount（owl.js 不产公理）', rLegacy.profile.axioms === undefined || rLegacy.profile.axioms.length === 0);
 
-  check('previewOnly 的返回只含 5 个键', J(Object.keys(rTtl)) === '["profile","report","profileCheck","preview","via"]', J(Object.keys(rTtl)));
+  check('previewOnly 的返回含 6 个键（新增 filePath 供前端确认导入复用）', J(Object.keys(rTtl)) === '["profile","report","profileCheck","preview","via","filePath"]', J(Object.keys(rTtl)));
+  check('previewOnly 透传 filePath（值与入参一致）', rTtl.filePath === fTtl, J(rTtl.filePath));
   const rNamed = await owlImport.importOwlExtended(fTtl, { previewOnly: true, displayName: '我的本体', id: 'custom-id' });
   check('displayName 覆盖体系名', rNamed.profile.name === '我的本体');
   // 显式传入的 id 原样使用（不补 owl: 前缀）；只有自动生成时才加 owl: 前缀。

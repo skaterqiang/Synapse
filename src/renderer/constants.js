@@ -61,7 +61,7 @@ function graphGenColor(index) {
   return `hsl(${hue.toFixed(1)}, 68%, 52%)`;
 }
 // 图谱面板 Tab 名称
-const KG_TAB_NAMES = { overview: '概览', entities: '实体浏览', graph: '整体图谱', ontology: '本体定义', ask: '自然语言问答' };
+const KG_TAB_NAMES = { overview: '概览', entities: '实体浏览', graph: '整体图谱', ontology: '本体定义', reason: '推理与校验', ask: '自然语言问答' };
 
 // ---------- 推理边（融合设计 §6.1/§6.4）----------
 // 推理边统一用紫色虚线，与原始边（灰色实线）在画布/图例/标签/详情四处共用同一套色值，

@@ -727,7 +727,8 @@ async function importOwlExtended(filePath, opts = {}) {
       if (tried && tried.length) {
         preview.notes.push(`解析器尝试中失败的有：${tried.map((t) => `${t.format}（${t.error.slice(0, 60)}）`).join('；')}`);
       }
-      return { profile, report, profileCheck, preview, via: 'protege-js' };
+      // filePath 透传给预览弹窗：前端「确认导入」直接复用它，避免主进程二次弹文件对话框
+      return { profile, report, profileCheck, preview, via: 'protege-js', filePath };
     } catch (err) {
       // 记录后降级，不直接抛（§9 风险 4：至少让用户拿到正则解析的结果）
       const pjErr = String((err && err.message) || err);
@@ -735,6 +736,7 @@ async function importOwlExtended(filePath, opts = {}) {
       if (legacy && legacy.ok) {
         legacy.result.report.protegeError = pjErr;
         legacy.result.preview.notes.unshift(`protege-js 解析失败（${pjErr.slice(0, 200)}），已降级为内置正则解析器。`);
+        legacy.result.filePath = filePath;
         return legacy.result;
       }
       const why = legacy && legacy.reason ? legacy.reason : `内置解析器（owl.js）也不可用`;
@@ -745,6 +747,7 @@ async function importOwlExtended(filePath, opts = {}) {
   // 2) 降级路径
   const legacy = tryLegacy(filePath, opts, displayName, detected);
   if (legacy && legacy.ok) {
+    legacy.result.filePath = filePath;
     legacy.result.preview.notes.unshift(PJ
       ? '已按要求使用内置正则解析器（owl.js）。'
       : `protege-js 不可用（${pjError || '未安装'}），使用内置正则解析器（owl.js）。`);

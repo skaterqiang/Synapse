@@ -1,0 +1,37 @@
+{
+  "id": "case4-knowledge-publishing",
+  "title": "知识库内容发布：课程知识图谱多格式流转",
+  "steps": {
+    "step1": {
+      "name": "客户上传资料，根据顶层本体体系构建图谱",
+      "materials": [
+        "资料/01-课程知识图谱本体.md",
+        "资料/02-发布流程规范.md"
+      ],
+      "ontologyProfile": "bfo-lite",
+      "profileReason": "课程/章节/知识点是信息组织场景，bfo-lite 的信息体/物体分类足够",
+      "entry": "graph.extractGraph / 提取弹窗显式指定体系（五级优先级链第①级）"
+    },
+    "step2": {
+      "name": "使用顶层本体体系的约束公理校验图谱",
+      "entry": "graph.validateGraph（IPC graph:validate，通道 C，只读体检）+ graph.runInference（物化推理）",
+      "ui": "本体定义 → 列表 → 推理 Tab → 全图校验"
+    },
+    "step3": {
+      "name": "用户输入具体问题，根据图谱推理作答",
+      "questions": [
+        "「机器学习导论」这门课的先修课程是什么？",
+        "课程知识图谱发布前要经过哪些校验环节？",
+        "哪些教学内容属于「数据结构」课程？"
+      ],
+      "entry": "graph.kgAsk（IPC graph:ask）",
+      "ui": "AI 问答页"
+    }
+  },
+  "expect": {
+    "step1": "抽出 课程/章节/知识点/教师 节点与 包含/先修 关系；先修链条（深度学习→机器学习导论→线性代数）应可传递",
+    "step2": "校验应通过（bfo-lite coverage 0%）",
+    "step3": "回答应列出 线性代数 与 Python 程序设计，并能沿包含关系列出章节/知识点"
+  },
+  "runner": "node scripts/run-sample-cases.js case4-knowledge-publishing"
+}

@@ -114,6 +114,7 @@
           <div class="nav-item nav-sub-item" data-tab="entities"><span><svg class="ico" width="15" height="15"><use href="#i-entities"/></svg>实体浏览</span></div>
           <div class="nav-item nav-sub-item" data-tab="graph"><span><svg class="ico" width="15" height="15"><use href="#i-kg"/></svg>整体图谱</span></div>
           <div class="nav-item nav-sub-item" data-tab="ontology"><span><svg class="ico" width="15" height="15"><use href="#i-ontology"/></svg>本体定义</span></div>
+          <div class="nav-item nav-sub-item reason-entry" data-tab="reason" title="OWL 2 RL 推理统计、语义冲突、护栏拦截日志与全图只读校验（融合设计 §6.6）"><span><svg class="ico" width="15" height="15"><use href="#i-checklist"/></svg>推理与校验</span><span class="kg-badge" id="kg-reason-badge" hidden></span></div>
           <div class="nav-item nav-sub-item" data-tab="ask"><span><svg class="ico" width="15" height="15"><use href="#i-ask"/></svg>KG 问答</span></div>
           <!-- 领域模版只在抽取知识图谱时用到，归入知识图谱管理子菜单 -->
           <div class="nav-item nav-sub-item nav-tpl" id="nav-templates" title="抽取知识图谱时选择领域模版">
@@ -250,11 +251,14 @@
             <span class="form-hint" id="onto-profile-desc"></span>
             <span class="form-hint onto-profile-note">导入与使用时均由 AI 自动选择合适体系，无需手动切换</span>
             <div class="kg-tabs onto-view-tabs" id="onto-view-tabs">
-              <button data-ov="tree" class="active" title="树状结构图"><svg class="ico" width="13" height="13"><use href="#i-kg"/></svg>结构树</button>
+              <button data-ov="viz" class="active" title="OWLViz 风格层级图（横向 is-a，圆角椭圆节点）"><svg class="ico" width="13" height="13"><use href="#i-kg"/></svg>OWLViz</button>
               <button data-ov="list" title="条目列表"><svg class="ico" width="13" height="13"><use href="#i-table"/></svg>列表</button>
             </div>
           </div>
-          <div class="onto-tree-wrap" id="onto-tree-wrap"></div>
+          <div class="onto-tree-wrap onto-viz-wrap" id="onto-viz-wrap">
+            <div class="och-pane" id="onto-class-hierarchy"></div>
+            <div class="ovz-pane" id="onto-viz-canvas"></div>
+          </div>
           <div class="onto-prompts" id="onto-prompts">
             <button class="onto-prompts-head" id="onto-prompts-toggle" aria-expanded="false">
               <span class="onto-prompts-title"><svg class="ico" width="13" height="13"><use href="#i-mcp"/></svg>当前体系提示词</span>
@@ -288,11 +292,14 @@
               <button data-ot="preds"><svg class="ico" width="13" height="13"><use href="#i-mcp"/></svg>谓词</button>
               <button data-ot="cons"><svg class="ico" width="13" height="13"><use href="#i-table"/></svg>约束</button>
               <button data-ot="axioms"><svg class="ico" width="13" height="13"><use href="#i-kg"/></svg>公理</button>
-              <button data-ot="reason" class="reason-entry" title="OWL 2 RL 推理的统计、语义冲突、护栏拦截日志与谓词特性（融合设计 §6.6）"><svg class="ico" width="13" height="13"><use href="#i-mcp"/></svg>推理<span class="kg-badge" id="kg-reason-badge" hidden></span></button>
             </div>
             <button class="btn btn-ghost" id="btn-onto-add"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>新增</button>
           </div>
           <div class="kg-onto-body" id="kg-onto-body"></div>
+        </div>
+
+        <div class="kg-pane" data-pane="reason" hidden>
+          <div class="kg-onto-body" id="kg-reason-body"></div>
         </div>
 
         <div class="kg-pane" data-pane="ask" hidden>
@@ -1032,7 +1039,9 @@
   <script src="renderer/chat.js?v=20260830b"></script>
   <script src="renderer/jobs.js?v=20260914a"></script>
   <script src="renderer/ontologyTree.js?v=20260830c"></script>
-  <script src="renderer/graph.js?v=20260914a"></script>
+  <script src="renderer/ontologyViz.js?v=20260914a"></script>
+  <script src="renderer/classHierarchy.js?v=20260914a"></script>
+  <script src="renderer/graph.js?v=20260914b"></script>
   <script src="renderer/app.js?v=20260906a"></script>
 </body>
 </html>
