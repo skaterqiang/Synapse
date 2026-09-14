@@ -2920,10 +2920,19 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 /* 冲突自动修复（方案2/3）：单条「修复」按钮靠右 + 预览弹窗动作行 */
 .kg-conflict-fix { margin-left:auto; flex:none; padding:1px 8px; font-size:11px; }
 .kg-conflict-acts { margin-top:6px; }
-.repair-act-row { flex-direction:row; align-items:flex-start; gap:8px; cursor:pointer; }
-.repair-act-row input[type="checkbox"] { flex:none; margin-top:3px; }
-.repair-act-row .kg-guard-rel { flex:1; font-family:inherit; font-size:12px; }
-.repair-act-row .kg-guard-why { padding-left:2px; }
+/* 复选框与内容同行：.modal label{display:block}（:871，特异度 0,1,1）会压过 .kg-guard-item{display:flex}（0,1,0），
+   必须同时用 .owl-preview-modal 提升特异度并显式 display:flex，否则复选框与文本垂直堆叠 */
+.owl-preview-modal .repair-act-row { display:flex; flex-direction:row; align-items:flex-start; gap:8px; cursor:pointer; margin:0; padding:6px 8px; border-radius:6px; border-bottom:1px dashed var(--border); }
+.owl-preview-modal .repair-act-row:last-child { border-bottom:none; }
+.owl-preview-modal .repair-act-row:hover { background:rgba(59,130,246,.05); }
+/* 复选框必须 width:auto+padding:0+border:none：.modal input{width:100%}（:872）会把复选框拉满整行、
+   把动作文本挤出行外不可见（同 .pickdir-row :1306 的坑） */
+.owl-preview-modal .repair-act-row input[type="checkbox"] { flex:none; width:auto; padding:0; border:none; border-radius:0; margin-top:2px; }
+.owl-preview-modal .repair-act-row .kg-guard-rel { flex:1; min-width:0; font-family:inherit; font-size:12.5px; line-height:1.55; color:var(--text); }
+.owl-preview-modal .repair-act-row .kg-guard-rel .mini-tag { font-size:11px; }
+.owl-preview-modal .repair-act-row .kg-guard-why { flex:none; padding-left:2px; font-size:11.5px; color:var(--text-sub); }
+/* 修复预览的动作列表：复用的 .kg-guard-list 默认 max-height:200px 太小（187 条只显示几行），模态里加高 */
+.owl-preview-modal .kg-guard-list { max-height:52vh; border:1px solid var(--border); border-radius:8px; background:var(--bg-soft,#fafbfc); }
 .repair-act-manual { opacity:.75; cursor:default; background:rgba(217,119,6,.06); }
 .kg-guard-tags { display:flex; flex-wrap:wrap; gap:4px; margin:6px 0; }
 .kg-guard-list { display:flex; flex-direction:column; gap:2px; max-height:200px; overflow-y:auto; }
@@ -2958,8 +2967,8 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 body.reason-off .reason-entry { opacity:.42; pointer-events:none; user-select:none; }
 body.reason-off .reason-entry::after { content:"（已在设置中关闭）"; font-size:10px; color:var(--text-sub); margin-left:4px; }
 button.reason-entry:disabled { opacity:.42; }
-/* §6.9 OWL 导入预览弹窗 */
-.owl-preview-modal { width:560px; max-height:82vh; display:flex; flex-direction:column; }
+/* §6.9 OWL 导入预览弹窗（也用于修复预览：要展示多达几百条动作，加宽模态 + 高动作列表） */
+.owl-preview-modal { width:min(760px, 92vw); max-height:86vh; display:flex; flex-direction:column; }
 .owl-preview-modal .modal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
 .owl-preview-modal .modal-body { flex:1; overflow-y:auto; min-height:0; }
 .owl-preview-modal .modal-foot { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; align-items:center; }

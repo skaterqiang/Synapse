@@ -80,13 +80,14 @@ function validateGraph(graph, profile, opts = {}) {
   let coverage = null;
   try { coverage = guard.coverage(prof); } catch (_) { coverage = null; }
 
+  const full = opts.full === true; // 一键修复用：返回全量明细（不封顶 VIOLATION_CAP）
   const violations = [];
   const byReason = {};
   const byRel = {};
   const push = (v) => {
     byReason[v.reason] = (byReason[v.reason] || 0) + 1;
     byRel[v.rel] = (byRel[v.rel] || 0) + 1;
-    if (violations.length < VIOLATION_CAP) violations.push(v);
+    if (full || violations.length < VIOLATION_CAP) violations.push(v);
   };
 
   let checked = 0;
@@ -162,7 +163,7 @@ function validateGraph(graph, profile, opts = {}) {
         seenConflict.add(sig);
         // 全量计数先累加：明细数组封顶 VIOLATION_CAP，但计数不能跟着截断
         byDisjointReason['cax-dw'] = (byDisjointReason['cax-dw'] || 0) + 1;
-        if (disjointConflicts.length >= VIOLATION_CAP) continue; // 明细封顶，扫描继续
+        if (!full && disjointConflicts.length >= VIOLATION_CAP) continue; // 明细封顶，扫描继续
         const cDom = (node.domain && String(node.domain).trim()) || 'general';
         disjointConflicts.push({
           nodeId: node.id,

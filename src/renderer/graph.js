@@ -1034,7 +1034,7 @@ async function renderKgReasonTab(body, profileId) {
       <div class="kg-reason-acts">
         <button class="btn btn-primary" id="btn-reason-run"${rs.available === false ? ' disabled title="推理模块不可用"' : ''}>重新推理</button>
         <button class="btn btn-ghost danger" id="btn-reason-clear"${counts.inferred ? '' : ' disabled title="当前没有推理边"'}>清除所有推理边</button>
-        <button class="btn btn-ghost" id="btn-reason-validate" title="对已落库的整张图按当前体系重跑约束/公理检查（只读，不改图）">全图校验</button>
+        <button class="btn btn-ghost" id="btn-reason-validate" title="对已落库的整张图按当前体系重跑约束/公理检查（只读，不改图）；面板打开时已自动跑过一次">刷新校验</button>
         <span class="form-hint" id="reason-run-hint"></span>
       </div>
     </div>
@@ -1054,7 +1054,7 @@ async function renderKgReasonTab(body, profileId) {
     </div>
     <div class="kg-reason-block">
       <div class="kg-reason-head">全图校验（通道 C · 只读体检）</div>
-      <div id="kg-validate-body"><div class="gd-desc">点击上方「全图校验」对已落库图谱按当前体系做一次只读体检（未知谓词 / domain / range / 不相交归属）。</div></div>
+      <div id="kg-validate-body"><div class="gd-desc">校验中…</div></div>
     </div>`;
 
   // 徽标：冲突数优先（红色告警），否则显示推理边数
@@ -1084,9 +1084,20 @@ async function renderKgReasonTab(body, profileId) {
     box.innerHTML = '<div class="gd-desc">校验中…</div>';
     const v = await runFullGraphValidate(profileId);
     valBtn.disabled = false;
-    box.innerHTML = renderValidateReport(v);
+    box.innerHTML = renderValidateReport(v, det);
     bindValidateFilters(box);
   });
+  // 面板打开即自动跑一次全图校验：越界边/不相交归属与不一致冲突合并进同一张问题表，默认可见
+  // （摘要条说「N 条越界边」而面板看不到的问题，根因就是校验只在手动点按钮后才跑）
+  (async () => {
+    const box = $('kg-validate-body');
+    if (!box) return;
+    const v = await runFullGraphValidate(profileId);
+    // 渲染期间用户可能已切走面板；只有 body 还在文档里才写回
+    if (!document.contains(box)) return;
+    box.innerHTML = renderValidateReport(v, det);
+    bindValidateFilters(box);
+  })();
   // 冲突自动修复（方案2/3）：一键修复 = 重推理取最新冲突 → 规划全部 → 预览 → 确认落库
   const repBtn = $('btn-reason-repair');
   if (repBtn) repBtn.addEventListener('click', () => planAndPreviewRepairs({ refresh: true }));
@@ -1219,7 +1230,8 @@ async function undoLastRepair() {
 }
 
 // 通道 C 体检报告 → HTML（复用既有 .kg-reason-row / .kg-conflict / .kg-guard-item 样式，不新增 CSS）
-function renderValidateReport(v) {
+// det = 推理「不一致冲突」明细（ls.inconsistencyDetails），可选；传入则合并进同一张问题表
+function renderValidateReport(v, det) {
   if (!v || v.ok === false) {
     return `<div class="gd-desc">全图校验不可用：${escapeHtml((v && v.error) || '未知错误')}（图谱数据不受影响）</div>`;
   }
@@ -1238,17 +1250,28 @@ function renderValidateReport(v) {
     <div class="kg-reason-row"><span>校验范围</span><b>体系「${escapeHtml(v.profileName || v.profileId)}」· 检查 ${v.checked} 条边</b></div>
     <div class="kg-reason-row"><span>结果</span><b class="${(nV || nD) ? 'kg-reason-warn' : ''}">${(nV || nD) ? `发现 ${nV} 条越界边、${nD} 处不相交归属冲突` : '未发现约束违规'}${v.truncated ? `（明细各最多列 ${shownV}/${shownD} 条）` : ''}</b></div>
     ${covHtml}`;
-  // v1.2.2：越界边 + 不相交归属**汇成一张问题表**，列含「违反的约束或公理 /
+  // v1.2.2：越界边 + 不相交归属 + 推理不一致冲突**汇成一张问题表**，列含「违反的约束或公理 /
   // 所属体系 / 知识图谱」，并带知识图谱与问题类型两个筛选下拉（客户端过滤）。
   lastValidateReport = v;
-  const rows = validateIssueRows(v);
+  lastConflictDetails = det || null;
+  const valRows = validateIssueRows(v);
+  const conRows = conflictIssueRows(det);
+  // 统一重编号（冲突行排在越界/不相交行之前，与「先看推理矛盾、再看体检问题」的阅读顺序一致）
+  const rows = conRows.concat(valRows);
+  rows.forEach((r, i) => { r.idx = i; });
   const scopes = [...new Set(rows.map((r) => r.scope))];
   const nViolationRows = rows.filter((r) => r.kind === 'violation').length;
   const nConflictRows = rows.filter((r) => r.kind === 'conflict').length;
+  const nInconRows = rows.filter((r) => r.kind === 'inconsistency').length;
+  const kindOpts = [
+    nInconRows ? `<option value="inconsistency">不一致冲突（${nInconRows}）</option>` : '',
+    nViolationRows ? `<option value="violation">越界边（${nViolationRows}）</option>` : '',
+    nConflictRows ? `<option value="conflict">不相交归属（${nConflictRows}）</option>` : '',
+  ].join('');
   const tableHtml = rows.length
     ? `<div class="kg-vr-filters">
         <label>知识图谱 <select id="kg-vr-scope"><option value="">全部（${rows.length}）</option>${scopes.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}（${rows.filter((r) => r.scope === s).length}）</option>`).join('')}</select></label>
-        <label>问题类型 <select id="kg-vr-kind"><option value="">全部</option><option value="violation">越界边（${nViolationRows}）</option><option value="conflict">不相交归属（${nConflictRows}）</option></select></label>
+        <label>问题类型 <select id="kg-vr-kind"><option value="">全部</option>${kindOpts}</select></label>
         <span class="form-hint">${v.truncated ? `明细最多列 ${shownV} 条越界边 / ${shownD} 条不相交；计数为全量` : '问题已全部列出'}</span>
       </div>
       <div class="kg-vr-wrap"><table class="kg-vr-table">
@@ -1256,8 +1279,12 @@ function renderValidateReport(v) {
         <tbody id="kg-vr-tbody">${validateRowsHtml(rows, '', '')}</tbody>
       </table></div>`
     : '<div class="gd-desc">所有边均通过谓词白名单与 domain/range 检查，且未检出不相交归属冲突（覆盖率为 0% 的体系越界项恒通过，属预期）。</div>';
+  const totalShown = nInconRows + nV + nD;
+  const fixAllBtn = totalShown
+    ? `<button class="btn btn-ghost" id="kg-vr-fix-all" title="把当前全部问题（不一致冲突 + 越界边 + 不相交归属，共 ${totalShown} 条）一次性规划修复：先预览、确认后才改图">⚒ 一键修复所有（${totalShown}）</button>`
+    : '';
   return `${headHtml}
-    <div class="kg-reason-head" style="margin-top:8px">问题汇总（${nV + nD}${rows.length < nV + nD ? `，列出前 ${rows.length} 条` : ''}）</div>
+    <div class="kg-reason-head" style="margin-top:8px">问题汇总（${totalShown}${rows.length < totalShown ? `，列出前 ${rows.length} 条` : ''}）${fixAllBtn}</div>
     ${tableHtml}
     <div class="gd-desc">体检为只读：不改写任何边、不删除数据；修复请调整体系公理或删除违规边。校验时间 ${escapeHtml(reasonTimeText(v.at))}。</div>`;
 }
@@ -1265,6 +1292,26 @@ function renderValidateReport(v) {
 // v1.2.2 问题汇总表：把「越界边」与「不相交归属」两类问题归一成同构行数据，
 // 每行带 问题类型 / 违规对象 / 违反的约束或公理 / 所属体系 / 知识图谱 五要素。
 let lastValidateReport = null;
+let lastConflictDetails = null;
+// 推理「不一致冲突」明细 → 同构行（kind=inconsistency），与 validateIssueRows 输出同形，合并进同一张表
+function conflictIssueRows(det) {
+  const items = (det && det.items) || [];
+  return items.map((c, ci) => {
+    const scopeText = (c.scopes && c.scopes.length) ? c.scopes.map((s) => s.label || s.domain || '通用').join('、') : '';
+    return {
+      idx: ci, // 之后会统一重编号；cidx 保留原始下标供修复
+      cidx: ci,
+      kind: 'inconsistency',
+      kindZh: '不一致冲突',
+      object: (c.nodeNames && c.nodeNames.length) ? c.nodeNames.join('、') : (c.message || c.rule || '（冲突）'),
+      inferred: true,
+      constraint: c.messageZh || c.message || '（无描述）',
+      detail: c.reasonZh || '',
+      profile: c.profileName || c.profileId || '',
+      scope: scopeText || '通用（未匹配领域）',
+    };
+  });
+}
 function validateIssueRows(v) {
   const rows = [];
   const profFallback = (v && (v.profileName || v.profileId)) || '';
@@ -1328,42 +1375,149 @@ function validateRowsHtml(rows, scope, kind) {
     // 直接抑制；其余 reason 用 includes 去重（domain/range 的 detail 补充节点名、unknown-type 补充起点/终点方位，保留）。
     const suppress = !r.detail || r.reason === 'unknown-predicate' || r.constraint.includes(r.detail);
     const sub = suppress ? '' : `<span class="kg-vr-sub">${escapeHtml(r.detail)}</span>`;
+    const kindCls = r.kind === 'inconsistency' ? 'kg-vr-conflict' : (r.kind === 'conflict' ? 'kg-vr-conflict' : 'kg-vr-violation');
+    // 操作列：不一致冲突走 graphPlanRepairs({conflictIdxs})；越界/不相交走 graphPlanRepairsForIssues([src])
+    const fixBtn = r.kind === 'inconsistency'
+      ? `<button class="btn btn-ghost kg-vr-fix-conflict" data-cidx="${r.cidx}" title="规划并预览该冲突的修复动作（先预览、确认后才改图）">修复</button>`
+      : `<button class="btn btn-ghost kg-vr-fix" data-ri="${r.idx}" title="仅针对这一行规划修复动作：预览确认后才改图">修复</button>`;
     return `
     <tr>
       <td>${r.idx + 1}</td>
-      <td class="kg-vr-kind"><span class="mini-tag ${r.kind === 'conflict' ? 'kg-vr-conflict' : 'kg-vr-violation'}">${escapeHtml(r.kindZh)}</span>${r.inferred ? ' <span class="mini-tag">推理边</span>' : ''}</td>
+      <td class="kg-vr-kind"><span class="mini-tag ${kindCls}">${escapeHtml(r.kindZh)}</span>${r.inferred ? ' <span class="mini-tag">推理边</span>' : ''}</td>
       <td class="kg-vr-obj">${escapeHtml(r.object)}</td>
       <td>${escapeHtml(r.constraint)}${sub}</td>
       <td>${escapeHtml(r.profile || '—')}</td>
       <td>${escapeHtml(r.scope || '—')}</td>
-      <td><button class="btn btn-ghost kg-vr-fix" data-ri="${r.idx}" title="仅针对这一行规划修复动作：预览确认后才改图">修复</button></td>
+      <td>${fixBtn}</td>
     </tr>`;
   }).join('');
 }
 
-// 筛选下拉 → 重渲染 tbody（数据取最近一次报告，客户端过滤不重跑校验）；
+// 合并行：校验行（越界/不相交）+ 推理冲突行（inconsistency），与 renderValidateReport 内部口径一致
+function mergedIssueRows() {
+  const valRows = lastValidateReport ? validateIssueRows(lastValidateReport) : [];
+  const conRows = conflictIssueRows(lastConflictDetails);
+  const rows = conRows.concat(valRows);
+  rows.forEach((r, i) => { r.idx = i; });
+  return rows;
+}
+
+// 筛选下拉 → 重渲染 tbody（数据取最近一次报告+冲突明细，客户端过滤不重跑校验）；
 // 行级「修复」按钮用事件委托绑在 box 上（box 跨渲染复用，只绑一次，靠 dataset 标记防重复）
 function bindValidateFilters(box) {
   if (!box) return;
   const scopeSel = box.querySelector('#kg-vr-scope');
   const kindSel = box.querySelector('#kg-vr-kind');
   const tbody = box.querySelector('#kg-vr-tbody');
-  if (!scopeSel || !kindSel || !tbody || !lastValidateReport) return;
-  const rows = validateIssueRows(lastValidateReport);
+  if (!scopeSel || !kindSel || !tbody) return;
+  const rows = mergedIssueRows();
   const apply = () => { tbody.innerHTML = validateRowsHtml(rows, scopeSel.value, kindSel.value); };
   scopeSel.addEventListener('change', apply);
   kindSel.addEventListener('change', apply);
   if (box.dataset.vrBound) return;
   box.dataset.vrBound = '1';
   box.addEventListener('click', (e) => {
+    // 一键修复所有：重跑一次 full 校验拿全量明细（默认封顶 50，修复必须覆盖全部），
+    // 与当前推理冲突明细合并后批量规划，仍走同一个「预览→确认→作业」流程
+    const fa = e.target.closest ? e.target.closest('#kg-vr-fix-all') : null;
+    if (fa && box.contains(fa)) {
+      e.preventDefault();
+      fixAllIssues(fa);
+      return;
+    }
+    // 越界/不相交行：data-ri 定位该行原始问题条目
     const b = e.target.closest ? e.target.closest('.kg-vr-fix') : null;
-    if (!b || !box.contains(b)) return;
-    const all = validateIssueRows(lastValidateReport);
-    const row = all[Number(b.dataset.ri)];
-    if (!row || !row.src) return;
-    // 行级修复：只把这一行的原始问题条目送去规划（dry-run 预览后才落库）
-    planAndPreviewRepairs({ issues: [row.src] });
+    if (b && box.contains(b)) {
+      const all = mergedIssueRows();
+      const row = all[Number(b.dataset.ri)];
+      if (!row || !row.src) return;
+      // 行级修复：只把这一行的原始问题条目送去规划（dry-run 预览后才落库）
+      planAndPreviewRepairs({ issues: [row.src] });
+      return;
+    }
+    // 不一致冲突行：data-cidx 走 graphPlanRepairs({conflictIdxs})
+    const cb = e.target.closest ? e.target.closest('.kg-vr-fix-conflict') : null;
+    if (cb && box.contains(cb)) {
+      planAndPreviewRepairs({ conflictIdxs: [Number(cb.dataset.cidx)] });
+    }
   });
+}
+
+// 一键修复所有：全量校验 + 推理冲突 → 两路规划 → 合并去重 → 一次预览一次提交。
+// 校验明细默认封顶 VIOLATION_CAP=50，修复必须拿全量（否则只修前 50 条），
+// 故点击时重跑一次 graphValidate(profileId, {full:true}) 而非复用 lastValidateReport。
+async function fixAllIssues(btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const profileId = (lastValidateReport && lastValidateReport.profileId) || (state.kg.onto && state.kg.onto.profileId) || '';
+    toast('正在全量体检并规划修复动作…');
+    const vFull = await runFullGraphValidate(profileId, { full: true });
+    if (!vFull || vFull.ok === false) {
+      toast('全量体检失败：' + ((vFull && vFull.error) || '未知错误'));
+      return;
+    }
+    const issues = [];
+    for (const en of (vFull.violations || [])) issues.push(en);
+    for (const c of (vFull.disjointConflicts || [])) issues.push(c);
+    const conflictItems = (lastConflictDetails && lastConflictDetails.items) || [];
+    const conflictIdxs = conflictItems.map((_, i) => i);
+    if (!issues.length && !conflictIdxs.length) {
+      toast('当前没有可修复的问题');
+      return;
+    }
+    // 两路独立规划（复用已验证入口）：冲突走 conflictIdxs，校验问题走 issues
+    const plans = [];
+    if (conflictIdxs.length) {
+      const p = await window.kb.graphPlanRepairs({ conflictIdxs });
+      if (p && p.ok !== false && (p.actions || []).length) plans.push(p);
+    }
+    if (issues.length) {
+      const p = await window.kb.graphPlanRepairsForIssues(issues);
+      if (p && p.ok !== false && (p.actions || []).length) plans.push(p);
+    }
+    const merged = mergeRepairPlans(plans);
+    if (!merged.actions.length) {
+      toast('没有可规划的修复动作（可能都是手动项或体系无法解析）', 4000);
+      return;
+    }
+    showRepairPreviewModal(merged);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 合并多个修复 plan：动作跨源去重（同一 edgeKey+kind 只留一条，与主进程 planRepairs 口径一致），
+// 汇总 byKind/autoCount/manualCount，供同一个预览模态一次展示、一次提交。
+function mergeRepairPlans(plans) {
+  const seen = new Set();
+  const actions = [];
+  for (const p of plans) {
+    for (const a of ((p && p.actions) || [])) {
+      let sig;
+      if (a.kind === 'manual') {
+        sig = `manual\u0001${a.rule || ''}\u0001${a.actionZh || ''}`;
+      } else if (a.rule === 'prp-asyp' && a.kind === 'delete-edge') {
+        sig = `prp-asyp\u0001${[a.from, a.to].sort().join('\u0002')}\u0001${a.rel || ''}`;
+      } else {
+        sig = `${a.kind}\u0001${a.edgeKey || ''}\u0001${a.nodeId || ''}\u0001${a.newRel || a.newType || ''}`;
+      }
+      if (seen.has(sig)) continue;
+      seen.add(sig);
+      actions.push(a);
+    }
+  }
+  const byKind = {};
+  for (const a of actions) byKind[a.kind] = (byKind[a.kind] || 0) + 1;
+  return {
+    ok: true,
+    actions,
+    byKind,
+    autoCount: actions.filter((a) => a.auto && a.kind !== 'manual').length,
+    manualCount: actions.filter((a) => !a.auto || a.kind === 'manual').length,
+    conflictCount: actions.length,
+    llmArbitrate: plans.some((p) => p && p.llmArbitrate),
+    at: Date.now(),
+  };
 }
 
 // 时间戳 → 文本：0/缺失时不能走 formatDate（会渲染成 1970-01-01），如实说「未记录」
@@ -2326,12 +2480,12 @@ async function runGraphInference(opts) {
 
 // 通道 C 只读体检（融合设计 §12.2.3）：工具栏「校验」按钮与本体定义·推理 Tab「全图校验」按钮共用。
 // 只读：不改写任何边、不删除数据；返回 validateGraph 的原始结果供 renderValidateReport/摘要条渲染。
-async function runFullGraphValidate(profileId) {
+async function runFullGraphValidate(profileId, opts) {
   if (typeof window.kb.graphValidate !== 'function') {
     return { ok: false, error: '当前环境不支持全图校验（缺少 graphValidate 桥接）' };
   }
   try {
-    return await window.kb.graphValidate(profileId, {});
+    return await window.kb.graphValidate(profileId, opts || {});
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -2365,15 +2519,9 @@ function showGraphValidateBar(v, profileId, inferred) {
   bar.hidden = false;
   bindClose();
   const gotoBtn = $('btn-graph-goto-validate');
-  if (gotoBtn) gotoBtn.addEventListener('click', async () => {
-    // 冲突/校验明细已移到一级菜单「推理与校验」；跳转后就地展开同一份报告，省一次点击
+  if (gotoBtn) gotoBtn.addEventListener('click', () => {
+    // 冲突/校验明细已移到一级菜单「推理与校验」；面板打开时会自动跑校验并合并冲突明细
     switchKgTab('reason');
-    for (let i = 0; i < 20 && !$('btn-reason-validate'); i++) await new Promise((r) => setTimeout(r, 100));
-    const box = $('kg-validate-body');
-    if (box) {
-      box.innerHTML = renderValidateReport(v);
-      bindValidateFilters(box);
-    }
   });
 }
 
