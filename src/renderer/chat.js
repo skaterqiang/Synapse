@@ -1045,6 +1045,19 @@ function saveAiExt() {
 const mcpOffSet = () => new Set((state.aiExt && state.aiExt.mcpOff) || []);
 const skillOffSet = () => new Set((state.aiExt && state.aiExt.skillsOff) || []);
 
+// 该技能是否参与「AI 问答」。
+// 技能分两类（语料流水线设计 §5.1）：
+//   · kind 缺省 / 'instructions' —— 指令技能：勾选后拼进问答系统提示词（现状行为）
+//   · kind === 'extract'         —— 抽取技能：由**文件扩展名自动匹配**，只服务于解析链
+// 抽取技能的 description 里全是「TRIGGERS 抽取, 语料, ocr, 表格…」这类触发词，
+// 混进问答提示词只会污染上下文（4 个内置技能约 640 字），故在这里挡掉。
+// ⚠️ 只挡渲染层问答侧：主进程 parse.js:enabledSkills **不能**同样过滤——
+//    它同时是老解析路径（files.js:extractFileContentRaw → parseWithSkills）的技能来源，
+//    过滤掉会让 settings.pipeline 关闭时抽取技能永远不生效。
+function isQaSkill(k) {
+  return !!k && !!k.name && String(k.kind || 'instructions') !== 'extract';
+}
+
 // 本次问答实际生效的 MCP / 技能 = 已启用 − 已去除
 function effectiveMcps() {
   const off = mcpOffSet();
@@ -1052,7 +1065,7 @@ function effectiveMcps() {
 }
 function effectiveSkills() {
   const off = skillOffSet();
-  return ((state.settings || {}).skills || []).filter((k) => k && k.name && k.enabled && !off.has(k.name));
+  return ((state.settings || {}).skills || []).filter((k) => k && k.enabled && isQaSkill(k) && !off.has(k.name));
 }
 // 切换参与状态（on ↔ off）
 function toggleExtOff(kind, name) {
@@ -1066,7 +1079,7 @@ function renderAiExt() {
   const box = $('ai-ext-row'); if (!box) return;
   const s = state.settings || {};
   const mcps = (s.mcpServers || []).filter((m) => m.enabled !== false && m.name);
-  const skills = (s.skills || []).filter((k) => k.enabled && k.name);
+  const skills = (s.skills || []).filter((k) => k.enabled && isQaSkill(k));
   if (!mcps.length && !skills.length) { box.hidden = true; box.innerHTML = ''; return; }
   box.hidden = false;
   box.innerHTML = '';
@@ -1212,7 +1225,7 @@ function renderAiExtMenu(menuEl, groups) {
   const want = (g) => !groups || groups.includes(g);
   const s = state.settings || {};
   const mcps = (s.mcpServers || []).filter((m) => m.enabled && m.name);
-  const skills = (s.skills || []).filter((k) => k.enabled && k.name);
+  const skills = (s.skills || []).filter((k) => k.enabled && isQaSkill(k));
   menu.innerHTML = '';
   // 知识源三类（checkbox 选定）
   if (want('sources')) {
@@ -1262,7 +1275,7 @@ function renderAiExtMenu(menuEl, groups) {
 function refreshAiExtTitles() {
   const s = state.settings || {};
   const allM = (s.mcpServers || []).filter((m) => m && m.name && m.enabled !== false).length;
-  const allK = (s.skills || []).filter((k) => k && k.name && k.enabled).length;
+  const allK = (s.skills || []).filter((k) => k && k.enabled && isQaSkill(k)).length;
   const mb = $('btn-ai-mcp');
   if (mb) mb.title = allM ? `MCP 服务器（${effectiveMcps().length}/${allM} 参与，点击可去除）` : '选择 MCP 服务器';
   const kb = $('btn-ai-skill');

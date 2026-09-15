@@ -1276,4 +1276,12 @@ async function readRawTextForScan(settings, relPath, maxBytes) {
   return String(text || '');
 }
 
-module.exports = { FILE_EXTENSIONS, DEFAULT_NOTE_IMPORT_EXTS, noteImportExts, canImportAsNote, mineruCmdParts, convertWithMineru, runMineruTest, installMineru, applyMineruModel, readRawText, readRawTextForScan, extractFileContent, fetchUrlMarkdown, fetchUrlTitle, fetchUrlTitleRich, pickPageTitle, isPlaceholderTitle, titleFromFileName, attachMineruImages };
+// 末尾一批（parseBuiltin / isMineruRoutable / extractCacheKey / readExtractCache / writeExtractCache /
+// extractFileContentRaw / TEXTUAL_EXTS / CACHE_MAX_BYTES / FALLBACK_CACHE_TTL_MS / appendMineruFallbackLog）
+// 是为语料流水线的解析链装饰器新增导出的（语料流水线设计 §4.2/§4.3）：
+//   BuiltinParseDecorator → parseBuiltin
+//   MineruDecorator       → isMineruRoutable / convertWithMineru / appendMineruFallbackLog
+//   CacheDecorator        → extractCacheKey / readExtractCache / writeExtractCache / CACHE_MAX_BYTES / FALLBACK_CACHE_TTL_MS
+//   FallbackDecorator     → extractFileContentRaw（作为「整链等价」的对拍基准）
+// 刻意**不复制实现**——两处解析口径一旦漂移，「产物与现状逐字节等价」（§14.1 二期验收）就无法成立。
+module.exports = { FILE_EXTENSIONS, DEFAULT_NOTE_IMPORT_EXTS, noteImportExts, canImportAsNote, mineruCmdParts, convertWithMineru, runMineruTest, installMineru, applyMineruModel, readRawText, readRawTextForScan, extractFileContent, fetchUrlMarkdown, fetchUrlTitle, fetchUrlTitleRich, pickPageTitle, isPlaceholderTitle, titleFromFileName, attachMineruImages, parseBuiltin, isMineruRoutable, extractCacheKey, readExtractCache, writeExtractCache, extractFileContentRaw, appendMineruFallbackLog, TEXTUAL_EXTS, CACHE_MAX_BYTES, FALLBACK_CACHE_TTL_MS };

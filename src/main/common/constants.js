@@ -330,8 +330,25 @@ const HTTP_USER_AGENT = 'Mozilla/5.0 (personal-kb)';
 const SKILL_DOWNLOAD_TIMEOUT_MS = 300000;
 // 技能源码包大小上限
 const SKILL_MAX_ZIP_BYTES = 60 * 1024 * 1024;
-// 技能种子目录（示例技能植入来源，历史路径）
-const DEFAULT_SKILLS_DIR = '/Users/qiang/sample_center-release/backend/resource/skills';
+// 技能种子目录（示例技能植入来源）。
+// 历史值是一个 macOS 绝对路径（/Users/qiang/...），在其它机器上永远不存在 ⇒ 种子技能从未被植入过。
+// 改为「仓库根的 skills/」：src/main/common → 上溯 4 级到仓库根（口径同 skills/runner.js 的 NODE_PATH）。
+// 目录不存在时 seedSampleSkills 会静默跳过（打包后 asar 内没有该目录属正常情况）。
+const DEFAULT_SKILLS_DIR = pathJoin(__dirname, '..', '..', '..', '..', 'skills');
+
+// ---------- 技能解析预算（原散落在 skills/parse.js，语料流水线复用同一口径） ----------
+// 图片直读上限：base64 会膨胀约 33%，过大的图多数视觉接口也拒收
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+// 技能指令注入预算：单技能截断 + 总量上限，避免超长 SKILL.md 挤爆上下文
+const PER_SKILL_CHARS = 6000;
+const TOTAL_SKILL_CHARS = 16000;
+// 抽取技能命中数：同一扩展名有多个 kind:extract 技能时，按 priority 取前 N 个。
+// 默认 1——多个抽取技能的指令一起注入会互相干扰（与现状「全部技能拼一起」是同一个病）
+const DEFAULT_EXTRACT_SKILL_TOPN = 1;
+
+// ---------- 语料库（语料流水线设计 §6） ----------
+// 语料库目录名：<数据根>/corpus/。机器产物、可重生成，故不进搜索、不入备份（§15 问题 6/7）
+const CORPUS_DIR = 'corpus';
 
 // ---------- 链接登录态 ----------
 // 链接来源 Cookie 持久化 kv 键
@@ -374,5 +391,10 @@ module.exports = {
   SKILL_DOWNLOAD_TIMEOUT_MS,
   SKILL_MAX_ZIP_BYTES,
   DEFAULT_SKILLS_DIR,
+  MAX_IMAGE_BYTES,
+  PER_SKILL_CHARS,
+  TOTAL_SKILL_CHARS,
+  DEFAULT_EXTRACT_SKILL_TOPN,
+  CORPUS_DIR,
   URL_COOKIES_KEY,
 };

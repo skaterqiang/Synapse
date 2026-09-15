@@ -13,12 +13,17 @@ function artifactsDir() {
 
 // 运行 Node 脚本生成 office 文件：require('docx'/'pptxgenjs'/'exceljs') 可用，
 // 输出必须写入 process.env.AGENT_OUTPUT_DIR；返回生成文件列表
-function runNodeScript({ code, timeoutMs } = {}) {
+// allowLongTimeout：抽取技能（mode: script，语料流水线设计 §5.3）用——OCR 大 PDF 动辄数分钟，
+//   180s 的硬夹会让「设置里填了 600 秒」形同虚设。开启后上限放宽到 600s（与设置项区间一致）。
+function runNodeScript({ code, timeoutMs, allowLongTimeout } = {}) {
   return new Promise((resolve) => {
     const outDir = artifactsDir();
     const before = new Set(fs.readdirSync(outDir));
-    const ms = Math.min(Number(timeoutMs) || 60000, 180000);
+    const HARD_MS = allowLongTimeout ? 600000 : 180000;
+    const DEF_MS = allowLongTimeout ? 120000 : 60000;
+    const ms = Math.min(Number(timeoutMs) || DEF_MS, HARD_MS);
     let stdout = ''; let stderr = '';
+    let timedOut = false;
     let child;
     try {
       child = spawn(process.execPath, ['-e', String(code || '')], {
@@ -37,7 +42,7 @@ function runNodeScript({ code, timeoutMs } = {}) {
     } catch (e) {
       return resolve(JSON.stringify({ ok: false, error: '启动失败：' + e.message, files: [] }));
     }
-    const timer = setTimeout(() => { killTree(child); }, ms);
+    const timer = setTimeout(() => { timedOut = true; killTree(child); }, ms);
     // 超时清理进程：非 win32 杀进程组（detached 组首为子进程，-pid 即整组）；
     // win32 无进程组信号，直接 SIGKILL 终止子进程（无孙子进程时足够），否则超时将失去意义。
     const killTree = (c) => {
@@ -57,6 +62,9 @@ function runNodeScript({ code, timeoutMs } = {}) {
       resolve(JSON.stringify({
         ok: code === 0,
         exitCode: code,
+        // 超时被 kill 时 exitCode 非 0 但 stderr 往往为空，调用方无从判断是「脚本报错」还是「跑太久」
+        timedOut,
+        timeoutMs: ms,
         stdout: stdout.slice(-1500),
         stderr: stderr.slice(-1500),
         files,

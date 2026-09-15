@@ -108,6 +108,15 @@ function assetsDir() {
   return path.join(dataRoot(), 'assets');
 }
 
+// 语料库根目录（语料流水线设计 §6.1）：<数据根>/corpus/
+// 与 note/ 并列但语义不同——语料是「机器产物、可重生成」，故：
+//   ① 不进笔记列表与全局搜索（§15 问题 6）
+//   ② 不随备份/迁移搬迁（§15 问题 7；ensureUnifiedRoot 的迁移清单刻意不含 corpus/）
+//   ③ 支持一键「提升为笔记」（store.promoteToNote）
+function corpusRoot() {
+  return path.join(dataRoot(), 'corpus');
+}
+
 // 把本地绝对路径编码为 kb-asset://file URL（Markdown 图片引用）。
 // encodeURI 不编码 ( ) '，而笔记目录常含「 (更新版)」等括号——未编码的 ( 会让 Markdown 解析器
 // 提前截断 ![](...) 的 URL，导致整条图片引用损坏看不到图。故 encodeURI 后手动补编码 markdown 定界符。
@@ -120,4 +129,4 @@ function kbAssetUrlFor(absPath) {
   return 'kb-asset://file' + enc;
 }
 
-module.exports = { dataRoot, setDataRoot, ensureUnifiedRoot, consumeAssetsRewrite, assetsDir, legacyUserData, kbAssetUrlFor };
+module.exports = { dataRoot, setDataRoot, ensureUnifiedRoot, consumeAssetsRewrite, assetsDir, corpusRoot, legacyUserData, kbAssetUrlFor };
