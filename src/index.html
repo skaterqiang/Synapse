@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: kb-asset: kb-doc: https:;" />
   <title>Synapse</title>
-  <link rel="stylesheet" href="styles.css?v=20260917h" />
+  <link rel="stylesheet" href="styles.css?v=20260918c" />
   <link rel="stylesheet" href="lib/hljs-atom-one-dark.min.css" />
 </head>
 <body>
@@ -503,16 +503,31 @@
         <div class="docs-body markdown-body" id="docs-body"></div>
       </div>
 
-      <!-- 原始文件只读预览页（md/markdown 应用内查看，不写入笔记库；复用使用手册的渲染样式） -->
+      <!-- 原始文件只读预览页：完全复用笔记编辑器的展示工具（标题栏 + 编辑/分屏/预览 + 字数/更新 meta + 左目录树 + 右文档） -->
       <div class="docs-view" id="raw-preview-view" hidden>
-        <div class="tpl-toolbar">
-          <span class="tpl-view-title"><svg class="ico" width="16" height="16"><use href="#i-notes"/></svg><span id="raw-preview-title">预览</span></span>
+        <div class="editor-toolbar">
+          <span class="editor-title" id="raw-preview-title">预览</span>
           <div class="toolbar-actions">
+            <div class="mode-switch">
+              <button id="raw-mode-edit" title="编辑模式：只读查看 Markdown 源码">编辑</button>
+              <button id="raw-mode-split" title="分屏模式：左源码右渲染">分屏</button>
+              <button id="raw-mode-preview" class="active" title="预览模式：仅渲染">预览</button>
+            </div>
             <button class="icon-btn" id="btn-raw-preview-native" title="用本机默认软件打开"><svg class="ico" width="13" height="13"><use href="#i-folder-open"/></svg></button>
             <button class="icon-btn" id="btn-raw-preview-close" title="关闭预览"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
           </div>
         </div>
-        <div class="docs-body markdown-body" id="raw-preview-body"></div>
+        <div class="editor-meta">
+          <span class="meta-date" id="raw-meta-date"></span>
+          <span class="meta-time" id="raw-meta-time"></span>
+        </div>
+        <div class="raw-preview-split">
+          <aside class="raw-preview-tree" id="raw-preview-tree" aria-label="来源目录树"></aside>
+          <div class="editor-body mode-preview" id="raw-editor-body">
+            <textarea class="editor-src" id="raw-content" readonly spellcheck="false" aria-label="Markdown 源码（只读）"></textarea>
+            <div class="preview markdown-body" id="raw-preview-body"></div>
+          </div>
+        </div>
       </div>
 
       <!-- 设置页（主区域 Tab 分类） -->
@@ -765,7 +780,7 @@
 
       <div class="editor-content" id="editor-content" hidden>
         <div class="editor-toolbar">
-          <input type="text" id="note-title" placeholder="无标题笔记" />
+          <input type="text" class="editor-title" id="note-title" placeholder="无标题笔记" />
           <div class="toolbar-actions">
             <button class="icon-btn" id="btn-notelist-show" title="展开笔记列表" hidden>»</button>
             <div class="tb-group">
@@ -792,7 +807,7 @@
           <span class="meta-time" id="note-time"></span>
         </div>
         <div class="editor-body" id="editor-body">
-          <textarea id="note-content" placeholder="支持 Markdown 语法：# 标题、**加粗**、- 列表、```代码块``` …"></textarea>
+          <textarea class="editor-src" id="note-content" placeholder="支持 Markdown 语法：# 标题、**加粗**、- 列表、```代码块``` …"></textarea>
           <div class="preview markdown-body" id="note-preview"></div>
         </div>
       </div>
@@ -1123,9 +1138,9 @@
   <script src="renderer/constants.js?v=20260916a"></script>
   <script src="renderer/common.js?v=20260917e"></script>
   <script src="renderer/notes.js?v=20260906a"></script>
-  <script src="renderer/raws.js?v=20260916a"></script>
+  <script src="renderer/raws.js?v=20260918c"></script>
   <!-- 语料库子页签（设计 §16.2）：依赖 raws.js 的 openCtxMenu/renderRawPreview/rawAssetUrl，须在 app.js 绑定前定义 -->
-  <script src="renderer/corpus.js?v=20260916a"></script>
+  <script src="renderer/corpus.js?v=20260918c"></script>
   <script src="renderer/chat.js?v=20260830b"></script>
   <script src="renderer/jobs.js?v=20260916a"></script>
   <script src="renderer/ontologyTree.js?v=20260830c"></script>
@@ -1134,6 +1149,6 @@
   <script src="renderer/graphDensity.js?v=20260917a"></script>
   <script src="renderer/graphHierarchy.js?v=20260917c"></script>
   <script src="renderer/graph.js?v=20260917h"></script>
-  <script src="renderer/app.js?v=20260916a"></script>
+  <script src="renderer/app.js?v=20260918c"></script>
 </body>
 </html>

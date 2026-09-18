@@ -150,13 +150,18 @@ function makeCorpusRow(c) {
       <button class="btn btn-ghost" data-act="reextract" title="按当前来源重新抽取该语料">重新抽取</button>
       <button class="btn btn-ghost danger" data-act="del" title="删除该语料（含同名图片目录）">删除</button>
     </span>`;
+  // 记录按下位置，用于区分「单击」与「拖选文字」
+  let downX = 0, downY = 0;
+  row.addEventListener('mousedown', (e) => { downX = e.clientX; downY = e.clientY; });
   row.addEventListener('click', (e) => {
     const act = e.target.dataset && e.target.dataset.act;
-    if (!act) return;
-    if (act === 'preview') openCorpusPreview(c.rel);
-    if (act === 'promote') promoteCorpusToNote(c.rel);
-    if (act === 'reextract') reExtractCorpus(c);
-    if (act === 'del') removeCorpus([c.rel]);
+    if (act === 'promote') { promoteCorpusToNote(c.rel); return; }
+    if (act === 'reextract') { reExtractCorpus(c); return; }
+    if (act === 'del') { removeCorpus([c.rel]); return; }
+    // 拖选文字（按下/抬起位移明显）不触发预览
+    if (Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4) return;
+    // 「预览」按钮或点行任意空白处/文件名：统一打开预览
+    openCorpusPreview(c.rel);
   });
   row.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -181,6 +186,51 @@ function stripMd(name) {
   return String(name || '').replace(/\.(md|markdown)$/i, '');
 }
 
+// ---------- 预览页左侧目录树（语料按 rel 还原目录，与原始文件预览同一套呈现） ----------
+const corpusPreviewTreeCollapsed = {};
+function renderCorpusPreviewTree(activeRel) {
+  const box = $('raw-preview-tree');
+  if (!box) return;
+  box.innerHTML = '';
+  const node = () => ({ dirs: new Map(), files: [] });
+  const root = node();
+  for (const c of state.corpus || []) {
+    const parts = String(c.rel || c.name || '').replace(/\\/g, '/').split('/').filter(Boolean);
+    let cur = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!cur.dirs.has(parts[i])) cur.dirs.set(parts[i], node());
+      cur = cur.dirs.get(parts[i]);
+    }
+    cur.files.push({ c, label: parts[parts.length - 1] || c.name });
+  }
+  const wrap = document.createElement('div');
+  wrap.className = 'rpt-group';
+  const walk = (n, depth) => {
+    for (const [dname, dn] of n.dirs) {
+      const dkey = dname + '@' + depth;
+      const dcol = !!corpusPreviewTreeCollapsed[dkey];
+      const dh = document.createElement('div');
+      dh.className = 'rpt-folder';
+      dh.style.paddingLeft = (8 + depth * 12) + 'px';
+      dh.innerHTML = `<span class="chevron${dcol ? ' collapsed' : ''}">▾</span>${icoSvg('folder-open', 12)}<span class="rpt-name">${escapeHtml(dname)}</span>`;
+      dh.addEventListener('click', () => { corpusPreviewTreeCollapsed[dkey] = !dcol; renderCorpusPreviewTree(activeRel); });
+      wrap.appendChild(dh);
+      if (!dcol) walk(dn, depth + 1);
+    }
+    for (const f of n.files) {
+      const leaf = document.createElement('div');
+      leaf.className = 'rpt-leaf' + (f.c.rel === activeRel ? ' active' : '');
+      leaf.style.paddingLeft = (8 + depth * 12) + 'px';
+      leaf.title = f.c.rel || '';
+      leaf.innerHTML = `${icoSvg('notes', 12)}<span class="rpt-name">${escapeHtml(stripMd(f.label))}</span>`;
+      leaf.addEventListener('click', () => openCorpusPreview(f.c.rel));
+      wrap.appendChild(leaf);
+    }
+  };
+  walk(root, 0);
+  box.appendChild(wrap);
+}
+
 // ---------- 预览（复用 #raw-preview-view + renderRawPreview）----------
 async function openCorpusPreview(rel) {
   const res = await window.kb.corpusRead({ rel });
@@ -193,6 +243,16 @@ async function openCorpusPreview(rel) {
   title.title = String(res.rel || '');
   // 语料内图片落在 <同名>.assets/，相对引用解析到语料文件所在目录
   const dir = String(res.path || '').replace(/[\\/][^\\/]*$/, '').replace(/\\/g, '/');
+  renderCorpusPreviewTree(rel);
+  // 只读源码 + meta（字数/更新时间），与笔记编辑器同一套呈现
+  $('raw-content').value = res.text || '';
+  $('raw-meta-date').textContent = `${wordCount(res.text || '')} 字`;
+  const cmt = (state.corpus || []).find((c) => c.rel === rel);
+  const cts = cmt && cmt.generatedAt ? Date.parse(cmt.generatedAt) : null;
+  const ctimeEl = $('raw-meta-time');
+  ctimeEl.textContent = cts ? `更新于 ${formatRelDate(cts)}` : '';
+  ctimeEl.title = cts ? formatDate(cts) : '';
+  if (typeof applyRawEditorMode === 'function') applyRawEditorMode();
   renderRawPreview(res.text || '', dir);
   renderEditor();
   renderSidebar();

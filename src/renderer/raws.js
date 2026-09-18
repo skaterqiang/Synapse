@@ -1323,11 +1323,17 @@ function renderRawList() {
         <button class="btn btn-ghost" data-act="view" title="${viewTitle}">查看</button>
         <button class="btn btn-ghost danger" data-act="del" title="${delTitle}">${delLabel}</button>
       </span>`;
+    // 记录按下位置，用于区分「单击」与「拖选文字」
+    let downX = 0, downY = 0;
+    row.addEventListener('mousedown', (e) => { downX = e.clientX; downY = e.clientY; });
     row.addEventListener('click', (e) => {
       const act = e.target.dataset && e.target.dataset.act;
-      if (act === 'view') viewAction(r.path);
-      if (act === 'del') deleteRaw(r.path);
-      if (act === 'rename') renameRawUrl(r);
+      if (act === 'del') { deleteRaw(r.path); return; }
+      if (act === 'rename') { renameRawUrl(r); return; }
+      // 拖选文字（按下/抬起位移明显）不触发查看，避免选中文件名时误开预览
+      if (Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4) return;
+      // 「查看」按钮或点行任意空白处/文件名：统一打开查看（md 应用内预览 / 链接浏览器 / 其余本机打开）
+      viewAction(r.path);
     });
     // 右键菜单：提取笔记 / 知识图谱等快捷操作
     row.addEventListener('contextmenu', (e) => {
@@ -1514,6 +1520,92 @@ function rawAssetUrl(dir, rel) {
   return 'kb-asset://file/' + encodeURI(abs).replace(/[()']/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
 }
 
+// ---------- 预览页左侧目录树（复用笔记「左目录 + 右文档」呈现） ----------
+// 从 state.raws 还原来源目录结构：local: 引用按 root 分组、rel 还原多级目录；
+// raw/ 自动副本与 url: 链接各自成组平铺。点 .md 在右侧打开预览，其余交本机/浏览器。
+const rawPreviewTreeCollapsed = {};
+function renderRawPreviewTree(activePath) {
+  const box = $('raw-preview-tree');
+  if (!box) return;
+  box.innerHTML = '';
+  const groups = new Map();
+  for (const r of state.raws || []) {
+    const p = String(r.path);
+    const key = p.startsWith('local:') ? (r.root || '__local__') : (p.startsWith('url:') ? '__url__' : '__raw__');
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  const labelFor = (key) => {
+    if (key === '__url__') return '网页链接';
+    if (key === '__raw__') return 'raw（自动副本）';
+    if (key === '__local__') return '本机引用';
+    return String(key).replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || key;
+  };
+  const node = () => ({ dirs: new Map(), files: [] });
+  for (const [key, items] of groups) {
+    const wrap = document.createElement('div');
+    wrap.className = 'rpt-group';
+    const gkey = 'g:' + key;
+    const gcol = !!rawPreviewTreeCollapsed[gkey];
+    const gh = document.createElement('div');
+    gh.className = 'rpt-folder rpt-root';
+    gh.innerHTML = `<span class="chevron${gcol ? ' collapsed' : ''}">▾</span>${icoSvg('folder-open', 12)}<span class="rpt-name" title="${escapeHtml(key)}">${escapeHtml(labelFor(key))}</span>`;
+    gh.addEventListener('click', () => { rawPreviewTreeCollapsed[gkey] = !gcol; renderRawPreviewTree(rawPreviewRelPath); });
+    wrap.appendChild(gh);
+    if (!gcol) {
+      const root = node();
+      for (const r of items) {
+        const parts = String(r.rel || r.name || '').replace(/\\/g, '/').split('/').filter(Boolean);
+        let cur = root;
+        for (let i = 0; i < parts.length - 1; i++) {
+          if (!cur.dirs.has(parts[i])) cur.dirs.set(parts[i], node());
+          cur = cur.dirs.get(parts[i]);
+        }
+        cur.files.push({ r, label: parts[parts.length - 1] || r.name });
+      }
+      const walk = (n, depth) => {
+        for (const [dname, dn] of n.dirs) {
+          const dkey = key + '|' + dname + '@' + depth;
+          const dcol = !!rawPreviewTreeCollapsed[dkey];
+          const dh = document.createElement('div');
+          dh.className = 'rpt-folder';
+          dh.style.paddingLeft = (8 + depth * 12) + 'px';
+          dh.innerHTML = `<span class="chevron${dcol ? ' collapsed' : ''}">▾</span>${icoSvg('folder-open', 12)}<span class="rpt-name">${escapeHtml(dname)}</span>`;
+          dh.addEventListener('click', () => { rawPreviewTreeCollapsed[dkey] = !dcol; renderRawPreviewTree(rawPreviewRelPath); });
+          wrap.appendChild(dh);
+          if (!dcol) walk(dn, depth + 1);
+        }
+        for (const f of n.files) {
+          const isMd = isRawMarkdown(f.r.path);
+          const isUrl = String(f.r.path).startsWith('url:');
+          const leaf = document.createElement('div');
+          leaf.className = 'rpt-leaf' + (f.r.path === activePath ? ' active' : '');
+          leaf.style.paddingLeft = (8 + depth * 12) + 'px';
+          leaf.title = f.r.path;
+          leaf.innerHTML = `${icoSvg(isUrl ? 'link' : (isMd ? 'notes' : 'parse'), 12)}<span class="rpt-name">${escapeHtml(f.label)}</span>`;
+          leaf.addEventListener('click', () => { (isMd ? openRawPreview : openRawNative)(f.r.path); });
+          wrap.appendChild(leaf);
+        }
+      };
+      walk(root, 1);
+    }
+    box.appendChild(wrap);
+  }
+}
+
+// 原始预览复用笔记编辑器的展示工具：编辑(只读源码)/分屏/预览 三态
+let rawEditorMode = 'preview';
+function applyRawEditorMode() {
+  const body = $('raw-editor-body');
+  if (!body) return;
+  body.className = 'editor-body mode-' + rawEditorMode;
+  ['edit', 'split', 'preview'].forEach((m) => {
+    const b = $('raw-mode-' + m);
+    if (b) b.classList.toggle('active', rawEditorMode === m);
+  });
+}
+function setRawEditorMode(m) { rawEditorMode = m; applyRawEditorMode(); }
+
 async function openRawPreview(relPath) {
   const res = await window.kb.rawPreview({ settings: state.settings, relPath });
   if (!res || !res.ok) { toast('预览失败：' + ((res && res.error) || '未知错误'), 3500); return; }
@@ -1524,6 +1616,16 @@ async function openRawPreview(relPath) {
   const title = $('raw-preview-title');
   title.textContent = res.name || '预览';
   title.title = res.dir ? (String(res.dir).replace(/\\/g, '/') + '/' + (res.name || '')) : (res.name || '');
+  renderRawPreviewTree(relPath);
+  // 只读源码 + meta（字数/更新时间），与笔记编辑器同一套呈现
+  $('raw-content').value = res.text || '';
+  const src = (state.raws || []).find((r) => r.path === relPath);
+  const mt = (src && src.mtime) || null;
+  $('raw-meta-date').textContent = `${wordCount(res.text || '')} 字`;
+  const timeEl = $('raw-meta-time');
+  timeEl.textContent = mt ? `更新于 ${formatRelDate(mt)}` : '';
+  timeEl.title = mt ? formatDate(mt) : '';
+  applyRawEditorMode();
   renderRawPreview(res.text || '', res.dir || '');
   renderEditor();
   renderSidebar();

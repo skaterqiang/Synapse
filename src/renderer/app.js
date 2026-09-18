@@ -121,6 +121,11 @@ function bindEvents() {
     if (!rawPreviewRelPath) return;
     openRawNative(rawPreviewRelPath);
   });
+  // 原始预览复用笔记的 编辑/分屏/预览 展示工具
+  ['edit', 'split', 'preview'].forEach((m) => {
+    const b = $('raw-mode-' + m);
+    if (b) b.addEventListener('click', () => setRawEditorMode(m));
+  });
   $('btn-ai-view-send').addEventListener('click', sendAiViewQuestion);
   // 空态示例问题：点击即作为问题直接发送（去掉装饰引号）
   $('ai-view-welcome').addEventListener('click', (e) => {
