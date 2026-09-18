@@ -130,14 +130,14 @@ async function init() {
   if (rw) notesStore.rewriteNoteFiles(rw.from, rw.to);
   notesStore.migrateAssetsToNoteDirs(); // 旧 assets/<标题>/ 附件 → 笔记自身目录
   notesStore.migrateEncodedNoteTitles(); // URL 编码乱码标题 → 解码为可读标题（幂等）
-  // 遗留 notes 表：内容已全部落文件后移除，收缩库体积
+  // 遗留 notes 表：内容已全部落文件后移除，收缩库体积；移除成功一次后不再重复打印
   try {
     if (all("SELECT name FROM sqlite_master WHERE type='table' AND name='notes'").length) {
       const c = all('SELECT COUNT(*) AS c FROM notes')[0].c || 0;
       if (!c) {
         run('DROP TABLE notes');
         flush();
-        console.log('遗留 notes 表已移除（笔记内容存于文件系统）');
+        console.log('遗留 notes 表已移除（笔记内容存于文件系统，后续启动不再提示）');
       }
     }
   } catch (_) {}
@@ -169,17 +169,6 @@ function createSchema() {
       id TEXT UNIQUE NOT NULL,
       name TEXT NOT NULL,
       parent_id TEXT
-    );
-    CREATE TABLE IF NOT EXISTS notes (
-      rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-      id TEXT UNIQUE NOT NULL,
-      title TEXT NOT NULL DEFAULT '',
-      content TEXT NOT NULL DEFAULT '',
-      tags TEXT NOT NULL DEFAULT '[]',
-      folder_id TEXT,
-      pinned INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL DEFAULT 0,
-      updated_at INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS kv (
       key TEXT PRIMARY KEY,

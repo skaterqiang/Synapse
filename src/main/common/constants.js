@@ -280,6 +280,59 @@ const ONTOLOGY_PROFILES = {
     ],
   },
 };
+
+// 常见英文谓词 → 中文别名。
+// 键为 canonical key，值为别名数组；别名在体系内唯一映射到一个 canonical key，
+// 同一别名在不同体系可指向不同谓词（体系级隔离）。
+const RELATION_ALIASES = {
+  // related_to / relatedTo：BFO 2020 与 ISO 15926 的兜底谓词拼写不同，
+  // 但语义相同，互相视为别名，避免跨体系校验时把对方 canonical key 当未知谓词。
+  related_to: ['相关', '相关于', 'relatedTo'],
+  relatedTo: ['相关', '相关于', 'related_to'],
+  // 跨体系语义等价（canonical key 不同，但概念一致），互相视为别名。
+  // 注意：别名只影响「是否识别」，domain/range 仍按当前体系的 canonical key 校验。
+  part_of: ['部分', '组成部分'],
+  has_part: ['包含', '具有部分', '拥有部分', 'composedOf'],
+  located_in: ['位于', '在...中', '坐落于', 'containedIn'],
+  occurs_in: ['发生于', '出现在'],
+  precedes: ['先于', '在...之前'],
+  inheres_in: ['依附于', '依存于', '内在于'],
+  bearer_of: ['承载', '具有', '带有'],
+  participates_in: ['参与', '参加', 'involvedIn'],
+  has_participant: ['有参与者', '参与者为'],
+  realizes: ['实现', '履行'],
+  has_role: ['有角色', '扮演'],
+  derives_from: ['衍生自', '来源于', '源自'],
+  instance_of: ['实例', '是...的实例', 'classifiedBy'],
+  is_a: ['是', '是一种', 'hasSuperclass'],
+  connectedTo: ['连接', '相连', '连接到'],
+  classifiedBy: ['分类为', '被分类为', '归类于', 'instance_of'],
+  composedOf: ['由...组成', '组成', '由组成', 'has_part'],
+  temporalPartOf: ['时间段属于', '时间部分于'],
+  spatialPartOf: ['空间部分于', '空间组成部分'],
+  containedIn: ['包含于', '被包含', 'located_in'],
+  startsBefore: ['开始早于'],
+  endsBefore: ['结束早于'],
+  existsAt: ['存在于'],
+  involvedIn: ['参与于', '参与', 'participates_in'],
+  hasSuperclass: ['父类为', 'is_a'],
+  hasClassMember: ['含成员', '有成员'],
+  representsIn: ['表征于', '表征'],
+};
+
+// 把全局别名写入内置体系定义，OWL 导入路径会复用同一张表。
+for (const pid of ['bfo', 'iso15926']) {
+  const prof = ONTOLOGY_PROFILES[pid];
+  if (!prof || !Array.isArray(prof.predicates)) continue;
+  for (const p of prof.predicates) {
+    if (!p || !p.key) continue;
+    const aliases = RELATION_ALIASES[p.key];
+    if (aliases && aliases.length) {
+      p.aliases = Array.isArray(p.aliases) ? [...new Set([...p.aliases, ...aliases])] : aliases.slice();
+    }
+  }
+}
+
 // 供提取弹窗/本体页切换器列出可选体系
 const PROFILE_LIST = [
   { id: 'bfo-lite', name: 'BFO-Lite 轻量体系', desc: '默认，中文谓词，flat 提取' },
@@ -332,7 +385,8 @@ const SKILL_DOWNLOAD_TIMEOUT_MS = 300000;
 const SKILL_MAX_ZIP_BYTES = 60 * 1024 * 1024;
 // 技能种子目录（示例技能植入来源）。
 // 历史值是一个 macOS 绝对路径（/Users/qiang/...），在其它机器上永远不存在 ⇒ 种子技能从未被植入过。
-// 改为「仓库根的 skills/」：src/main/common → 上溯 4 级到仓库根（口径同 skills/runner.js 的 NODE_PATH）。
+// 改为「应用目录的上一级的 skills/」：src/main/common → 上溯 4 级（口径同 skills/runner.js 的 NODE_PATH）。
+// （§10.3 实测：仓库根无 skills/，内置示例技能与用户技能集合同放在工作区级的 skills/。）
 // 目录不存在时 seedSampleSkills 会静默跳过（打包后 asar 内没有该目录属正常情况）。
 const DEFAULT_SKILLS_DIR = pathJoin(__dirname, '..', '..', '..', '..', 'skills');
 
@@ -397,4 +451,5 @@ module.exports = {
   DEFAULT_EXTRACT_SKILL_TOPN,
   CORPUS_DIR,
   URL_COOKIES_KEY,
+  RELATION_ALIASES,
 };

@@ -27,6 +27,10 @@ const state = {
   raws: [],                           // raw/ 原始来源列表
   folderCollapsed: {},                // 目录树折叠状态
   trashedFolders: [],                 // 已删除目录的快照 [{id,name,parentId}]，垃圾桶内分组展示/整目录还原用
+  // ---------- 语料流水线（设计 §16.1）：新增 3 键 ----------
+  corpus: [],                         // 语料库列表 [{corpusId,rel,name,domainLabel,profileId,parseMethod,skill,chars,generatedAt,stale}]
+  corpusTab: 'raw',                   // 原始文件页子页签：'raw' | 'corpus'（默认原始文件）
+  skillKindFilter: 'all',             // 技能页类型筛选：'all' | 'instruct' | 'extract'
 };
 
 let saveTimer = null;
@@ -199,7 +203,9 @@ function askInput(title, defaultValue = '', opts = {}) {
     $('prompt-title').textContent = title;
     const input = multiline ? $('prompt-textarea') : $('prompt-input');
     const other = multiline ? $('prompt-input') : $('prompt-textarea');
+    const select = $('prompt-select');
     if (other) other.hidden = true;
+    if (select) select.hidden = true;
     input.hidden = false;
     input.value = defaultValue;
     if (input.placeholder !== undefined) input.placeholder = opts.placeholder || '';
@@ -231,6 +237,50 @@ function askInput(title, defaultValue = '', opts = {}) {
     $('btn-prompt-cancel').addEventListener('click', onCancel);
     $('prompt-modal').addEventListener('click', onMask);
     input.addEventListener('keydown', onKey);
+  });
+}
+
+// 下拉选择弹窗（复用 prompt-modal）。options: [{ value, label, selected }]
+// 返回选中 value；取消/点遮罩返回 null。
+function askSelect(title, options, opts = {}) {
+  return new Promise((resolve) => {
+    $('prompt-title').textContent = title;
+    const input = $('prompt-input');
+    const textarea = $('prompt-textarea');
+    const select = $('prompt-select');
+    if (input) input.hidden = true;
+    if (textarea) textarea.hidden = true;
+    select.hidden = false;
+    select.innerHTML = (options || []).map((o) => {
+      const v = escapeHtml(String(o.value));
+      const l = escapeHtml(o.label || v);
+      const s = o.selected ? ' selected' : '';
+      return `<option value="${v}"${s}>${l}</option>`;
+    }).join('');
+    const box = $('prompt-box');
+    if (box) box.style.width = opts.width || '360px';
+    $('prompt-modal').hidden = false;
+    select.focus();
+
+    const close = (val) => {
+      $('prompt-modal').hidden = true;
+      $('btn-prompt-ok').removeEventListener('click', onOk);
+      $('btn-prompt-cancel').removeEventListener('click', onCancel);
+      $('prompt-modal').removeEventListener('click', onMask);
+      select.removeEventListener('keydown', onKey);
+      resolve(val);
+    };
+    const onOk = () => close(select.value);
+    const onCancel = () => close(null);
+    const onMask = (e) => { if (e.target === $('prompt-modal')) close(null); };
+    const onKey = (e) => {
+      if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); close(select.value); }
+      if (e.key === 'Escape') close(null);
+    };
+    $('btn-prompt-ok').addEventListener('click', onOk);
+    $('btn-prompt-cancel').addEventListener('click', onCancel);
+    $('prompt-modal').addEventListener('click', onMask);
+    select.addEventListener('keydown', onKey);
   });
 }
 
@@ -1300,6 +1350,36 @@ function mcpCard(m) {
   });
   return wrap;
 }
+// 对旧版 settings.skills 中缺失 kind 的项，回读 SKILL.md 补全抽取技能字段。
+// 早期创建/安装入口漏写 kind，导致 extract 技能被错分为 instructions。
+async function backfillSkillKinds() {
+  const skills = (state.settings && state.settings.skills) || [];
+  const missing = skills.filter((k) => k && k.dir && !k.kind);
+  if (!missing.length) return false;
+  let changed = false;
+  for (const k of missing) {
+    let filled = false;
+    try {
+      const r = await window.kb.skillRead({ dir: k.dir });
+      if (r && r.ok) {
+        k.kind = r.kind || 'instructions';
+        k.accepts = r.accepts || null;
+        k.mode = r.mode || 'llm';
+        k.entry = r.entry || 'scripts/main.js';
+        k.priority = Number.isFinite(Number(r.priority)) ? Number(r.priority) : 50;
+        k.version = r.version || '0.0.0';
+        k.timeoutSec = Number.isFinite(Number(r.timeoutSec)) ? Number(r.timeoutSec) : 0;
+        k.output = r.output || '';
+        k.enabled = r.enabled !== false;
+        filled = changed = true;
+      }
+    } catch (_) { /* 回退到默认 instructions */ }
+    if (!filled) { k.kind = 'instructions'; changed = true; }
+  }
+  if (changed) persist();
+  return changed;
+}
+
 // 技能广场式卡片网格（搜索过滤 + 点击启用/删除）
 // 依据技能名生成稳定的柔和配色，让卡片图标有区分度
 function skillHue(name) {
@@ -1307,23 +1387,49 @@ function skillHue(name) {
   for (const c of String(name || 'skill')) h = (h * 31 + c.charCodeAt(0)) % 360;
   return h;
 }
+// 抽取技能卡脚部的 accepts/mode/超时 chips（全复用 .skill-card-tag，不新增结构）
+function skillMetaChips(k) {
+  const parts = [];
+  const acc = Array.isArray(k.accepts) && k.accepts.length ? k.accepts.slice(0, 4).join('·') : '通用';
+  parts.push(acc);
+  parts.push(k.mode === 'script' ? '脚本' : 'LLM');
+  if (k.mode === 'script' && Number(k.timeoutSec) > 0) parts.push('≤' + k.timeoutSec + 's');
+  if (Number(k.priority) > 0 && Number(k.priority) !== 50) parts.push('P' + k.priority);
+  return parts.map((t) => '<span class="skill-card-tag">' + escapeHtml(t) + '</span>').join('');
+}
 function renderSkillGrid() {
   const box = $('skill-grid'); if (!box) return;
+  // 旧数据补全：若存在缺失 kind 的技能，先异步回读再重画，避免 extract 技能被错分
+  if ((state.settings.skills || []).some((k) => k && k.dir && !k.kind)) {
+    backfillSkillKinds().then((changed) => { if (changed) renderSkillGrid(); });
+  }
   const q = (($('skill-search') && $('skill-search').value) || '').trim().toLowerCase();
   box.innerHTML = '';
-  const list = (state.settings.skills || []).filter((k) => !q || (k.name || '').toLowerCase().includes(q) || (k.desc || k.description || '').toLowerCase().includes(q));
+  const kf = state.skillKindFilter || 'all';
+  const list = (state.settings.skills || []).filter((k) => {
+    if (q && !((k.name || '').toLowerCase().includes(q) || (k.desc || k.description || '').toLowerCase().includes(q))) return false;
+    const kind = k.kind === 'extract' ? 'extract' : 'instruct';
+    if (kf === 'instruct' && kind !== 'instruct') return false;
+    if (kf === 'extract' && kind !== 'extract') return false;
+    return true;
+  });
   if (!list.length) { box.innerHTML = '<div style="grid-column:1/-1;color:var(--text-sub);font-size:12.5px;padding:12px 0">暂无技能，点「创建技能」选择含 SKILL.md 的目录</div>'; return; }
   list.forEach((k) => {
     const card = document.createElement('div');
     card.className = 'skill-card' + (k.enabled ? '' : ' off');
     const dirTag = k.dir ? String(k.dir).split('/').filter(Boolean).slice(-1)[0] : '';
     const hue = skillHue(k.name);
+    const isExtract = k.kind === 'extract';
+    // 类型徽标：抽取技能用 --primary 实底，指令技能（含老技能缺省）用虚线空态以示「未声明/指令」
+    const kindBadge = isExtract ? '<span class="skill-card-tag kind-extract">抽取</span>' : '<span class="skill-card-tag skill-card-tag-empty">指令</span>';
+    // accepts chips + mode + 超时（仅抽取技能有值）
+    const metaChips = isExtract ? skillMetaChips(k) : '';
     card.innerHTML =
       '<div class="skill-card-head"><span class="skill-card-ico" style="background:hsl(' + hue + ' 70% 94%);color:hsl(' + hue + ' 60% 42%)">' + icoSvg('skill', 14) + '</span>' +
-      '<span class="skill-card-name" title="' + escapeHtml(k.name || '') + '">' + escapeHtml(k.name || '') + '</span>' +
+      '<span class="skill-card-name" title="' + escapeHtml(k.name || '') + '">' + escapeHtml(k.name || '') + '</span>' + kindBadge +
       '<label class="skill-switch" title="' + (k.enabled ? '已启用，点击停用' : '已停用，点击启用') + '"><input type="checkbox" data-en ' + (k.enabled ? 'checked' : '') + '><span class="skill-switch-slider"></span></label></div>' +
       '<div class="skill-card-desc">' + escapeHtml(k.desc || k.description || '（无描述）') + '</div>' +
-      '<div class="skill-card-foot">' + (dirTag ? '<span class="skill-card-tag" title="' + escapeHtml(k.dir || '') + '">' + icoSvg('folder-open', 12) + escapeHtml(dirTag) + '</span>' : '<span class="skill-card-tag skill-card-tag-empty">未关联目录</span>') +
+      '<div class="skill-card-foot"><span class="skill-card-meta">' + metaChips + (dirTag ? '<span class="skill-card-tag" title="' + escapeHtml(k.dir || '') + '">' + icoSvg('folder-open', 12) + escapeHtml(dirTag) + '</span>' : '<span class="skill-card-tag skill-card-tag-empty">未关联目录</span>') + '</span>' +
       '<span class="skill-card-actions">' +
       '<button type="button" class="skill-act" data-edit>编辑</button>' +
       '<button type="button" class="skill-act danger" data-del>删除</button></span></div>';
@@ -1355,18 +1461,127 @@ function openSkillEdit(k) {
   $('skill-edit-dir').value = k.dir || '';
   $('skill-edit-desc').value = k.desc || k.description || '';
   $('skill-edit-instr').value = k.instructions || '';
+  // ---------- 抽取技能 6 字段回填 ----------
+  const isExtract = k.kind === 'extract';
+  $('skill-edit-kind-extract').checked = isExtract;
+  $('skill-edit-kind-instruct').checked = !isExtract;
+  const acc = Array.isArray(k.accepts) ? k.accepts.map((x) => String(x).toLowerCase().replace(/^\./, '')) : [];
+  document.querySelectorAll('#skill-edit-accepts .skill-acc-chip').forEach((chip) => {
+    const e = chip.dataset.ext;
+    chip.classList.toggle('active', e === '*' ? acc.length === 0 : acc.includes(e));
+  });
+  const isScript = k.mode === 'script';
+  $('skill-edit-mode-script').checked = isScript;
+  $('skill-edit-mode-llm').checked = !isScript;
+  $('skill-edit-timeout').value = Number(k.timeoutSec) > 0 ? String(k.timeoutSec) : '';
+  $('skill-edit-output').value = k.output || '';
+  $('skill-edit-priority').value = Number.isFinite(Number(k.priority)) && k.priority !== '' ? String(k.priority) : '';
+  // 根据当前 kind/mode 联动显隐（复用 app.js 里的 skillEditSyncVisibility）
+  if (typeof skillEditSyncVisibility === 'function') skillEditSyncVisibility();
+  $('skill-test-log').hidden = true; $('skill-test-log').textContent = '';
+  $('skill-test-result').hidden = true; $('skill-test-result').innerHTML = '';
+  $('skill-test-sample').value = '';
   $('skill-edit-modal').hidden = false;
 }
 function saveSkillEdit() {
+  if (!editingSkill) return;
+  collectSkillForm();
+  persist();
+  $('skill-edit-modal').hidden = true;
+  renderExtEditors(); refreshAllExtMenus();
+  toast('技能已保存');
+}
+// 把表单当前值写回 editingSkill（state.settings.skills 的存活引用）——
+// saveSkillEdit 与试跑共用：试跑前同步一次，保证试跑反映的是当前表单而非上次保存值。
+function collectSkillForm() {
   if (!editingSkill) return;
   editingSkill.name = $('skill-edit-name').value.trim() || editingSkill.name;
   editingSkill.desc = $('skill-edit-desc').value.trim();
   editingSkill.description = editingSkill.desc;
   editingSkill.instructions = $('skill-edit-instr').value.trim();
+  // ---------- 抽取技能 6 字段写回（写进 settings.skills 项，运行期以此为事实源）----------
+  editingSkill.kind = ($('skill-edit-kind-extract').checked ? 'extract' : 'instructions');
+  if (editingSkill.kind === 'extract') {
+    const acc = [];
+    document.querySelectorAll('#skill-edit-accepts .skill-acc-chip').forEach((chip) => {
+      if (chip.classList.contains('active') && chip.dataset.ext !== '*') acc.push(chip.dataset.ext);
+    });
+    editingSkill.accepts = acc.length ? acc : null;
+    editingSkill.mode = $('skill-edit-mode-script').checked ? 'script' : 'llm';
+    const t = Number($('skill-edit-timeout').value);
+    editingSkill.timeoutSec = Number.isFinite(t) && t > 0 ? Math.min(600, Math.max(5, Math.round(t))) : 0;
+    editingSkill.output = $('skill-edit-output').value.trim();
+    const pv = Number($('skill-edit-priority').value);
+    editingSkill.priority = Number.isFinite(pv) && $('skill-edit-priority').value.trim() !== '' ? Math.min(100, Math.max(0, Math.round(pv))) : 50;
+    if (!editingSkill.entry) editingSkill.entry = 'scripts/main.js';
+  } else {
+    // 改回指令技能：清理抽取专属字段，避免残留误导选择算法
+    editingSkill.accepts = null; editingSkill.mode = 'llm';
+    editingSkill.timeoutSec = 0; editingSkill.output = ''; editingSkill.priority = 50;
+  }
+}
+// ---------- 单技能试跑（§16.4④）：不落盘、不入缓存 ----------
+// 选样本：复用 rawPickFiles（桌面弹系统对话框 / 网页走上传桥），取首个。
+async function pickSkillSample() {
+  try {
+    const res = await window.kb.rawPickFiles();
+    const p = res && res.paths && res.paths[0];
+    if (!p) return;
+    $('skill-test-sample').value = p;
+    updateSkillTestTimeoutHint();
+  } catch (_) {}
+}
+// 超时提示：技能未声明 timeoutSec 且全局值 < 120 时提醒（OCR 大文件可能不够）。
+function updateSkillTestTimeoutHint() {
+  const hint = $('skill-test-timeout-hint');
+  if (!hint) return;
+  const s = state.settings || {};
+  const per = Number(editingSkill && editingSkill.timeoutSec);
+  if (Number.isFinite(per) && per > 0) { hint.textContent = `将使用本技能超时 ${per}s`; return; }
+  const g = Number(s.extractSkillTimeoutSec) || 120;
+  hint.textContent = g < 120 ? `当前超时 ${g}s，OCR 大文件可能不够（可在 设置→语料流水线 调大）` : '';
+}
+let skillTesting = false;
+async function runSkillExtractTest() {
+  if (skillTesting || !editingSkill) return;
+  const samplePath = ($('skill-test-sample').value || '').trim();
+  if (!samplePath) { toast('请先选择样本文件', 2500); return; }
+  // 以当前表单为准（未保存也可测）：先同步字段并落盘，再取技能名
+  collectSkillForm();
   persist();
-  $('skill-edit-modal').hidden = true;
-  renderExtEditors(); refreshAllExtMenus();
-  toast('技能已保存');
+  const skillName = editingSkill.name;
+  const log = $('skill-test-log');
+  const result = $('skill-test-result');
+  const btn = $('btn-skill-test-run');
+  log.hidden = false; log.textContent = `⏳ 正在用技能「${skillName}」解析样本（mode:${editingSkill.mode || 'llm'}）…`;
+  result.hidden = true; result.innerHTML = '';
+  skillTesting = true;
+  const oldText = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '解析中…'; }
+  try {
+    const res = await window.kb.skillExtractTest({ settings: state.settings, skillName, samplePath });
+    if (res && res.ok) {
+      const md = String(res.markdown || '');
+      const head = `✅ 解析成功（${res.elapsedMs}ms${res.parseMethod ? '，方法：' + res.parseMethod : ''}）—— 共 ${md.length} 字符`;
+      log.textContent = head;
+      result.hidden = false;
+      result.innerHTML = `<div class="mineru-result-line">${escapeHtml(head)}</div>`
+        + `<pre style="white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;margin:6px 0 0;font:12px/1.6 ui-monospace,Menlo,Consolas,monospace">${escapeHtml(md.slice(0, 2000))}${md.length > 2000 ? '\n…（已截断，仅展示前 2000 字）' : ''}</pre>`;
+    } else {
+      const msg = `❌ 试跑失败：${(res && res.error) || '未知错误'}`;
+      log.textContent = msg;
+      result.hidden = false;
+      result.innerHTML = `<div class="mineru-result-line" style="color:var(--danger,#d33)">${escapeHtml(msg)}</div>`;
+    }
+  } catch (err) {
+    const msg = `❌ 试跑异常：${err.message || err}`;
+    log.textContent = msg;
+    result.hidden = false;
+    result.innerHTML = `<div class="mineru-result-line" style="color:var(--danger,#d33)">${escapeHtml(msg)}</div>`;
+  } finally {
+    skillTesting = false;
+    if (btn) { btn.disabled = false; btn.textContent = oldText; }
+  }
 }
 // 创建技能：选择含 SKILL.md 的目录并植入
 async function addSkillByDir() {
@@ -1378,7 +1593,14 @@ async function addSkillByDir() {
   if (!r.ok) { toast(r.error || '读取 SKILL.md 失败', 3000); return; }
   state.settings.skills = state.settings.skills || [];
   if (state.settings.skills.some((x) => x.name === r.name)) { toast('该技能已存在', 2500); return; }
-  state.settings.skills.push({ name: r.name, dir: r.dir, desc: r.description, description: r.description, instructions: r.instructions, enabled: true });
+  state.settings.skills.push({
+    name: r.name, dir: r.dir, desc: r.description, description: r.description,
+    instructions: r.instructions, enabled: r.enabled !== false,
+    kind: r.kind || 'instructions', accepts: r.accepts || null, mode: r.mode || 'llm',
+    entry: r.entry || 'scripts/main.js', priority: Number.isFinite(Number(r.priority)) ? Number(r.priority) : 50,
+    version: r.version || '0.0.0', timeoutSec: Number.isFinite(Number(r.timeoutSec)) ? Number(r.timeoutSec) : 0,
+    output: r.output || ''
+  });
   persist(); renderExtEditors(); refreshAllExtMenus();
   toast('已添加技能：' + r.name);
 }
@@ -1455,7 +1677,14 @@ async function runSkillInstall() {
       let added = 0;
       for (const it of res.installed || []) {
         if (have.has(it.name)) { appendSkillInstallLog('⏭ 已存在同名技能，跳过登记：' + it.name); continue; }
-        state.settings.skills.push({ name: it.name, dir: it.dir, desc: it.description || '', description: it.description || '', instructions: '', enabled: true });
+        state.settings.skills.push({
+          name: it.name, dir: it.dir, desc: it.description || '', description: it.description || '',
+          instructions: '', enabled: it.enabled !== false,
+          kind: it.kind || 'instructions', accepts: it.accepts || null, mode: it.mode || 'llm',
+          entry: it.entry || 'scripts/main.js', priority: Number.isFinite(Number(it.priority)) ? Number(it.priority) : 50,
+          version: it.version || '0.0.0', timeoutSec: Number.isFinite(Number(it.timeoutSec)) ? Number(it.timeoutSec) : 0,
+          output: it.output || ''
+        });
         have.add(it.name); added++;
       }
       persist(); renderExtEditors(); refreshAllExtMenus();
@@ -1804,6 +2033,10 @@ function showSettingsView() {
     $('set-minerumode-mineru').checked = mineruMode === 'mineru';
     // 技能解析开关：未显式保存过的旧数据按默认开启（与主进程 skillParseReady 口径一致）
     $('set-skillparse').checked = s.skillParse !== false;
+    // 语料流水线：总开关与复用默认关（truthy 直读），落盘默认开（!==false）
+    $('set-pipeline').checked = !!s.pipeline;
+    $('set-corpuspersist').checked = s.corpusPersist !== false;
+    $('set-corpusreuse').checked = !!s.corpusReuse;
     // 推理总开关（§6.11）：同样「未显式关闭即开启」，与主进程 reasonEnabled 口径一致
     const reasonOn = s.reasonEnabled !== false;
     $('set-reason-enabled').checked = reasonOn;
@@ -1852,6 +2085,32 @@ function switchSettingsTab(tab) {
   document.querySelectorAll('.settings-pane').forEach((p) => {
     p.hidden = p.dataset.pane !== tab;
   });
+  // 技能卡片适合宽屏网格；其余设置项仍维持紧凑表单阅读宽度。
+  const form = document.querySelector('.settings-form');
+  if (form) form.classList.toggle('is-wide', tab === 'skills');
+  if (tab === 'pipeline') renderPipelinePreview();
+}
+
+// 「当前解析链」只读预览（§16.3）：不执行解析，只展示配方将启用的装饰器层序。
+// 主进程 corpus:pipelinePreview 只接受内置配方名，回 layers:[{name,enabled,reason}]。
+async function renderPipelinePreview() {
+  const box = $('pipeline-preview');
+  if (!box || typeof window.kb.corpusPipelinePreview !== 'function') return;
+  box.textContent = '加载中…';
+  try {
+    const res = await window.kb.corpusPipelinePreview({ settings: state.settings || {}, recipe: 'graph' });
+    if (!res || !res.ok) { box.textContent = '预览失败：' + ((res && res.error) || '未知错误'); return; }
+    const layers = res.layers || [];
+    if (!layers.length) { box.textContent = '（当前配方无装饰器层）'; return; }
+    box.innerHTML = layers.map((l) => {
+      const flag = l.enabled ? '<span style="color:var(--ok,#3a7)">✅</span>' : '<span style="color:var(--muted,#999)">⛔</span>';
+      const name = escapeHtml(l.name);
+      const reason = l.reason ? ' <span style="opacity:.7">' + escapeHtml(l.reason) + '</span>' : '';
+      return `<div class="pipeline-layer">${flag} ${name}${reason}</div>`;
+    }).join('');
+  } catch (err) {
+    box.textContent = '预览失败：' + (err.message || err);
+  }
 }
 
 function readNumInput(id, min, max) {
@@ -2221,6 +2480,10 @@ function saveSettingsFields() {
   if (!mineruCmd) delete s.mineruConvertCmd; else s.mineruConvertCmd = mineruCmd;
   // 技能解析开关：勾选即默认态，删除键（主进程按「未显式关闭」处理），仅取消勾选时落 false
   if ($('set-skillparse').checked) delete s.skillParse; else s.skillParse = false;
+  // 语料流水线：总开关/复用默认关 → 勾选落 true，取消删键；落盘默认开 → 勾选删键，取消落 false
+  if ($('set-pipeline').checked) s.pipeline = true; else delete s.pipeline;
+  if ($('set-corpusreuse').checked) s.corpusReuse = true; else delete s.corpusReuse;
+  if ($('set-corpuspersist').checked) delete s.corpusPersist; else s.corpusPersist = false;
   // 推理总开关（§6.11）：同上口径，勾选即删除键回退默认开启
   const reasonOn = $('set-reason-enabled').checked;
   if (reasonOn) delete s.reasonEnabled; else s.reasonEnabled = false;
@@ -2251,11 +2514,17 @@ function saveSettingsFields() {
 // 避免在别的分类页看到与当前页无关的保存提示
 let autosaveTimer = null;
 function markSettingsSaved() {
-  const el = $('settings-autosave');
+  // 只在「当前正展示的面板」内闪现：查活动 pane 自己的 .settings-autosave，
+  // 避免在 pipeline 页改设时误闪现到 parse 页的指示器（旧实现写死 #settings-autosave）。
+  const active = document.querySelector('.settings-pane:not([hidden])');
+  let el;
+  if (active) {
+    el = active.querySelector('.settings-autosave');
+    if (!el) return; // 该面板无自动保存指示器，不闪现
+  } else {
+    el = $('settings-autosave');
+  }
   if (!el) return;
-  const ae = document.activeElement;
-  const pane = ae && ae.closest ? ae.closest('.settings-pane') : null;
-  if (pane && pane.hidden) return;
   el.textContent = '✓ 已自动保存';
   clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => { el.textContent = ''; }, 2000);

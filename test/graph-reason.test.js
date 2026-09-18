@@ -456,8 +456,18 @@ SubClassOf(:A ObjectComplementOf(:B))
   guard.clearCache();
   const vUnk = guard.checkEdge(BFO, { name: 'x', type: 'material_entity' }, 'notarel', { name: 'y', type: 'material_entity' });
   check('未知谓词 → unknown-predicate', vUnk.ok === false && vUnk.reason === 'unknown-predicate');
-  check('unknown-predicate 的 expected 列出全部 15 个受控谓词', J(vUnk.expected) === '["is_a","instance_of","part_of","has_part","participates_in","has_participant","inheres_in","bearer_of","located_in","occurs_in","precedes","realizes","has_role","derives_from","related_to"]', J(vUnk.expected));
+  // 为降低大图谱校验/修复时的网络与内存开销，unknown-predicate 不再携带完整受控谓词白名单。
+  check('unknown-predicate 的 expected 为空数组（不再回传全量谓词表）', Array.isArray(vUnk.expected) && vUnk.expected.length === 0, J(vUnk.expected));
   check('unknown-predicate 带 fallback 与中文 detail', vUnk.fallback === 'related_to' && vUnk.detail === '谓词「notarel」不在体系受控词表中');
+  // 中文别名命中 canonical key：「相关」应被识别为 related_to，不再报 unknown-predicate
+  const vAlias = guard.checkEdge(BFO, { name: 'x', type: 'material_entity' }, '相关', { name: 'y', type: 'material_entity' });
+  check('中文别名「相关」被识别为 related_to，校验通过', vAlias.ok === true, J(vAlias));
+  // 跨体系英文别名：BFO 的 located_in 在 ISO 15926 下应被识别为 containedIn
+  check('ISO 15926 识别 BFO 的 located_in 为 containedIn 别名', guard.checkEdge(ISO, { name: 'a', type: 'physical_object' }, 'located_in', { name: 'b', type: 'physical_object' }).ok === true);
+  check('ISO 15926 识别 BFO 的 has_part 为 composedOf 别名', guard.checkEdge(ISO, { name: 'a', type: 'physical_object' }, 'has_part', { name: 'b', type: 'physical_object' }).ok === true);
+  check('ISO 15926 识别 BFO 的 participates_in 为 involvedIn 别名', guard.checkEdge(ISO, { name: 'a', type: 'physical_object' }, 'participates_in', { name: 'b', type: 'activity' }).ok === true);
+  check('BFO 识别 ISO 的 containedIn 为 located_in 别名', guard.checkEdge(BFO, { name: 'a', type: 'material_entity' }, 'containedIn', { name: 'b', type: 'material_entity' }).ok === true);
+  check('BFO 识别 ISO 的 composedOf 为 has_part 别名', guard.checkEdge(BFO, { name: 'a', type: 'material_entity' }, 'composedOf', { name: 'b', type: 'material_entity' }).ok === true);
 
   check('无 domain/range 约束的谓词一律放行', guard.checkEdge(BL, { name: 'a', type: 'object' }, '包含', { name: 'b', type: 'object' }).ok === true);
   const vDom = guard.checkEdge(BFO, { name: '过程', type: 'occurrent' }, 'inheres_in', { name: '物质', type: 'material_entity' });

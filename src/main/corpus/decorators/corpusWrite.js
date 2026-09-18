@@ -121,6 +121,8 @@ class CorpusWriteDecorator extends CorpusDecorator {
   async finish(ctx) {
     const warnings = [];
     if (this._persist === false) warnings.push('语料落盘已关闭（corpusPersist=false），本次产物只在内存中流转');
+    // 把本次写入的 rel 清单挂到 ctx.shared，供作业 runner 回报产物（extract-corpus 的「N 篇语料」）
+    if (ctx && ctx.shared) ctx.shared.corpusRels = this.rels.slice();
     return {
       ok: true,
       count: 0,

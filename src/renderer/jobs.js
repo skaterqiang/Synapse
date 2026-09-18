@@ -162,12 +162,12 @@ function buildJobCard(job) {
   }
   // 失败可重试：lint / 图谱（payload 带来源即可重跑）/ 冲突修复（source 持久化了动作清单）/ 已保存来源的吸收作业
   const hasRaw = (job.rawPaths && job.rawPaths.length) || (job.payload && job.payload.rawPaths && job.payload.rawPaths.length);
-  if (job.status === 'failed' && (job.type === 'lint' || job.type === 'graph' || job.type === 'graph-repair' || job.type === 'extract-note' || hasRaw)) {
+  if (job.status === 'failed' && (job.type === 'lint' || job.type === 'graph' || job.type === 'graph-repair' || job.type === 'extract-note' || job.type === 'extract-corpus' || hasRaw)) {
     actions.appendChild(jobActionBtn(icoSvg('refresh', 12) + ' 重试', '', () => retryJob(job), '重新提交该作业'));
   }
   // 警告状态（部分任务失败）：重跑失败任务（仅对失败任务重新执行，不影响成功任务产物）
   const failedTaskNos = (job.result && Array.isArray(job.result.failedTasks)) ? job.result.failedTasks.map((f) => f.taskNo) : [];
-  if (job.status === 'warning' && failedTaskNos.length && (job.type === 'graph' || job.type === 'graph-repair')) {
+  if (job.status === 'warning' && failedTaskNos.length && (job.type === 'graph' || job.type === 'graph-repair' || job.type === 'extract-corpus')) {
     actions.appendChild(jobActionBtn(icoSvg('refresh', 12) + ' 重跑失败任务', 'warn', () => retryFailedTasks(job), `重跑 ${failedTaskNos.length} 个失败任务：仅对这些来源重新抽取，成功任务产物保留`));
   }
   // MinerU 失败回退内置：提供「用 MinerU 重跑」，强制 MinerU 解析（不回退），原地更新笔记产物
@@ -222,8 +222,11 @@ function buildJobDetail(job) {
     ? job.source.items
     : (job.result && Array.isArray(job.result.sourceLabels) ? job.result.sourceLabels : []);
   const isGraph = job.type === 'graph';
+  const isCorpus = job.type === 'extract-corpus';
+  const isCorpusGraph = isGraph && job.source && job.source.kind === '语料库';
   const hasArtifact = isGraph && job.result && Number.isFinite(job.result.nodeCount);
-  if (srcItems.length || hasArtifact || job.source) {
+  const hasCorpusArtifact = isCorpus && job.result && Number.isFinite(job.result.written);
+  if (srcItems.length || hasArtifact || hasCorpusArtifact || job.source) {
     const src = document.createElement('div');
     src.className = 'job-source';
     const shown = srcItems.slice(0, 20).map((s) => `<span class="job-source-item">${escapeHtml(s)}</span>`).join('');
@@ -233,7 +236,10 @@ function buildJobDetail(job) {
     src.innerHTML =
       `<div class="job-source-head"><span class="job-source-kind">${escapeHtml(kind)}</span><span class="job-source-label">${escapeHtml(label)}</span></div>` +
       (srcItems.length ? `<div class="job-source-items">${shown}${more}</div>` : '') +
-      (hasArtifact ? `<div class="job-artifact">产物：${job.result.nodeCount} 节点 / ${job.result.edgeCount} 关系，已持久化到 SQLite</div>` : '');
+      (isCorpusGraph ? '<div class="job-artifact">抽取输入：已解析的 Markdown 语料，不重新解析原始文件。</div>' : '') +
+      (hasArtifact ? `<div class="job-artifact">产物：${job.result.nodeCount} 节点 / ${job.result.edgeCount} 关系，已持久化到 SQLite</div>` : '') +
+      (hasCorpusArtifact ? `<div class="job-artifact">产物：${job.result.written} 篇 Markdown 语料，已写入 corpus/</div>` : '') +
+      (isCorpus && job.result && Number(job.result.llmCalls) > 100 ? `<div class="job-artifact warn">⚠ 本次作业已发起 ${job.result.llmCalls} 次 LLM 调用（未设硬上限）。如需降低，请在「设置 → 语料流水线」调大分块大小（corpusChunkChars）。</div>` : '');
     detail.appendChild(src);
   }
 
@@ -274,9 +280,10 @@ function buildJobDetail(job) {
       const row = document.createElement('div');
       row.className = 'job-task ' + (t.status || '') + (t.output ? ' has-out' : '');
       const chev = t.output ? `<span class="task-chev">${collapsed ? '▸' : '▾'}</span>` : '';
-      row.innerHTML = `${t.no ? `<span class="job-task-no">${t.no}</span>` : ''}${chev}${ico}<span class="job-task-label">${escapeHtml(t.label)}</span>`;
+      const corpusSource = isGraph && t.source && t.source.kind === 'corpus' ? t.source : null;
+      row.innerHTML = `${t.no ? `<span class="job-task-no">${t.no}</span>` : ''}${chev}${ico}<span class="job-task-label" title="${escapeHtml((corpusSource && corpusSource.path) || t.label)}">${escapeHtml(t.label)}</span>`;
       // 失败任务：重跑按钮（图谱/冲突修复作业、非进行中状态）
-      if (t.status === 'failed' && (job.type === 'graph' || job.type === 'graph-repair') && job.status !== 'running' && job.status !== 'queued') {
+      if (t.status === 'failed' && (job.type === 'graph' || job.type === 'graph-repair' || job.type === 'extract-corpus') && job.status !== 'running' && job.status !== 'queued') {
         const rt = document.createElement('button');
         rt.className = 'task-retry';
         rt.textContent = '重跑';
@@ -296,6 +303,13 @@ function buildJobDetail(job) {
         row.addEventListener('click', () => { taskCollapsed[key] = !taskCollapsed[key]; renderJobsView(); });
       }
       wrap.appendChild(row);
+      if (corpusSource && (corpusSource.originName || corpusSource.originPath)) {
+        const origin = document.createElement('div');
+        origin.className = 'job-task-origin';
+        origin.textContent = '原始文档（溯源）：' + (corpusSource.originName || corpusSource.originPath);
+        origin.title = corpusSource.originPath || corpusSource.originName;
+        wrap.appendChild(origin);
+      }
       if (t.output && !collapsed) {
         const pre = document.createElement('pre');
         pre.className = 'job-live task-output';
@@ -511,6 +525,14 @@ function handleJobsUpdate(list) {
       if (j.status === 'success') toast('知识图谱抽取完成');
       else if (j.status === 'warning') toast('知识图谱抽取完成，部分任务失败', 4000);
       else if (j.status === 'failed') toast('知识图谱抽取失败：' + (j.error || ''), 4000);
+    }
+    // 语料抽取终态：刷新语料库列表（若已加载），toast 概览写入篇数
+    if (j.type === 'extract-corpus' && isDone && wasActive) {
+      if (typeof loadCorpus === 'function') { try { loadCorpus(); } catch (_) {} }
+      const w = (j.result && j.result.written) || 0;
+      if (j.status === 'failed') toast('语料抽取失败：' + (j.error || ''), 4000);
+      else if (j.status === 'warning') toast(`语料抽取完成，部分来源失败：已写入 ${w} 篇`, 4000);
+      else toast(`语料抽取完成：已写入 ${w} 篇语料`, 4000);
     }
     // 修复作业终态：图谱已被改动（含部分应用/停止），刷新图谱与推理页；撤销按钮可用性同步刷新
     if (j.type === 'graph-repair' && isDone && wasActive) {

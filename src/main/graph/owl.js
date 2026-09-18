@@ -4,6 +4,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { RELATION_ALIASES } = require('../common/constants');
 
 // ---------- 工具 ----------
 function slugify(name) {
@@ -26,6 +27,23 @@ function localName(uri) {
 
 function stripNs(tag) {
   return String(tag || '').replace(/^[a-zA-Z0-9_-]+:/, '');
+}
+
+// 给解析出的谓词补中文别名：优先用中文 label，再匹配全局别名表。
+function attachRelationAliases(predicates) {
+  if (!Array.isArray(predicates)) return predicates;
+  for (const p of predicates) {
+    if (!p || !p.key) continue;
+    const set = new Set(Array.isArray(p.aliases) ? p.aliases : []);
+    if (p.label && /[\u4e00-\u9fa5]/.test(p.label) && p.label !== p.key) {
+      set.add(p.label);
+    }
+    for (const a of (RELATION_ALIASES[p.key] || [])) {
+      if (a && a !== p.key) set.add(a);
+    }
+    if (set.size) p.aliases = [...set];
+  }
+  return predicates;
 }
 
 // ---------- Turtle 解析 ----------
@@ -115,7 +133,7 @@ function parseTurtle(text) {
     }
   }
 
-  return { classes: [...classes.values()], predicates: [...predicates.values()], constraints };
+  return { classes: [...classes.values()], predicates: attachRelationAliases([...predicates.values()]), constraints };
 }
 
 // ---------- RDF/XML 解析 ----------
@@ -239,7 +257,7 @@ function parseRdfXml(text) {
     }
   }
 
-  return { classes: [...classes.values()], predicates: [...predicates.values()], constraints };
+  return { classes: [...classes.values()], predicates: attachRelationAliases([...predicates.values()]), constraints };
 }
 
 // ---------- 主入口 ----------

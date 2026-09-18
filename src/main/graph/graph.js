@@ -254,11 +254,108 @@ function collectSources() {
   return sources;
 }
 
+// ---------- 语料流水线适配层（设计 §7.5 / §14 三期）----------
+// settings.pipeline 为真时，extractGraph 改走可组合的装饰器流水线，返回与现状**逐字段等价**的
+// 10 字段结果（§12.1 硬契约）；为假时完全走下方老实现（G8 零行为变更开关）。
+//
+// 为什么分「收集相 / 抽取相」两次 drive：领域归纳（resolveDomain）需要**全部来源文本**才能跑，
+// 而拉取式流是惰性的。故先 drive 收集相把来源解析成文本（顺带走解析缓存），归纳领域后再 drive
+// 抽取相（ArraySource 重放已解析项 → enrich 定领域/体系 → corpusWrite 落盘 → chunk → extract → guard → merge）。
+// 老实现同样是「先 collectSources 收齐、再 resolveDomain、再分批抽取」，两相拆分与之同构。
+async function extractGraphViaPipeline(settings, opts, onStage, onProgress, onTasks) {
+  const {
+    rawPaths, inlineSources, typeHints, domainLabel, domainId,
+    resolveDomain, ontologyProfile, signal, taskFilter, autoReason: autoReasonOpt, corpusRels,
+  } = opts || {};
+  const { drive, makeContext } = require('../corpus/drive');
+  const { buildPipeline } = require('../corpus/build');
+  const { GRAPH_COLLECT_RECIPE, GRAPH_EXTRACT_RECIPE } = require('../corpus/recipes');
+  const { buildTasks } = require('../jobs/tasks');
+  const stage = (key, detail) => { if (onStage) { try { onStage(key, detail); } catch (_) { /* 忽略 */ } } };
+
+  // ---- 收集相：Source → 解析（MinerU/技能/内置 + 缓存），把带 text 的 items 收进数组 ----
+  const collected = [];
+  const collectCtx = makeContext({
+    settings, signal,
+    rawPaths: (Array.isArray(rawPaths) && rawPaths.length) ? rawPaths : undefined,
+    inlineSources: (Array.isArray(inlineSources) && inlineSources.length) ? inlineSources : undefined,
+    corpusRels: (Array.isArray(corpusRels) && corpusRels.length) ? corpusRels : undefined,
+    onStage: (key, status, detail) => stage(key, detail),
+    onItem: (item) => { collected.push(item); },
+    shared: {},
+  });
+  await drive(buildPipeline(GRAPH_COLLECT_RECIPE, collectCtx), collectCtx);
+
+  // 空来源校验（≡ 老实现 graph.js:278/286/290 的三分支报错口径）
+  const items = collected.filter((it) => String(it.text || '').trim());
+  if (!items.length) {
+    if (Array.isArray(corpusRels) && corpusRels.length) throw new Error('语料 Markdown 内容为空或文件不存在，无法抽取');
+    if (Array.isArray(inlineSources) && inlineSources.length) throw new Error('笔记内容为空，无法抽取');
+    if (Array.isArray(rawPaths) && rawPaths.length) throw new Error('原始来源内容为空或不存在');
+    throw new Error('选定范围内没有可抽取的内容（笔记为空）');
+  }
+
+  // ---- 任务列表（P13：以来源为单位，不随分块变化）----
+  const tasks = buildTasks(items.map((it) => it.label));
+  items.forEach((it, i) => {
+    if (it.kind !== 'corpus') return;
+    // 当前输入是语料 Markdown；原文出处单独留档，不改写 origin 或语料指纹。
+    const origin = it.origin || {};
+    const hasOrigin = origin.path && !String(origin.path).startsWith('corpus:');
+    tasks[i].source = {
+      kind: 'corpus',
+      path: it.meta.corpusFile,
+      originName: hasOrigin ? String(origin.name || '') : '',
+      originPath: hasOrigin ? String(origin.path) : '',
+    };
+  });
+  const taskIndexOf = new Map(items.map((it, i) => [it.id, i]));
+  const retryTaskNo = (typeof taskFilter === 'number' && taskFilter >= 1) ? taskFilter : null;
+  let runItems = items;
+  if (retryTaskNo !== null) {
+    // 单任务重跑：非目标来源标记为跳过（≡ graph.js:347-355），只重跑目标来源
+    for (let i = 0; i < tasks.length; i++) {
+      if (i !== retryTaskNo - 1) { tasks[i].status = 'done'; tasks[i].output = (tasks[i].output || '') + '\n[跳过] 本次为单任务重跑，该来源未重新抽取'; }
+    }
+    runItems = items.filter((it) => taskIndexOf.get(it.id) === retryTaskNo - 1);
+  }
+  if (onTasks) onTasks(tasks);
+
+  const sourceLabels = items.map((it) => it.label);
+  const sourcePreviews = items.map((it) => ({ rawPath: it.label, content: String(it.text || '').slice(0, 8000) }));
+
+  // ---- 抽取相：ArraySource(runItems) → enrich（含领域归纳）→ corpusWrite → chunk → extract → guard → merge ----
+  const extractCtx = makeContext({
+    settings, signal,
+    autoReason: autoReasonOpt,
+    domainId: (domainId && domainId !== 'general') ? domainId : '',
+    domainLabel: domainLabel || '',
+    typeHints: typeHints || null,
+    profileId: ontologyProfile || '',
+    resolveDomain: typeof resolveDomain === 'function' ? resolveDomain : undefined,
+    onStage: (key, status, detail) => stage(key, detail),
+    onProgress: (detail, preview) => { if (onProgress) { try { onProgress(detail, preview); } catch (_) { /* 忽略 */ } } },
+    onTasks: (t) => { if (onTasks) { try { onTasks(t); } catch (_) { /* 忽略 */ } } },
+    shared: { collectedItems: runItems, tasks, taskIndexOf, sourceLabels, sourcePreviews },
+  });
+  await drive(buildPipeline(GRAPH_EXTRACT_RECIPE, extractCtx), extractCtx);
+
+  // 全失败 / 无节点：与老实现同口径抛错（≡ graph.js:613-623），由 runJob 标作业失败
+  if (extractCtx.shared.fatalError) throw new Error(extractCtx.shared.fatalError);
+  const result10 = extractCtx.shared.result10;
+  if (!result10) throw new Error('流水线未产出图谱结果');
+  return result10;
+}
+
 // ---------- 本体抽取 ----------
 // 逐批调用模型抽取节点/边，合并去重后持久化；onStage 回调用于作业阶段进度展示
 // resolveDomain(raws)：未命中特定领域时由作业层决定最终领域（可新建/复用领域模版），
 // 返回 { domainId, domainLabel, typeHints }；graph 层不直接依赖 templates
-async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile, signal, taskFilter, autoReason: autoReasonOpt }, onStage, onProgress, onTasks) {
+async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile, signal, taskFilter, autoReason: autoReasonOpt, corpusRels }, onStage, onProgress, onTasks) {
+  // G8 零行为变更开关：settings.pipeline 为真时走语料流水线（返回逐字段等价的 10 字段），否则走下方老实现
+  if (settings && settings.pipeline) {
+    return extractGraphViaPipeline(settings, { rawPaths, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile, signal, taskFilter, autoReason: autoReasonOpt, corpusRels }, onStage, onProgress, onTasks);
+  }
   // 作业停止信号：批次开始前检查 + 透传给 chatOnce 中断在途模型请求
   const mkAbort = () => Object.assign(new Error('用户手动停止作业'), { name: 'AbortError' });
   // 生效体系优先级（融合设计 §12.1.1 五级链，两入口 renderer/raws.js 与 jobs/jobs.js 一致）：
@@ -1956,6 +2053,14 @@ async function applyRepairsStepwise(actions, opts = {}) {
   const skipped = [];
   const failed = [];   // { taskNo, label, error } —— 与作业 warning 语义对齐
   let aborted = false;
+  // 批量落库：每 SAVE_BATCH 步或终态时保存一次，避免同步循环中反复 db.flush 撑爆堆内存。
+  const SAVE_BATCH = 50;
+  let lastSaved = 0;
+  const persistWork = () => {
+    if (lastSaved === applied.length) return;
+    saveGraph(work.nodes, work.edges);
+    lastSaved = applied.length;
+  };
   for (let i = 0; i < list.length; i++) {
     if (opts.signal && opts.signal.aborted) { aborted = true; break; }
     const a = list[i];
@@ -1967,7 +2072,6 @@ async function applyRepairsStepwise(actions, opts = {}) {
       if (r.applied.length) {
         work = { nodes: r.nodes, edges: r.edges };
         applied.push(a);
-        saveGraph(work.nodes, work.edges); // 每步落库：停止/崩溃时已应用部分不丢
         if (opts.onTask) { try { opts.onTask(i, 'done', `已应用：${label}`); } catch (_) {} }
       } else {
         const why = (r.skipped && r.skipped[0] && r.skipped[0].reason) || '目标不存在（图谱可能已变化）';
@@ -1980,7 +2084,13 @@ async function applyRepairsStepwise(actions, opts = {}) {
       if (opts.onTask) { try { opts.onTask(i, 'failed', '失败：' + msg); } catch (_) {} }
     }
     if (opts.onProgress) { try { opts.onProgress(i + 1, list.length); } catch (_) {} }
+    // 让出事件循环：GC 可回收临时对象，SSE/TCP 缓冲区有机会排空，避免 Web 模式下堆内存累积。
+    if (i % 8 === 7) await new Promise((r) => setImmediate(r));
+    // 每 SAVE_BATCH 个实际应用的动作批量落库一次（崩溃时已应用部分最多丢一个批次）。
+    if (applied.length - lastSaved >= SAVE_BATCH) persistWork();
   }
+  // 终态落库：确保最后一次批量保存及空批次也能同步状态。
+  persistWork();
   if (aborted) {
     const err = new Error('用户手动停止作业');
     err.name = 'AbortError';
@@ -2057,4 +2167,8 @@ module.exports = { getGraph, saveGraph, clearGraph, extractGraph, contextFor, re
   // ---------- 冲突自动修复（方案2/3） ----------
   planRepairs, planRepairsForIssues, applyRepairs, applyRepairsStepwise, undoRepair, repairUndoAvailable,
   // 内部工具（测试与调试用）
-  getGraphMeta, setGraphMeta, reasonReady, reasonEnabled, reasonUnavailableReason, SKIP_REASON_TEXT };
+  getGraphMeta, setGraphMeta, reasonReady, reasonEnabled, reasonUnavailableReason, SKIP_REASON_TEXT,
+  // ---------- 语料流水线复用（设计 §7.2/§7.3：Extract/Guard/GraphMerge 装饰器搬迁自本文件）----------
+  // 这些是 extractGraph 内部用到的本体/图谱工具，装饰器需同口径调用，故导出避免两处漂移。
+  nodeTypesMap, relationsList, fallbackType, fallbackRel, nodeKey,
+  reasonLayer: reason, reasonTimeoutSec, capInconsistencies, BATCH_CHARS, SOURCE_CHARS };

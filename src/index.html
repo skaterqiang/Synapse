@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: kb-asset: kb-doc: https:;" />
   <title>Synapse</title>
-  <link rel="stylesheet" href="styles.css?v=20260913c" />
+  <link rel="stylesheet" href="styles.css?v=20260917h" />
   <link rel="stylesheet" href="lib/hljs-atom-one-dark.min.css" />
 </head>
 <body>
@@ -213,15 +213,12 @@
         </div>
 
         <div class="kg-pane" data-pane="graph" hidden>
-          <div class="kg-pane-head">
-            <h3><svg class="ico" width="16" height="16"><use href="#i-kg"/></svg>KG 整体图谱</h3>
-            <p>所有实体 + 关系（节点数较大时建议加过滤）</p>
-          </div>
           <div class="kg-filterbar as-card">
             <button class="btn btn-ghost" id="btn-graph-focus" hidden title="点击退出邻居视图"></button>
             <label>本体体系 <select id="kg-g-profile"></select></label>
             <label>知识图谱 <select id="kg-g-domain"></select></label>
             <label>最多节点 <select id="kg-g-max"><option value="0">全部</option><option>50</option><option selected>100</option><option>200</option><option>500</option></select></label>
+            <label title="智能模式会在节点较多时保留全部数据，仅收起低优先级文字与关系标签">显示密度 <select id="kg-g-density"><option value="smart" selected>智能</option><option value="overview">概览</option><option value="detail">详细</option></select></label>
             <label>排序 <select id="kg-g-sort"><option value="deg">按边数</option><option value="name">按名称</option></select></label>
             <label title="只看文档原文抽取的边，或只看 OWL 2 RL 推理得出的边（融合设计 §6.3）">边类型 <select id="kg-g-edgekind"><option value="all" selected>全部</option><option value="raw">仅原始</option><option value="inferred">仅推理</option></select></label>
             <button class="btn btn-ghost" id="btn-graph-fit" title="自适应：重置缩放并居中适配画布"><svg class="ico" width="13" height="13"><use href="#i-fit"/></svg>自适应</button>
@@ -233,6 +230,7 @@
           <div class="graph-reason-bar as-card" id="graph-reason-bar" hidden></div>
           <div class="graph-legend as-card" id="graph-legend"></div>
           <div class="graph-body">
+            <aside class="och-pane graph-hierarchy-pane" id="graph-hierarchy" aria-label="图谱层级"></aside>
             <canvas id="graph-canvas"></canvas>
             <aside class="graph-detail" id="graph-detail" hidden></aside>
           </div>
@@ -323,15 +321,23 @@
       <div class="raw-view" id="raw-view" hidden>
         <div class="raw-toolbar">
           <span class="raw-view-title"><svg class="ico" width="16" height="16"><use href="#i-folder-open"/></svg>原始文件管理</span>
+          <div class="jobs-filter" id="raw-subtabs" role="tablist" aria-label="原始文件 / 语料库">
+            <button data-subtab="raw" class="active" role="tab" aria-selected="true">原始文件<i class="jf-count" id="count-raws-tab"></i></button>
+            <button data-subtab="corpus" role="tab" aria-selected="false">语料库<i class="jf-count" id="count-corpus-tab"></i></button>
+          </div>
           <span class="jobs-stats" id="raw-stats"></span>
           <div class="toolbar-actions">
             <button class="btn btn-ghost" id="btn-raw-add-dir" title="浏览本机：可勾选单个/多个文件，也可整目录递归导入"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>添加文件/目录</button>
             <button class="btn btn-ghost" id="btn-raw-add-url" title="拉取网页链接保存为原始来源"><svg class="ico" width="13" height="13"><use href="#i-mcp"/></svg>添加链接</button>
+            <button class="btn btn-ghost" id="btn-raw-extract-corpus" hidden title="把当前全部原始来源解析成 Markdown 语料存入 corpus/（需在 设置→语料流水线 开启流水线）"><svg class="ico" width="13" height="13"><use href="#i-parse"/></svg>抽取为语料</button>
             <button class="btn btn-ghost" id="btn-raw-refresh"><svg class="ico" width="13" height="13"><use href="#i-refresh"/></svg>刷新</button>
+            <button class="btn btn-ghost" id="btn-corpus-graph" hidden title="把全部未过期语料提交为知识图谱抽取作业"><svg class="ico" width="13" height="13"><use href="#i-kg"/></svg>批量抽取知识图谱</button>
+            <button class="btn btn-ghost" id="btn-corpus-refresh" hidden><svg class="ico" width="13" height="13"><use href="#i-refresh"/></svg>刷新</button>
             <button class="icon-btn" id="btn-raw-close" title="关闭原始文件页"><svg class="ico" width="13" height="13"><use href="#i-close"/></svg></button>
           </div>
         </div>
         <div class="raw-list" id="raw-list"></div>
+        <div class="raw-list" id="corpus-pane" hidden></div>
       </div>
 
       <!-- 领域模版管理页 -->
@@ -518,6 +524,7 @@
             <button data-tab="storage"><svg class="ico" width="14" height="14"><use href="#i-storage"/></svg>存储</button>
             <button data-tab="jobs"><svg class="ico" width="14" height="14"><use href="#i-jobs"/></svg>作业</button>
             <button data-tab="parse"><svg class="ico" width="14" height="14"><use href="#i-parse"/></svg>文档解析</button>
+            <button data-tab="pipeline"><svg class="ico" width="14" height="14"><use href="#i-parse"/></svg>语料流水线</button>
             <button data-tab="ask"><svg class="ico" width="14" height="14"><use href="#i-ask"/></svg>问答</button>
             <button data-tab="graph"><svg class="ico" width="14" height="14"><use href="#i-kg"/></svg>图谱</button>
             <button data-tab="editor"><svg class="ico" width="14" height="14"><use href="#i-editor"/></svg>编辑器</button>
@@ -591,6 +598,11 @@
                 <button class="btn btn-primary" id="btn-skill-add"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>创建技能</button>
               </div>
               <p class="modal-tip">以目录方式管理技能（含 SKILL.md）。点击卡片启用/停用，可在 AI 问答中选择使用；支持粘贴 npx skills add 命令 / skills.sh / GitHub 仓库链接在线安装</p>
+              <div class="jobs-filter" id="skill-kind-filter" role="tablist" aria-label="技能类型筛选">
+                <button data-kind="all" class="active" role="tab" aria-selected="true">全部</button>
+                <button data-kind="instruct" role="tab" aria-selected="false">指令</button>
+                <button data-kind="extract" role="tab" aria-selected="false">抽取</button>
+              </div>
               <div class="skill-grid" id="skill-grid"></div>
             </div>
             <div class="settings-pane" data-pane="storage" hidden>
@@ -625,6 +637,39 @@
               <label>单目录文件数上限（「添加目录」递归计数）</label>
               <input type="number" id="set-rawdirmax" min="10" max="100000" placeholder="默认 500" />
               <p class="modal-tip">目录引用会在每次列表刷新时实时遍历源目录，因此过大的目录会拖慢界面：超过上限的目录将拒绝添加；已存在的超限引用仅列出前 N 个并在列表顶部告警。调高会相应变慢</p>
+            </div>
+            <div class="settings-pane" data-pane="pipeline" hidden>
+              <div class="config-card">
+                <div class="config-card-title">流水线总开关</div>
+                <span class="settings-autosave" id="settings-autosave-pipeline" aria-live="polite"></span>
+                <label class="checkbox-row"><input type="checkbox" id="set-pipeline" /> 启用可组合语料流水线<i class="radio-hint">开启后，解析与图谱抽取改走可组合的语料流水线（配方 + 装饰器链）。关闭时行为与当前版本完全一致</i></label>
+                <label class="checkbox-row"><input type="checkbox" id="set-corpuspersist" checked /> 落盘为语料库<i class="radio-hint">把解析产物落盘为 corpus/**/*.md（关闭则只在内存中流转，不留语料库）</i></label>
+                <label class="checkbox-row"><input type="checkbox" id="set-corpusreuse" /> 复用未过期语料<i class="radio-hint">已有未过期语料时直接复用、跳过解析（改了技能指令后想重抽，请保持关闭）</i></label>
+                <p class="config-tip">corpus/ 语料库是可重生成的机器产物，不含在备份 / 迁移范围内；换机或换数据根后，需从「原始文件」重新抽取。</p>
+              </div>
+              <div class="config-card">
+                <div class="config-card-title">抽取技能</div>
+                <label class="config-label">同名扩展命中多技能时注入数</label>
+                <div class="setting-row"><input type="number" id="set-extracttopn" min="1" max="5" step="1" placeholder="默认 1" style="max-width: 180px;" /></div>
+                <p class="config-tip">同一扩展名命中多个抽取技能时，按优先级注入几个（1–5，默认 1）</p>
+                <label class="config-label">脚本技能超时（秒）</label>
+                <div class="setting-row"><input type="number" id="set-extracttimeout" min="5" max="600" step="5" placeholder="默认 120" style="max-width: 180px;" /></div>
+                <p class="config-tip">mode: script 抽取技能的子进程超时上限。OCR 大 PDF 建议 300–600 秒。单位是秒，与本页其他超时项口径一致</p>
+              </div>
+              <div class="config-card">
+                <div class="config-card-title">语料库容量</div>
+                <label class="config-label">分块大小（字符）</label>
+                <div class="setting-row"><input type="number" id="set-corpuschunk" min="1000" max="40000" step="500" placeholder="默认 6000" style="max-width: 180px;" /></div>
+                <p class="config-tip">分块大小（字符）。缺省与图谱抽取的 BATCH_CHARS 一致；调大可减少 LLM 调用次数</p>
+                <label class="config-label">语料文件数上限</label>
+                <div class="setting-row"><input type="number" id="set-corpumaxfiles" min="100" max="20000" step="100" placeholder="默认 2000" style="max-width: 180px;" /></div>
+                <p class="config-tip">语料文件数上限，超出时按生成时间淘汰最旧（100–20000，默认 2000）</p>
+              </div>
+              <div class="config-card">
+                <div class="config-card-title">当前解析链（只读）</div>
+                <p class="config-tip">以下是流水线当前会启用的装饰器层序（不执行任何解析）；关闭「流水线总开关」时不会走到这里。</p>
+                <div class="config-tip" id="pipeline-preview">加载中…</div>
+              </div>
             </div>
             <div class="settings-pane" data-pane="parse" hidden>
               <!-- 解析方式卡片 -->
@@ -818,6 +863,7 @@
       <h3 id="prompt-title">请输入</h3>
       <input type="text" id="prompt-input" style="margin-top:12px" />
       <textarea id="prompt-textarea" rows="10" style="margin-top:12px" hidden></textarea>
+      <select id="prompt-select" style="margin-top:12px" hidden></select>
       <div class="modal-actions">
         <button class="btn btn-ghost" id="btn-prompt-cancel">取消</button>
         <button class="btn btn-primary" id="btn-prompt-ok">确定</button>
@@ -911,8 +957,50 @@
       </div>
       <label>描述（何时使用）</label>
       <input type="text" id="skill-edit-desc" />
+      <label>技能类型 kind</label>
+      <div>
+        <label class="radio-row"><input type="radio" name="skill-edit-kind" id="skill-edit-kind-instruct" value="instructions" checked /> 指令技能<i class="radio-hint">用户勾选后全部拼进问答系统提示词</i></label>
+        <label class="radio-row"><input type="radio" name="skill-edit-kind" id="skill-edit-kind-extract" value="extract" /> 抽取技能<i class="radio-hint">由扩展名自动匹配，参与文件→Markdown 解析（语料流水线）</i></label>
+      </div>
+      <div id="skill-extract-fields" hidden>
+        <label>适用扩展名 accepts（点击切换，选中项=仅接受这些类型；全不选=通配）</label>
+        <div class="skill-accept-chips" id="skill-edit-accepts">
+          <button type="button" class="skill-card-tag skill-acc-chip" data-ext="pdf">pdf</button>
+          <button type="button" class="skill-card-tag skill-acc-chip" data-ext="docx">docx</button>
+          <button type="button" class="skill-card-tag skill-acc-chip" data-ext="pptx">pptx</button>
+          <button type="button" class="skill-card-tag skill-acc-chip" data-ext="xlsx">xlsx</button>
+          <button type="button" class="skill-card-tag skill-acc-chip" data-ext="html">html</button>
+          <button type="button" class="skill-card-tag skill-acc-chip" data-ext="md">md</button>
+          <button type="button" class="skill-card-tag skill-acc-chip" data-ext="txt">txt</button>
+          <button type="button" class="skill-card-tag skill-acc-chip" data-ext="*">* 全部</button>
+        </div>
+        <label>执行模式 mode</label>
+        <div>
+          <label class="radio-row"><input type="radio" name="skill-edit-mode" id="skill-edit-mode-llm" value="llm" checked /> 指令（走 LLM）</label>
+          <label class="radio-row"><input type="radio" name="skill-edit-mode" id="skill-edit-mode-script" value="script" /> 脚本（走 node 子进程）</label>
+        </div>
+        <div id="skill-script-fields" hidden>
+          <label>子进程超时（秒，留空=用全局 extractSkillTimeoutSec）</label>
+          <div class="setting-row"><input type="number" id="skill-edit-timeout" min="5" max="600" step="5" placeholder="留空用全局默认" /></div>
+          <label>产物文件名（脚本把 Markdown 写到 AGENT_OUTPUT_DIR 下这个文件）</label>
+          <div class="setting-row"><input type="text" id="skill-edit-output" placeholder="corpus-out.md" /></div>
+        </div>
+        <label>优先级 priority（同扩展名多技能命中时，大者胜）</label>
+        <div class="setting-row"><input type="number" id="skill-edit-priority" min="0" max="100" step="1" placeholder="默认 50" /></div>
+      </div>
       <label>指令正文（覆盖 SKILL.md 主体，可留空）</label>
       <textarea id="skill-edit-instr" rows="8" spellcheck="false" style="width:100%;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;border:1px solid var(--border);border-radius:8px;padding:10px"></textarea>
+      <div id="skill-test-area" hidden>
+        <label>单技能试跑（不落盘、不入缓存）</label>
+        <div class="setting-row">
+          <input type="text" id="skill-test-sample" readonly placeholder="选择或输入一个样本文件路径" style="opacity:.8" />
+          <button class="btn btn-ghost" id="btn-skill-pick-sample" title="选择一个样本文件"><svg class="ico" width="13" height="13"><use href="#i-folder-open"/></svg>选样本</button>
+          <button class="btn btn-primary" id="btn-skill-test-run"><svg class="ico" width="13" height="13"><use href="#i-parse"/></svg>试跑</button>
+        </div>
+        <i class="radio-hint" id="skill-test-timeout-hint"></i>
+        <div class="mineru-test-log" id="skill-test-log" hidden></div>
+        <div class="mineru-result" id="skill-test-result" hidden></div>
+      </div>
       <div class="modal-actions">
         <button class="btn btn-ghost" id="btn-skill-edit-cancel">取消</button>
         <button class="btn btn-primary" id="btn-skill-edit-save"><svg class="ico" width="13" height="13"><use href="#i-save"/></svg>保存</button>
@@ -1032,16 +1120,20 @@
   <script src="lib/purify.min.js"></script>
   <script src="lib/highlight.min.js"></script>
   <!-- 渲染进程按模块分文件加载：常量 → 公共 → 笔记/原始文件/模版 → 问答 → 作业 → 图谱 → 入口 -->
-  <script src="renderer/constants.js?v=20260914a"></script>
-  <script src="renderer/common.js?v=20260906b"></script>
+  <script src="renderer/constants.js?v=20260916a"></script>
+  <script src="renderer/common.js?v=20260917e"></script>
   <script src="renderer/notes.js?v=20260906a"></script>
-  <script src="renderer/raws.js?v=20260906a"></script>
+  <script src="renderer/raws.js?v=20260916a"></script>
+  <!-- 语料库子页签（设计 §16.2）：依赖 raws.js 的 openCtxMenu/renderRawPreview/rawAssetUrl，须在 app.js 绑定前定义 -->
+  <script src="renderer/corpus.js?v=20260916a"></script>
   <script src="renderer/chat.js?v=20260830b"></script>
-  <script src="renderer/jobs.js?v=20260914a"></script>
+  <script src="renderer/jobs.js?v=20260916a"></script>
   <script src="renderer/ontologyTree.js?v=20260830c"></script>
   <script src="renderer/ontologyViz.js?v=20260914a"></script>
-  <script src="renderer/classHierarchy.js?v=20260914a"></script>
-  <script src="renderer/graph.js?v=20260914b"></script>
-  <script src="renderer/app.js?v=20260906a"></script>
+  <script src="renderer/classHierarchy.js?v=20260917b"></script>
+  <script src="renderer/graphDensity.js?v=20260917a"></script>
+  <script src="renderer/graphHierarchy.js?v=20260917c"></script>
+  <script src="renderer/graph.js?v=20260917h"></script>
+  <script src="renderer/app.js?v=20260916a"></script>
 </body>
 </html>

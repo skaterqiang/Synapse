@@ -21,6 +21,12 @@ const NUM_SETTING_FIELDS = {
   // 推理超时（融合设计 §6.11）：范围与主进程 reasonTimeoutSec 的 num(...,30,5,120) 完全一致，
   // 两边不同步会导致「设置里能填但主进程静默钳回」。
   reasonTimeout: ['set-reason-timeout', 5, 120],
+  // 语料流水线（语料流水线设计 §10.1）：以下 4 项须与主进程 num() 的默认/上下限逐字一致，
+  // 否则「设置里能填但主进程静默钳回」。控件均放在 设置→语料流水线（§16.3）。
+  extractSkillTopN: ['set-extracttopn', 1, 5],           // 同扩展名命中多个抽取技能时注入几个（§5.4）
+  extractSkillTimeoutSec: ['set-extracttimeout', 5, 600], // mode:script 子进程超时（秒），默认 120
+  corpusChunkChars: ['set-corpuschunk', 1000, 40000],    // 分块大小，默认 6000（= graph BATCH_CHARS）
+  corpusMaxFiles: ['set-corpumaxfiles', 100, 20000],     // 语料库文件数上限，超出按 generatedAt 淘汰最旧
 };
 
 // ---------- 模型服务商 ----------
@@ -106,6 +112,8 @@ const JOB_TYPE_ICONS = {
   graph: 'kg',
   'graph-repair': 'clean',
   lint: 'checklist',
+  // 语料抽取（§16.5）：复用 #i-parse 图标，无需新增 SVG symbol
+  'extract-corpus': 'parse',
 };
 
 // ---------- 原始文件 ----------

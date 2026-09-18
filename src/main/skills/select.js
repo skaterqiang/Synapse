@@ -48,4 +48,17 @@ function skillAcceptsExt(skill, ext) {
   return acc.map(normExt).includes(normExt(ext));
 }
 
-module.exports = { selectExtractSkills, skillAcceptsExt, normExt };
+/**
+ * 按名称查找已启用的抽取技能，并校验其是否接受给定扩展名。
+ * 用于渲染层显式指定 skill 时，后端强制只走该技能。
+ * @returns {Object|null} 命中且接受扩展名的技能对象，否则 null（调用方应回退自动匹配）
+ */
+function findExtractSkill(settings, name, ext) {
+  if (!name) return null;
+  const list = ((settings && settings.skills) || []).filter((k) => k && k.name && k.enabled);
+  const skill = list.find((k) => String(k.kind || 'instructions') === 'extract' && k.name === name);
+  if (!skill) return null;
+  return skillAcceptsExt(skill, ext) ? skill : null;
+}
+
+module.exports = { selectExtractSkills, skillAcceptsExt, findExtractSkill, normExt };

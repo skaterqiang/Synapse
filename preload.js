@@ -150,6 +150,15 @@ contextBridge.exposeInMainWorld('kb', {
   rawAddDir: (payload) => ipcRenderer.invoke('raw:addDir', payload),
   browseDir: (payload) => ipcRenderer.invoke('raw:browse', payload),
 
+  // 语料库（设计 §11.3，7 个绑定；与 web/kb-shim.js 同名同步）
+  corpusList: (payload) => ipcRenderer.invoke('corpus:list', payload),
+  corpusRead: (payload) => ipcRenderer.invoke('corpus:read', payload),
+  corpusRemove: (payload) => ipcRenderer.invoke('corpus:remove', payload),
+  corpusPromote: (payload) => ipcRenderer.invoke('corpus:promote', payload),
+  corpusOpenDir: (payload) => ipcRenderer.invoke('corpus:openDir', payload),
+  corpusPipelinePreview: (payload) => ipcRenderer.invoke('corpus:pipelinePreview', payload),
+  skillExtractTest: (payload) => ipcRenderer.invoke('skill:extractTest', payload),
+
   // 作业管理
   jobsList: () => ipcRenderer.invoke('jobs:list'),
   jobsSubmit: (payload) => ipcRenderer.invoke('jobs:submit', payload),

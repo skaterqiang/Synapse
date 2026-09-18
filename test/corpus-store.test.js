@@ -1,6 +1,6 @@
 // 语料库存储测试（src/main/corpus/store.js，设计文档 §6）
 // 覆盖：
-//   · index.json 单条 11 字段契约（§12.1，增删字段即红）
+//   · 无独立索引，按原文档名建目录；扫描条目保持 11 字段契约
 //   · writeCorpus 落盘 + frontmatter 出处契约（§6.2）
 //   · 按 corpusId upsert（同来源同技能重跑 → 覆盖同一文件、version+1）
 //   · readCorpus 返回去 frontmatter 的正文
@@ -8,7 +8,7 @@
 //   · staleOf 的判据口径（复用 raws.js:59 isIngestedFresh）
 //   · removeCorpus 连带 .assets/ 目录
 //   · promoteToNote 复用 notes/store.js:444 importNote，且按 source upsert 不产生副本
-//   · 索引损坏 → rebuildIndex 从 corpus/**/*.md 全量重建（§12.3）
+//   · 重启/外部增删/旧版布局兼容：目录文件是唯一数据源
 //   · corpusMaxFiles 淘汰（§10.1）
 //   · CorpusFileSource 与本 store 的对接（kind:'corpus'、id 沿用记录的 corpusId）
 // 运行：node test/corpus-store.test.js
@@ -16,6 +16,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { bootEnv, mkCheck } = require('./helpers/harness');
 
 const { check, section, summary } = mkCheck('语料库存储');
@@ -58,8 +59,7 @@ const { check, section, summary } = mkCheck('语料库存储');
     profileId: 'iso15926',
     provenance: [{ layer: 'RawFileSource', at: 1, ms: 12 }],
   };
-  // meta 浅合并：只覆盖显式给出的键，其余（domain/profileId）保持基准值——
-  // 否则不同用例会因丢掉 domain 而全部落到 general/ 并互相撞名
+  // meta 浅合并：未显式覆盖的领域与体系元数据保持基准值。
   const mkItem = (patch) => {
     const p = patch || {};
     return makeItem(Object.assign({
@@ -76,7 +76,8 @@ const { check, section, summary } = mkCheck('语料库存储');
   const ctx = makeContext({ settings, jobId: 'job-42', profileId: 'iso15926' });
   const w = store.writeCorpus(item, ctx);
   check('写入成功', w.ok === true, JSON.stringify(w));
-  check('rel 落在 <领域>/<名称>.md', w.rel === '充电桩扩容/供电容量说明.md', w.rel);
+  check('rel 落在 <原文档名>/<原文档名>.md', w.rel === '供电容量说明/供电容量说明.md', w.rel);
+  check('领域不再作为目录', !fs.existsSync(path.join(corpusRoot, '充电桩扩容')));
   check('首次写入 created=true', w.created === true);
   check('version 从 1 起', w.version === 1, String(w.version));
   check('文件真实存在', fs.existsSync(path.join(corpusRoot, w.rel)));
@@ -104,16 +105,17 @@ const { check, section, summary } = mkCheck('语料库存储');
   check('正文完整保留（含中文标题）', parsed.body.includes('# 供电容量说明') && parsed.body.includes('40MVA'));
   check('未入图时不写 graph 键', fm.graph === undefined, JSON.stringify(fm.graph));
 
-  // ============ index.json 11 字段契约 ============
-  section('index.json：单条 11 字段（§12.1 硬契约）');
-  const idxRaw = JSON.parse(fs.readFileSync(path.join(corpusRoot, store.INDEX_NAME), 'utf8'));
-  check('index.json 是数组', Array.isArray(idxRaw) && idxRaw.length === 1, JSON.stringify(idxRaw).slice(0, 120));
+  // ============ 无索引目录扫描 ============
+  section('扫描语料文件：不生成 index.json，接口保持 11 字段');
+  check('写入不生成 index.json', !fs.existsSync(path.join(corpusRoot, 'index.json')));
+  const idxRaw = store.scanCorpusFiles();
+  check('目录扫描得到 1 篇语料', Array.isArray(idxRaw) && idxRaw.length === 1, JSON.stringify(idxRaw).slice(0, 120));
   const rec0 = idxRaw[0];
   const keys = Object.keys(rec0);
   check('单条恰好 11 字段', keys.length === 11, keys.length + ' → ' + keys.join(','));
-  check('字段名与 INDEX_FIELDS 完全一致', keys.slice().sort().join(',') === store.INDEX_FIELDS.slice().sort().join(','),
-    keys.slice().sort().join(','));
-  check('INDEX_FIELDS 常量本身是 11 项', store.INDEX_FIELDS.length === 11, String(store.INDEX_FIELDS.length));
+  const fields = ['corpusId', 'rel', 'name', 'domain', 'domainLabel', 'profileId', 'parseMethod', 'skill', 'chars', 'generatedAt', 'sourceMtime'];
+  check('字段名保持原有接口兼容', keys.slice().sort().join(',') === fields.slice().sort().join(','), keys.join(','));
+  check('独立索引读写 API 已移除', store.loadIndex === undefined && store.saveIndex === undefined);
   check('rec.rel 与 writeCorpus 返回一致', rec0.rel === w.rel, rec0.rel);
   check('rec.domainLabel = 充电桩扩容', rec0.domainLabel === '充电桩扩容', rec0.domainLabel);
   check('rec.parseMethod = skill', rec0.parseMethod === 'skill', rec0.parseMethod);
@@ -130,9 +132,9 @@ const { check, section, summary } = mkCheck('语料库存储');
   check('rel 不变（覆盖而非新增）', w2.rel === w.rel, w2.rel);
   check('created=false', w2.created === false);
   check('version 递增到 2', w2.version === 2, String(w2.version));
-  const idx2 = store.loadIndex();
-  check('索引仍只有 1 条', idx2.length === 1, String(idx2.length));
-  check('磁盘上仍只有 1 个 .md', fs.readdirSync(path.join(corpusRoot, '充电桩扩容')).filter((f) => f.endsWith('.md')).length === 1);
+  const idx2 = store.scanCorpusFiles();
+  check('列表仍只有 1 条', idx2.length === 1, String(idx2.length));
+  check('磁盘上仍只有 1 个 .md', fs.readdirSync(path.join(corpusRoot, '供电容量说明')).filter((f) => f.endsWith('.md')).length === 1);
   check('正文已被覆盖', fs.readFileSync(path.join(corpusRoot, w.rel), 'utf8').includes('63MVA'));
   check('frontmatter.version = 2', parseFrontmatter(fs.readFileSync(path.join(corpusRoot, w.rel), 'utf8')).frontmatter.version === 2);
 
@@ -142,7 +144,7 @@ const { check, section, summary } = mkCheck('语料库存储');
   const w3 = store.writeCorpus(item3, ctx);
   check('换技能写入成功且是新文件', w3.ok && w3.created === true && w3.rel !== w.rel, JSON.stringify(w3));
   check('撞名时加指纹后缀', /供电容量说明-[0-9a-f]{6}\.md$/.test(w3.rel), w3.rel);
-  check('索引增至 2 条', store.loadIndex().length === 2, String(store.loadIndex().length));
+  check('列表增至 2 条', store.scanCorpusFiles().length === 2, String(store.scanCorpusFiles().length));
 
   // ============ readCorpus ============
   section('readCorpus：返回去 frontmatter 的正文');
@@ -179,7 +181,6 @@ const { check, section, summary } = mkCheck('语料库存储');
   check('未改动 → 不陈旧', store.staleOf(all[0], settings) === false, JSON.stringify(all[0]));
   const future = new Date(Date.now() + 60 * 60 * 1000);
   fs.utimesSync(pdfPath, future, future);
-  store.invalidateIndex();
   const afterTouch = store.listCorpus(settings).find((x) => x.rel === w.rel);
   check('源文件被改 → stale=true', afterTouch.stale === true, JSON.stringify(afterTouch));
   check('无 sourceMtime → 不报陈旧', store.staleOf({ rel: w.rel, sourceMtime: 0 }, settings) === false);
@@ -208,17 +209,17 @@ const { check, section, summary } = mkCheck('语料库存储');
     fs.readFileSync(path.join(corpusRoot, wImg.rel), 'utf8').slice(-80));
 
   // ============ removeCorpus ============
-  section('removeCorpus：连带 .assets/ 与索引');
-  const before = store.loadIndex().length;
+  section('removeCorpus：连带 .assets/，扫描列表随文件变化');
+  const before = store.scanCorpusFiles().length;
   const rm = store.removeCorpus(wImg.rel);
   check('removed = 1', rm.ok && rm.removed === 1, JSON.stringify(rm));
   check('.md 已删', !fs.existsSync(path.join(corpusRoot, wImg.rel)));
   check('.assets 目录已删', !fs.existsSync(ad));
-  check('索引减 1', store.loadIndex().length === before - 1, `${store.loadIndex().length} vs ${before}`);
+  check('列表减 1', store.scanCorpusFiles().length === before - 1, `${store.scanCorpusFiles().length} vs ${before}`);
   const rmArr = store.removeCorpus([w.rel, w3.rel, '不存在/x.md']);
   check('批量删除按存在的计数', rmArr.removed === 2, JSON.stringify(rmArr));
-  check('索引清空', store.loadIndex().length === 0, String(store.loadIndex().length));
-  check('空的领域目录被清理', !fs.existsSync(path.join(corpusRoot, '充电桩扩容')));
+  check('列表清空', store.scanCorpusFiles().length === 0, String(store.scanCorpusFiles().length));
+  check('空的文档目录被清理', !fs.existsSync(path.join(corpusRoot, '供电容量说明')));
 
   // ============ promoteToNote ============
   section('promoteToNote：复用 importNote，按 source upsert 不产生副本（§6.4）');
@@ -242,32 +243,94 @@ const { check, section, summary } = mkCheck('语料库存储');
   check('笔记正文是语料正文', promoted && promoted.content.includes('正文第一段'));
   check('不存在的语料 → ok:false', store.promoteToNote('x/不存在.md').ok === false);
 
-  // ============ 索引损坏重建 ============
-  section('索引损坏 → 从 corpus/**/*.md 全量重建（§12.3）');
-  fs.writeFileSync(path.join(corpusRoot, store.INDEX_NAME), '{ 这不是合法 JSON', 'utf8');
-  store.invalidateIndex();
-  const rebuilt = store.loadIndex();
-  check('重建出 1 条', rebuilt.length === 1, String(rebuilt.length));
-  check('重建条目的 rel 正确', rebuilt[0].rel === wP.rel, rebuilt[0].rel);
-  check('重建条目仍是 11 字段', Object.keys(rebuilt[0]).length === 11, Object.keys(rebuilt[0]).join(','));
-  check('重建保留了 parseMethod', rebuilt[0].parseMethod === 'skill', rebuilt[0].parseMethod);
-  check('重建保留了 domainLabel', rebuilt[0].domainLabel === '充电桩扩容', rebuilt[0].domainLabel);
-  // 注意：stale 用例已把源文件 mtime 推到未来，而 frontmatter 记的是**写入当时**的 mtime
-  check('重建保留了 sourceMtime（写入当时的值）', rebuilt[0].sourceMtime === Math.round(st.mtimeMs),
-    `${rebuilt[0].sourceMtime} vs ${Math.round(st.mtimeMs)}`);
-  check('重建后 stale 判定仍可用', typeof store.listCorpus(settings)[0].stale === 'boolean');
+  section('重启与外部变更：不依赖索引或进程缓存');
+  const rebuilt = store.scanCorpusFiles();
+  check('直接扫描得到 1 条', rebuilt.length === 1, String(rebuilt.length));
+  check('扫描条目的 rel 正确', rebuilt[0].rel === wP.rel, rebuilt[0].rel);
+  check('扫描条目仍是 11 字段', Object.keys(rebuilt[0]).length === 11);
+  check('扫描保留了 parseMethod', rebuilt[0].parseMethod === 'skill');
+  check('扫描保留了 domainLabel', rebuilt[0].domainLabel === '充电桩扩容');
+  check('扫描保留了 sourceMtime', rebuilt[0].sourceMtime === Math.round(st.mtimeMs));
+  check('扫描后 stale 判定仍可用', typeof store.listCorpus(settings)[0].stale === 'boolean');
+  const restarted = JSON.parse(execFileSync(process.execPath, ['-e', `
+    const pathsId = require.resolve('./src/main/common/paths');
+    require.cache[pathsId] = { exports: { corpusRoot: () => process.argv[1] } };
+    const store = require('./src/main/corpus/store');
+    process.stdout.write(JSON.stringify(store.scanCorpusFiles()));
+  `, corpusRoot], { cwd: env.repoRoot, encoding: 'utf8' }));
+  check('新进程无需索引即可恢复列表', restarted.length === 1 && restarted[0].rel === wP.rel);
+  check('新进程读取不生成索引文件', !fs.existsSync(path.join(corpusRoot, 'index.json')));
 
-  // 索引文件整个丢失也能重建
-  fs.unlinkSync(path.join(corpusRoot, store.INDEX_NAME));
-  store.invalidateIndex();
-  check('索引缺失 → 同样重建', store.loadIndex().length === 1, String(store.loadIndex().length));
+  const oldIndex = path.join(corpusRoot, 'index.json');
+  for (const content of ['[]', '{ 这不是合法 JSON', '[{"rel":"不存在.md"}]']) {
+    fs.writeFileSync(oldIndex, content);
+    check('旧版索引内容不影响文件扫描：' + content, store.scanCorpusFiles().length === 1);
+  }
+  store.writeCorpus(itemP, ctx);
+  check('写入不再维护旧版索引', fs.readFileSync(oldIndex, 'utf8') === '[{"rel":"不存在.md"}]');
+  fs.unlinkSync(oldIndex);
+
+  const legacyDir = path.join(corpusRoot, 'general');
+  fs.mkdirSync(legacyDir, { recursive: true });
+  const legacyPath = path.join(legacyDir, '旧文档.md');
+  fs.writeFileSync(legacyPath, '# 旧布局正文');
+  check('外部新增旧布局文档即时可见', store.scanCorpusFiles().length === 2);
+  check('目录名不误作领域标签', store.listCorpus(settings).find((x) => x.rel === 'general/旧文档.md').domainLabel === '');
+  fs.appendFileSync(legacyPath, '\n外部修改');
+  check('外部修改后字数即时更新', store.listCorpus(settings).find((x) => x.rel === 'general/旧文档.md').chars === '# 旧布局正文\n外部修改'.length);
+  fs.renameSync(legacyPath, path.join(legacyDir, '已改名.md'));
+  check('外部改名即时可见', store.scanCorpusFiles().some((x) => x.rel === 'general/已改名.md'));
+  fs.unlinkSync(path.join(legacyDir, '已改名.md'));
+  check('外部删除即时可见', store.scanCorpusFiles().length === 1);
+  fs.renameSync(path.join(corpusRoot, wP.rel), legacyPath);
+  const legacyWrite = store.writeCorpus(itemP, ctx);
+  check('旧布局同指纹重写仍保留引用路径', legacyWrite.ok && !legacyWrite.created && legacyWrite.rel === 'general/旧文档.md');
+  fs.renameSync(legacyPath, path.join(corpusRoot, wP.rel));
+
+  const hiddenDir = path.join(corpusRoot, '忽略.assets');
+  fs.mkdirSync(hiddenDir, { recursive: true });
+  fs.writeFileSync(path.join(hiddenDir, '附件.md'), '不是语料');
+  fs.writeFileSync(path.join(corpusRoot, '.临时.md'), '不是语料');
+  check('扫描忽略隐藏文件与附件目录', store.scanCorpusFiles().length === 1);
+
+  const altRoot = path.join(env.dir, 'another-data');
+  env.paths.setDataRoot(altRoot);
+  check('切换数据根不会沿用旧列表', store.scanCorpusFiles().length === 0);
+  env.paths.setDataRoot(env.dataRoot);
+  check('切回数据根无需清缓存', store.scanCorpusFiles().length === 1);
+
+  section('文档目录命名与撞名保护');
+  const named = (name, sourcePath, patch = {}) => mkItem({
+    origin: { ...originOf(record), name, path: sourcePath },
+    meta: { domain: null, ...patch },
+  });
+  const dotted = store.writeCorpus(named('报告.v2.md', 'local:/test/报告.v2.md'), ctx);
+  check('多点文件名只去掉末尾扩展名', dotted.rel === '报告.v2/报告.v2.md', dotted.rel);
+  check('无领域语料不会把文档目录名当作领域', store.listCorpus(settings).find((x) => x.rel === dotted.rel).domainLabel === '');
+  const duplicate = store.writeCorpus(named('报告.v2.md', 'local:/another/报告.v2.md'), ctx);
+  check('同名不同来源不会覆盖正文', duplicate.ok && duplicate.rel !== dotted.rel && path.dirname(duplicate.rel) === '报告.v2');
+  const badName = store.writeCorpus(named('../.pdf', 'local:/test/bad.pdf'), ctx);
+  check('危险文件名不会逃逸或进入隐藏目录', badName.ok && badName.rel.split('/').every((x) => x && !x.startsWith('.')));
+  const changedDomain = store.writeCorpus(named('报告.v2.md', 'local:/test/报告.v2.md', { domain: { id: 'new', label: '新领域' } }), ctx);
+  check('领域变化不改变文档目录', changedDomain.rel === dotted.rel && !changedDomain.created);
+  const assetsNamed = store.writeCorpus(named('manual.assets.pdf', 'local:/test/manual.assets.pdf', { assets: [img] }), ctx);
+  check('带 .assets 的原文档名仍按名称建目录', assetsNamed.ok && assetsNamed.rel === 'manual.assets/manual.assets.md', assetsNamed.rel);
+  check('文档目录不被误当成附件目录', store.scanCorpusFiles().some((x) => x.rel === assetsNamed.rel));
+  const assetsDir = store.assetsDirFor(assetsNamed.rel);
+  fs.writeFileSync(path.join(assetsDir, '附件.md'), '不是语料');
+  check('文档下的真正附件目录仍被忽略', !store.scanCorpusFiles().some((x) => x.rel.endsWith('/附件.md')));
+  const assetsDuplicate = store.writeCorpus(named('manual.assets.pdf', 'local:/another/manual.assets.pdf'), ctx);
+  store.removeCorpus(assetsNamed.rel);
+  check('带指纹后缀的 .assets 文档在原语料删除后仍可见', store.scanCorpusFiles().some((x) => x.rel === assetsDuplicate.rel));
+  store.removeCorpus([dotted.rel, duplicate.rel, badName.rel, assetsDuplicate.rel]);
+  check('命名用例清理后保留原语料', store.scanCorpusFiles().length === 1);
 
   // ============ corpusMaxFiles 淘汰 ============
   section('corpusMaxFiles：超出按 generatedAt 淘汰最旧（§10.1，下限 100）');
   // num() 的合法区间是 100–20000，填 2 会被钳回 100 ⇒ 必须真的写满 100 篇才能触发淘汰
   const MAXF = 100;
   const small = { ...settings, corpusMaxFiles: MAXF };
-  const beforeEvict = store.loadIndex().length;
+  const beforeEvict = store.scanCorpusFiles().length;
   for (let i = 0; i < MAXF + 5; i++) {
     const p = path.join(rawDir, `doc-${i}.txt`);
     fs.writeFileSync(p, '内容 ' + i);
@@ -280,19 +343,18 @@ const { check, section, summary } = mkCheck('语料库存储');
       meta: { parseMethod: 'builtin', domain: null, profileId: '' },
     }), makeContext({ settings: small, jobId: 'job-x' }));
   }
-  const afterEvict = store.loadIndex();
-  check('淘汰后索引不超过上限', afterEvict.length <= MAXF, `${afterEvict.length} > ${MAXF}`);
+  const afterEvict = store.scanCorpusFiles();
+  check('淘汰后语料数不超过上限', afterEvict.length <= MAXF, `${afterEvict.length} > ${MAXF}`);
   check('确实发生了淘汰（少于写入总数）', afterEvict.length < beforeEvict + MAXF + 5,
     `${afterEvict.length} vs ${beforeEvict + MAXF + 5}`);
   check('最新写入的 doc-104 仍在（不参与淘汰）', afterEvict.some((x) => x.name === 'doc-104.md'),
     JSON.stringify(afterEvict.slice(0, 3).map((x) => x.name)));
   check('最旧的 doc-0 已被淘汰', !afterEvict.some((x) => x.name === 'doc-0.md'));
-  check('索引里的每条在磁盘上都存在', afterEvict.every((x) => fs.existsSync(path.join(corpusRoot, x.rel))));
-  check('被淘汰的 .md 已从磁盘删除', !fs.existsSync(path.join(corpusRoot, 'general', 'doc-0.md')));
+  check('列表里的每条在磁盘上都存在', afterEvict.every((x) => fs.existsSync(path.join(corpusRoot, x.rel))));
+  check('被淘汰的 .md 已从磁盘删除', !fs.existsSync(path.join(corpusRoot, 'doc-0', 'doc-0.md')));
 
   // ============ CorpusFileSource 对接 ============
   section('CorpusFileSource：从语料库重新入图（零解析成本）');
-  store.invalidateIndex();
   const list = store.listCorpus(settings);
   const rels = list.map((x) => x.rel);
   const src = new CorpusFileSource(rels);
@@ -300,9 +362,10 @@ const { check, section, summary } = mkCheck('语料库存储');
   const items = [];
   const res = await drive(src, Object.assign(c2, { onItem: (it) => items.push(it) }));
   check('drive 成功', res.ok === true, JSON.stringify(res));
-  check('条数与索引一致', items.length === rels.length, `${items.length} vs ${rels.length}`);
+  check('条数与列表一致', items.length === rels.length, `${items.length} vs ${rels.length}`);
   check('kind = corpus', items.every((x) => x.kind === 'corpus'), items.map((x) => x.kind).join(','));
   check('label 以「语料·」开头', items.every((x) => x.label.startsWith('语料·')), items[0] && items[0].label);
+  check('label 保留实际 Markdown 相对路径与扩展名', items.every((x, i) => x.label === '语料·' + rels[i]));
   check('text 非空且不含围栏', items.every((x) => x.text && !x.text.startsWith('---')));
   check('id 沿用文件里记录的 corpusId', items.every((x) => /^[0-9a-f]{16}$/.test(x.id)), items.map((x) => x.id).join(','));
   check('meta.parseMethod = corpus', items.every((x) => x.meta.parseMethod === 'corpus'));
@@ -317,14 +380,36 @@ const { check, section, summary } = mkCheck('语料库存储');
   const rm2 = await drive(missing, cm);
   check('缺失语料不抛错，记入 ctx.errors（P10）', rm2.ok === true && cm.errors.length === 1, JSON.stringify(cm.errors));
 
+  section('语料标识：Excel 原文与 Markdown 输入分离');
+  const excelItems = ['甲', '乙'].map((folder) => makeItem({
+    kind: 'raw',
+    origin: { type: 'local', path: 'local:' + path.join(rawDir, folder, 'AI数据&知识库.xlsx'), name: 'AI数据&知识库.xlsx', ext: '.xlsx', size: 123, mtime: 456 },
+    text: '# 已解析的语料\n\n这是 Markdown 正文。',
+    meta: { parseMethod: 'builtin' },
+  }));
+  const excelWrites = excelItems.map((it) => store.writeCorpus(it, ctx));
+  check('同名 Excel 语料落盘成功且路径不同', excelWrites.every((x) => x.ok) && excelWrites[0].rel !== excelWrites[1].rel);
+  const excelCorpus = [];
+  const excelSource = new CorpusFileSource(excelWrites.map((x) => x.rel));
+  await drive(excelSource, makeContext({ settings, onItem: (it) => excelCorpus.push(it) }));
+  check('每篇语料主标签使用自己的 .md 路径（含防撞后缀）', excelCorpus.length === 2
+    && excelCorpus.every((it, i) => it.label === '语料·' + excelWrites[i].rel && it.label.endsWith('.md') && !it.label.includes('.xlsx')));
+  check('原文名称、路径、扩展名仍作为出处保留', excelCorpus.every((it, i) => it.origin.name === excelItems[i].origin.name
+    && it.origin.path === excelItems[i].origin.path && it.origin.ext === '.xlsx'));
+  check('改展示名不改变语料指纹', excelCorpus.every((it, i) => it.id === excelItems[i].id && it.meta.corpusId === excelItems[i].id));
+  check('origin 仍不可变', excelCorpus.every((it) => Object.isFrozen(it.origin)));
+  check('当前输入路径仍指向 corpus/ Markdown', excelCorpus.every((it, i) => it.meta.corpusFile === 'corpus/' + excelWrites[i].rel));
+  check('估算标签与实际读取标签一致', excelSource.estimate().labels.join('|') === excelCorpus.map((it) => it.label).join('|'));
+
   // ============ 空正文 / 缺指纹 ============
   section('边界：空正文与缺指纹不落盘');
   const emptyW = store.writeCorpus(mkItem({ text: '   \n  ' }), ctx);
   check('空正文 → ok:false 且不写文件', emptyW.ok === false && !!emptyW.error, JSON.stringify(emptyW));
   const noId = store.writeCorpus({ origin: originOf(record), text: 'x', meta: {} }, ctx);
   check('缺 corpusId → ok:false', noId.ok === false, JSON.stringify(noId));
-  check('上述失败未污染索引', store.loadIndex().every((x) => x.rel && x.corpusId));
+  check('上述失败未污染列表', store.scanCorpusFiles().every((x) => x.rel && x.corpusId));
 
+  check('写入、删除与淘汰全程不创建 index.json', !fs.existsSync(path.join(corpusRoot, 'index.json')));
   const ok = summary();
   process.exit(ok ? 0 : 1);
 })().catch((e) => {

@@ -260,7 +260,16 @@ async function installSkill(event, payload = {}) {
       const skillFile = findSkillFile(target);
       if (!skillFile) { skipped.push(p.name); continue; }
       const meta = readSkill(target);
-      installed.push({ name: meta.ok ? meta.name : p.name, dir: target, description: meta.ok ? meta.description : '' });
+      if (meta.ok) {
+        installed.push({
+          name: meta.name, dir: target, description: meta.description,
+          kind: meta.kind, accepts: meta.accepts, mode: meta.mode, entry: meta.entry,
+          priority: meta.priority, version: meta.version, timeoutSec: meta.timeoutSec,
+          output: meta.output, enabled: meta.enabled
+        });
+      } else {
+        installed.push({ name: p.name, dir: target, description: '', kind: 'instructions', accepts: null, mode: 'llm', entry: 'scripts/main.js', priority: 50, version: '0.0.0', timeoutSec: 0, output: '', enabled: true });
+      }
       send(`✅ 已安装：${p.name} → ${target}`);
     }
     if (!installed.length) return { ok: false, error: '安装失败：解压后未找到有效 SKILL.md', skipped };

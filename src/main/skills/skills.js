@@ -54,6 +54,7 @@ function readSkill(dir) {
   const text = fs.readFileSync(file, 'utf-8');
   let name = '', description = '', instructions = text;
   let kind = '', acceptsRaw = '', mode = '', entry = '', priority = '', version = '', enabledRaw = '';
+  let timeoutSecRaw = '', output = '';
   // ⚠️ 行尾必须是 \r?\n：Windows 上 create_file/git 写出的 SKILL.md 是 CRLF，
   //    旧正则 /^---\n…/ 永远匹配不上 ⇒ frontmatter 整块被当成 instructions，
   //    name/kind/accepts 全部退化为缺省值（hive-data-analysis 这类老技能也一样中招）。
@@ -75,6 +76,8 @@ function readSkill(dir) {
       else if (key === 'priority') priority = unquote(val);
       else if (key === 'version') unquote(val) && (version = unquote(val));
       else if (key === 'enabled') enabledRaw = unquote(val);
+      else if (key === 'timeoutSec') timeoutSecRaw = unquote(val);
+      else if (key === 'output') output = unquote(val);
     }
   }
   if (!name) name = path.basename(dir);
@@ -90,6 +93,9 @@ function readSkill(dir) {
     entry: entry || 'scripts/main.js',
     priority: toInt(priority, 50, 0, 1000),
     version: version || '0.0.0',
+    // timeoutSec=0 表示「用全局 extractSkillTimeoutSec」；output 空表示「用默认 corpus-out.md」
+    timeoutSec: toInt(timeoutSecRaw, 0, 0, 600),
+    output: output || '',
     enabled: parseBool(enabledRaw, true),
   };
 }

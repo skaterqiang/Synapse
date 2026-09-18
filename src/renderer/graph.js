@@ -4,7 +4,39 @@
 // GRAPH_PALETTE / GRAPH_COLORS / GRAPH_TYPE_NAMES 统一定义于 renderer/constants.js
 // 画布模拟运行时状态（坐标/缩放/拖拽），与持久化数据分离
 // hover：融合设计 §6.2 的悬停边（{edge, x, y}），用于高亮 + 推导链 tooltip
-const graphSim = { nodes: [], edges: [], zoom: 1, ox: 0, oy: 0, drag: null, selected: null, hover: null, raf: 0, running: false, alpha: 1 };
+const graphSim = { nodes: [], edges: [], zoom: 1, ox: 0, oy: 0, drag: null, selected: null, hover: null, hoverNode: null, density: null, info: null, raf: 0, running: false, alpha: 1 };
+
+// 高密度图谱仍绘制全量节点，只按“显示密度 + 缩放”收起低优先级文字和边细节。
+function graphDensityPolicy(nodeCount = graphSim.nodes.length) {
+  const modeEl = $('kg-g-density');
+  const mode = modeEl ? modeEl.value : 'smart';
+  return GraphDensity.detailPolicy({ mode, nodeCount, zoom: graphSim.zoom });
+}
+
+function updateGraphStats() {
+  const info = graphSim.info;
+  const box = $('graph-stats');
+  if (!box || !info) return;
+  const policy = graphDensityPolicy(info.nodeCount);
+  graphSim.density = policy;
+  box.textContent = `实体 ${info.nodeCount} · 边 ${info.edgeCount}`
+    + (info.inferredCount ? `（其中 ${info.inferredCount} 条推理得出）` : '')
+    + (info.truncated ? '（已截断到上限）' : '')
+    + ` · ${policy.description}`
+    + (info.updatedAt ? ` · 更新 ${formatDate(info.updatedAt)}` : '');
+}
+
+// 选中或悬停节点时，仅突出该节点的一跳邻居与关联边，降低大图中的视觉噪声。
+function graphActiveNodeIds() {
+  const center = graphSim.hoverNode || graphSim.selected;
+  if (!center) return null;
+  const ids = new Set([center]);
+  for (const edge of graphSim.edges) {
+    if (edge.from === center) ids.add(edge.to);
+    if (edge.to === center) ids.add(edge.from);
+  }
+  return ids;
+}
 
 // 实体类列表（key/展示名/颜色）：以当前浏览本体体系为准，用户自定义类也能正确显示名称与配色
 // 多体系共存时，图例只展示当前体系支持的类，避免把其他体系的类混入当前图例。
@@ -179,13 +211,19 @@ function renderGraphLegend(counts) {
 function renderGraphEmpty() {
   let em = $('graph-empty');
   if (state.graph.nodes.length) { if (em) em.remove(); return; }
+  const body = $('graph-view').querySelector('.graph-body');
   if (!em) {
     em = document.createElement('div');
     em.id = 'graph-empty';
     em.className = 'graph-empty';
     em.innerHTML = '<div class="empty-icon">' + icoSvg('kg', 44) + '</div><p>暂无知识图谱：选择上方范围后点击「抽取本体层」，<br>AI 将自动从笔记与原始文件中提取实体与关系。</p>';
-    $('graph-view').querySelector('.graph-body').appendChild(em);
+    body.appendChild(em);
   }
+  // 空态只覆盖画布区域，保留左侧图谱层级根节点可浏览。
+  const hierarchy = $('graph-hierarchy');
+  const detail = $('graph-detail');
+  em.style.left = hierarchy ? `${hierarchy.offsetWidth}px` : '0';
+  em.style.right = detail && !detail.hidden ? `${detail.offsetWidth}px` : '0';
 }
 
 // 邻居视图提示按钮：显示中心节点名，点击退出邻居视图
@@ -244,44 +282,46 @@ function detectCommunities(nodes, edges) {
 // ---------- 力导向布局与绘制 ----------
 function startGraphSim() {
   const canvas = $('graph-canvas');
+  const selectedId = graphSim.selected == null ? null : String(graphSim.selected);
+  const tree = graphHierarchyState();
   updateGraphFocusChip();
   const g = kgFilteredGraph();
-  // 融合设计 §6.4：画布内推理边数一并显示，与图例的「推理边 N」保持一致
-  const infN = countInferredEdges(g.edges);
-  $('graph-stats').textContent = `实体 ${g.nodes.length} · 边 ${g.edges.length}`
-    + (infN ? `（其中 ${infN} 条推理得出）` : '')
-    + (g.truncated ? '（已截断到上限）' : '')
-    + (state.graph.updatedAt ? ` · 更新 ${formatDate(state.graph.updatedAt)}` : '');
   const old = new Map(graphSim.nodes.map((n) => [n.id, n]));
   const W = canvas.clientWidth || 800;
   const H = canvas.clientHeight || 600;
   // 节点半径按度数（连边数）放大：枢纽节点一眼可辨，sqrt 压缩避免超大圆
   const deg = {};
   g.edges.forEach((e) => { deg[e.from] = (deg[e.from] || 0) + 1; deg[e.to] = (deg[e.to] || 0) + 1; });
-  // 社区划分 → 每个社区一个初始中心（中心分布在内圈上），同社区节点在其周围小范围播种，
-  // 以此起手就形成分区，再由物理收敛成彼此分开的聚集区域
+  // 社区划分后，将每个社区放到随画布宽高扩展的独立网格区域。
+  // 宽屏不再按最短边压成一个中心圆，节点可充分利用横向空间。
   const comm = detectCommunities(g.nodes, g.edges);
   const commKeys = [...new Set(g.nodes.map((n) => comm.get(n.id)))];
   const commIdx = new Map(commKeys.map((k, i) => [k, i]));
-  const R0 = Math.max(120, Math.min(W, H) / 2 - 40);
+  const commSizes = new Map();
+  g.nodes.forEach((n) => {
+    const ci = commIdx.get(comm.get(n.id)) || 0;
+    commSizes.set(ci, (commSizes.get(ci) || 0) + 1);
+  });
   const GOLDEN = Math.PI * (3 - Math.sqrt(5));
   const nc = Math.max(1, commKeys.length);
+  const zones = new Map(commKeys.map((_, i) => [i, GraphDensity.communityZone(i, nc, W, H)]));
   const seenInComm = new Map();
-  graphSim.nodes = g.nodes.map((n, i) => {
+  graphSim.nodes = g.nodes.map((n) => {
     const o = old.get(n.id);
     const ci = commIdx.get(comm.get(n.id)) || 0;
     const k = seenInComm.get(ci) || 0;
+    const total = commSizes.get(ci) || 1;
+    const zone = zones.get(ci);
     seenInComm.set(ci, k + 1);
-    // 社区中心：沿半径 0.55R 的圆均分；单社区时回退到画布中心
-    const ang = (ci / nc) * Math.PI * 2;
-    const ccx = W / 2 + (nc > 1 ? Math.cos(ang) * R0 * 0.55 : 0);
-    const ccy = H / 2 + (nc > 1 ? Math.sin(ang) * R0 * 0.55 : 0);
-    const rr = (nc > 1 ? R0 * 0.3 : R0) * Math.sqrt((k + 0.5) / Math.max(1, g.nodes.length / nc));
+    const angle = k * GOLDEN + ci * 0.71;
+    const spread = Math.sqrt((k + 0.5) / total);
     return {
       ...n,
       comm: ci,
-      x: o ? o.x : ccx + Math.cos(k * GOLDEN + ci) * rr,
-      y: o ? o.y : ccy + Math.sin(k * GOLDEN + ci) * rr,
+      anchorX: zone.cx,
+      anchorY: zone.cy,
+      x: o ? o.x : zone.cx + Math.cos(angle) * zone.width * 0.42 * spread,
+      y: o ? o.y : zone.cy + Math.sin(angle) * zone.height * 0.42 * spread,
       vx: 0, vy: 0,
       r: 7 + Math.min(12, Math.sqrt(deg[n.id] || 0) * 3.2),
     };
@@ -292,20 +332,37 @@ function startGraphSim() {
   renderGraphLegend(counts);
   const ids = new Set(graphSim.nodes.map((n) => n.id));
   graphSim.edges = g.edges.filter((e) => ids.has(e.from) && ids.has(e.to));
-  graphSim.zoom = 1; graphSim.ox = 0; graphSim.oy = 0; graphSim.selected = null;
+  graphSim.zoom = 1; graphSim.ox = 0; graphSim.oy = 0;
+  const selectedNode = selectedId == null ? null : graphSim.nodes.find((node) => String(node.id) === selectedId);
+  graphSim.selected = selectedNode ? selectedNode.id : null;
+  // 过滤后实体不可见时只清理实体选中；类型/根节点选中仍应在树中保持。
+  if (!selectedNode && tree.selectedKey && String(tree.selectedKey).startsWith('graph:entity:')) tree.selectedKey = null;
+  graphSim.hoverNode = null;
   // 重排后旧边对象已被替换，悬停高亮/tooltip 必须一并清掉（否则指向失效对象）
   graphSim.hover = null;
   hideEdgeTooltip();
-  // 同步预计算布局至收敛：首帧直接绘制静止结果，完全避免初始晃动
+  const metrics = GraphDensity.layoutMetrics({ width: W, height: H, nodeCount: graphSim.nodes.length });
+  graphSim.metrics = metrics;
+  // 同步预计算布局至收敛：大图增加迭代次数，优先保障节点圆的间隔。
   let a = 1;
-  for (let i = 0; i < 600 && a > 0.02; i++) {
+  for (let i = 0; i < metrics.iterations && a > 0.02; i++) {
     physicsStep(W, H, a);
     a = Math.max(0, a * 0.99 - 0.0004);
   }
-  // 包围盒居中+自适应缩放，默认完整居中显示
+  // 预收敛后一次性清理残余重叠；后续自适应仅更新视口，不再二次压缩布局坐标。
+  settleCollisions();
   recenterGraph();
   graphSim.alpha = 0;
-  $('graph-detail').hidden = true;
+  graphSim.info = {
+    nodeCount: g.nodes.length,
+    edgeCount: graphSim.edges.length,
+    inferredCount: countInferredEdges(graphSim.edges),
+    truncated: g.truncated,
+    updatedAt: state.graph.updatedAt,
+  };
+  updateGraphStats();
+  renderGraphHierarchy(g.nodes);
+  renderGraphDetail(selectedNode || null);
   renderGraphEmpty();
   if (!graphSim.running) {
     graphSim.running = true;
@@ -318,6 +375,7 @@ function stopGraphSim() {
   cancelAnimationFrame(graphSim.raf);
   // 悬停状态随画布一起失效，避免关掉图谱页后 tooltip 残留在页面上
   graphSim.hover = null;
+  graphSim.hoverNode = null;
   hideEdgeTooltip();
 }
 
@@ -326,35 +384,29 @@ function graphTick() {
   const canvas = $('graph-canvas');
   const W = canvas.clientWidth || 800;
   const H = canvas.clientHeight || 600;
-  // 物理仅在“温度”未冷却时运行（初始布局已同步预计算，首帧即静止）；
-  // 拖拽必须真的移动过（moved）才加热：否则一次普通点击也会启动物理，节点白白抖一下
-  const active = graphSim.alpha > 0.02 || (graphSim.drag && graphSim.drag.node && graphSim.drag.moved);
+  // 布局静止后不再逐帧重画；大图只在拖拽或物理仍在收敛时重绘，降低 Canvas 空转开销。
+  const active = graphSim.alpha > 0.02 || (graphSim.drag && graphSim.drag.moved);
   if (active) {
-    physicsStep(W, H, graphSim.alpha);
-    graphSim.alpha = Math.max(0, graphSim.alpha * 0.99 - 0.0004);
+    if (graphSim.alpha > 0.02) {
+      physicsStep(W, H, graphSim.alpha);
+      graphSim.alpha = Math.max(0, graphSim.alpha * 0.99 - 0.0004);
+    }
+    drawGraph();
   }
-  drawGraph();
   graphSim.raf = requestAnimationFrame(graphTick);
 }
 
-// 单步物理：斥力 + 弹簧 + 向心，力幅乘以温度 a0
-// 边界用“圆形软边界”而不是矩形硬钳制：矩形钳制会把溢出的节点全部压到上/下边排成直线，
-// 因此改为按到圆心距离回拉，并把斥力/弹簧尺度按“n 个节点铺满目标圆”反推，使平衡态就是个圆盘
+// 单步物理：斥力 + 弹簧 + 社区锚点，所有力均随温度 a0 衰减。
+// 使用随画布宽高伸展的椭圆边界，避免宽屏图谱被压缩为最短边决定的中心圆团。
 function physicsStep(W, H, a0) {
   const nodes = graphSim.nodes;
   const cx = W / 2, cy = H / 2;
-  // 目标圆半径：画布内切圆留白 40px（软边界，节点可少量溢出）
-  const R = Math.max(120, Math.min(W, H) / 2 - 40);
-  // 目标间距：按“n 个节点铺满目标圆”反推，系数明显小于理论值 1.68：
-  // 自由扩张后的团半径略小于 R，边界就不会“顶住”节点，得到实心圆盘而不是空心环
-  const spacing = Math.max(24, Math.min(90, (0.85 * R) / Math.sqrt(Math.max(4, nodes.length))));
-  const repK = spacing * spacing * 0.9;      // 斥力系数（与 d² 同尺度）
-  const repRange2 = (spacing * 2.2) ** 2;    // 斥力作用半径平方，兼顾 O(n²) 开销
-  const springLen = spacing * 1.15;          // 弹簧自然长度
-  // 节点间斥力（超出作用半径则忽略）；跳社区的两个节点斥力加倍，以拉开不同聚集区域。
-  // 同时做硬分离（collide）：两圆相碰时直接把坐标推开，保证节点不重叠、
-  // 这是给标签腾出位置的前提（密集区字看不清的根本原因是节点挤成一团）
-  const GAP = 10; // 圆与圆之间至少留的空隙
+  const metrics = graphSim.metrics || GraphDensity.layoutMetrics({ width: W, height: H, nodeCount: nodes.length });
+  const { rx, ry, spacing, gap: GAP } = metrics;
+  const repK = spacing * spacing * 1.05;
+  const repRange2 = (spacing * 2.45) ** 2;
+  const springLen = spacing * 1.22;
+  // 节点间斥力与温度缩放的几何分离：冷却后不再持续推挤，避免点击后的物理抖动。
   for (let i = 0; i < nodes.length; i++) {
     const a = nodes[i];
     for (let j = i + 1; j < nodes.length; j++) {
@@ -362,16 +414,14 @@ function physicsStep(W, H, a0) {
       const cross = a.comm !== b.comm;
       const dx = a.x - b.x, dy = a.y - b.y;
       const d2 = dx * dx + dy * dy || 1;
-      if (d2 < (cross ? repRange2 * 2.2 : repRange2)) {
-        const f = ((cross ? repK * 1.8 : repK) / d2) * a0;
+      if (d2 < (cross ? repRange2 * 2.4 : repRange2)) {
+        const f = ((cross ? repK * 2 : repK) / d2) * a0;
         a.vx += dx * f; a.vy += dy * f;
         b.vx -= dx * f; b.vy -= dy * f;
       }
       const minD = a.r + b.r + GAP;
       if (d2 < minD * minD) {
         const d = Math.sqrt(d2) || 1;
-        // 硬分离也乘温度，且单帧推开量封顶 3px：冷却后不再改坐标（否则会与圆形边界来回拉扯而持续抖动），
-        // 即使遇到深度重叠也分多帧温和化解，不会一帧弹开
         const push = Math.min(3, ((minD - d) / 2) * Math.min(1, a0 * 3));
         const ux = dx / d, uy = dy / d;
         a.x += ux * push; a.y += uy * push;
@@ -379,49 +429,35 @@ function physicsStep(W, H, a0) {
       }
     }
   }
-  // 边弹簧力（归一化方向 + 力幅钳制，避免远距离二次发散）；
-  // 同社区的边拉得紧一些，跳社区的边给更长的绳子
+  // 关系弹簧：跨社区边更长，既保留关系又避免把不同区域拽回同一团。
   const byId = new Map(nodes.map((n) => [n.id, n]));
   for (const e of graphSim.edges) {
     const a = byId.get(e.from), b = byId.get(e.to);
     if (!a || !b) continue;
-    const rest = a.comm === b.comm ? springLen : springLen * 2.2;
+    const rest = a.comm === b.comm ? springLen : springLen * 2.6;
     const dx = b.x - a.x, dy = b.y - a.y;
     const d = Math.sqrt(dx * dx + dy * dy) || 1;
-    const m = Math.max(-4, Math.min(4, (d - rest) * 0.02)) * a0;
+    const m = Math.max(-4, Math.min(4, (d - rest) * 0.018)) * a0;
     const ux = dx / d, uy = dy / d;
     a.vx += ux * m; a.vy += uy * m;
     b.vx -= ux * m; b.vy -= uy * m;
   }
-  // 社区内聚：向本社区质心轻度汇聚，使同类节点成团（而不是均匀摊开）
-  const cen = new Map();
+  const multiCommunity = new Set(nodes.map((n) => n.comm)).size > 1;
   for (const n of nodes) {
-    const c = cen.get(n.comm) || { x: 0, y: 0, n: 0 };
-    c.x += n.x; c.y += n.y; c.n++;
-    cen.set(n.comm, c);
-  }
-  for (const c of cen.values()) { c.x /= c.n; c.y /= c.n; }
-  // 向心力 + 圆形软边界 + 阻尼 + 限幅（NaN 防护：异常时重置回中心）
-  for (const n of nodes) {
-    const tx = cx - n.x, ty = cy - n.y;
-    const dist = Math.hypot(tx, ty) || 1;
-    n.vx += tx * 0.0018 * a0;
-    n.vy += ty * 0.0018 * a0;
-    // 社区质心引力（只在多社区时生效）：把同社区节点收成一块，形成可识别的分区；
-    // 引力不能太大，否则团内被压得没有空隙，标签无处可放
-    if (cen.size > 1) {
-      const c = cen.get(n.comm);
-      if (c) { n.vx += (c.x - n.x) * 0.008 * a0; n.vy += (c.y - n.y) * 0.008 * a0; }
+    // 社区锚点只做轻度约束：保障分区，又不挤压团内的节点间隔。
+    if (multiCommunity && Number.isFinite(n.anchorX) && Number.isFinite(n.anchorY)) {
+      n.vx += (n.anchorX - n.x) * 0.0016 * a0;
+      n.vy += (n.anchorY - n.y) * 0.0016 * a0;
     }
-    // 越出目标圆后沿半径方向回拉：回拉力必须与斥力同量级，否则节点会被斥力顶到硬边界上堆成一圈
-    if (dist > R) {
-      const pull = Math.min(8, spacing * 0.9 + (dist - R) * 0.12) * a0;
-      n.vx += (tx / dist) * pull;
-      n.vy += (ty / dist) * pull;
+    // 椭圆软边界：按水平/垂直半径归一化后判定是否越界。
+    const ex = (n.x - cx) / rx, ey = (n.y - cy) / ry;
+    const norm = Math.hypot(ex, ey) || 1;
+    if (norm > 1) {
+      const pull = Math.min(7, spacing * 0.55 + (norm - 1) * 7) * a0;
+      n.vx -= (ex / norm) * pull;
+      n.vy -= (ey / norm) * pull;
     }
     if (graphSim.drag && graphSim.drag.node === n) { n.vx = 0; n.vy = 0; continue; }
-    // 单帧限速跟着温度走：初始布局（a0≈1）给足 6px/帧以快速收敛，
-    // 拖拽这种低温场景（a0≈0.12）限到约 3px/帧，相邻节点是“温和跟随”而不是“一下弹开”
     const vCap = 6 * Math.min(1, 0.25 + a0 * 2);
     n.vx = Math.max(-vCap, Math.min(vCap, n.vx * 0.85));
     n.vy = Math.max(-vCap, Math.min(vCap, n.vy * 0.85));
@@ -429,12 +465,12 @@ function physicsStep(W, H, a0) {
     if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) {
       n.x = cx; n.y = cy; n.vx = 0; n.vy = 0;
     }
-    // 硬边界也是圆：极端情况下节点落在圆周上而不是排成一条直线
-    const hard = R * 1.35;
-    const od = Math.hypot(n.x - cx, n.y - cy);
-    if (od > hard) {
-      n.x = cx + (n.x - cx) * (hard / od);
-      n.y = cy + (n.y - cy) * (hard / od);
+    // 极端位置一次性裁到椭圆外沿，防止离群点拉大自适应范围。
+    const ox = (n.x - cx) / rx, oy = (n.y - cy) / ry;
+    const outer = Math.hypot(ox, oy) || 1;
+    if (outer > 1.2) {
+      n.x = cx + (n.x - cx) * (1.2 / outer);
+      n.y = cy + (n.y - cy) * (1.2 / outer);
     }
   }
 }
@@ -479,6 +515,153 @@ function kgFilteredGraph() {
   const ids = new Set(nodes.map((n) => n.id));
   edges = edges.filter((e) => ids.has(e.from) && ids.has(e.to));
   return { nodes, edges, truncated, edgeKind };
+}
+
+// ---------- 整体图谱 Class hierarchy 联动 ----------
+function graphHierarchyState() {
+  const kg = state.kg || (state.kg = {});
+  if (!kg.graphTree) kg.graphTree = { collapsed: {}, selectedKey: null, hierarchy: null };
+  if (!kg.graphTree.collapsed) kg.graphTree.collapsed = {};
+  return kg.graphTree;
+}
+
+function graphHierarchyEntityNode(entityId) {
+  return graphSim.nodes.find((node) => String(node.id) === String(entityId)) || null;
+}
+
+function expandGraphHierarchyAncestors(tree, key) {
+  const hierarchy = tree && tree.hierarchy;
+  if (!hierarchy || !key) return;
+  const seen = new Set();
+  let current = key;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    const parent = hierarchy.parentByKey.get(current);
+    if (!parent) break;
+    tree.collapsed[parent] = false;
+    current = parent;
+  }
+}
+
+function applyGraphHierarchyDefaultCollapse(tree) {
+  if (!tree || !tree.hierarchy || !window.GraphHierarchy || !window.GraphHierarchy.defaultCollapsedKeys) return;
+  const defaults = window.GraphHierarchy.defaultCollapsedKeys(tree.hierarchy.classes, {
+    rootKey: tree.hierarchy.rootKey,
+    collapseFromTypeDepth: 2,
+  });
+  for (const key of defaults) {
+    if (!Object.prototype.hasOwnProperty.call(tree.collapsed, key)) tree.collapsed[key] = true;
+  }
+}
+
+function scrollGraphHierarchySelection() {
+  const tree = graphHierarchyState();
+  if (!tree.selectedKey) return;
+  requestAnimationFrame(() => {
+    const pane = $('graph-hierarchy');
+    if (!pane) return;
+    const row = [...pane.querySelectorAll('.och-row')].find((item) => item.dataset.key === tree.selectedKey);
+    if (row) row.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+function renderGraphHierarchy(nodes) {
+  const pane = $('graph-hierarchy');
+  if (!pane) return;
+  if (!window.GraphHierarchy || !window.renderClassHierarchy) {
+    pane.innerHTML = '<div class="och-empty">图谱层级组件未加载</div>';
+    return;
+  }
+  const tree = graphHierarchyState();
+  const sourceNodes = Array.isArray(nodes) ? nodes : graphSim.nodes;
+  const typeDefs = graphTypes().map((type) => ({ key: type.key, label: type.name, name: type.name, color: type.color }));
+  tree.hierarchy = window.GraphHierarchy.buildGraphHierarchy({
+    nodes: sourceNodes,
+    ontologyClasses: ((state.kg.onto || {}).classes || []),
+    typeDefs,
+  });
+  applyGraphHierarchyDefaultCollapse(tree);
+  const selectedNode = graphSim.selected == null ? null : sourceNodes.find((node) => String(node.id) === String(graphSim.selected));
+  if (selectedNode) tree.selectedKey = tree.hierarchy.entityToKey.get(String(selectedNode.id)) || null;
+  else if (tree.selectedKey && !tree.hierarchy.parentByKey.has(tree.selectedKey)) tree.selectedKey = null;
+  if (tree.selectedKey) expandGraphHierarchyAncestors(tree, tree.selectedKey);
+  window.renderClassHierarchy(pane, { classes: tree.hierarchy.classes }, {
+    title: '图谱层级',
+    subtitle: '当前筛选',
+    emptyText: '当前筛选范围暂无实体',
+    // 虚拟根仅用于计数与类型筛选联动；视觉上直接从第一层类型开始，贴合图谱列表浏览习惯。
+    hiddenKeys: [tree.hierarchy.rootKey],
+    collapsed: tree.collapsed,
+    selectedKey: tree.selectedKey,
+    onSelect: selectGraphHierarchyItem,
+    onHover: hoverGraphHierarchyItem,
+  });
+}
+
+function selectGraphHierarchyItem(item) {
+  const tree = graphHierarchyState();
+  const meta = item.meta || {};
+  if (meta.kind === 'entity') {
+    const node = graphHierarchyEntityNode(meta.entityId);
+    if (node) selectGraphNode(node, { center: true, scrollTree: false });
+    return;
+  }
+  tree.selectedKey = item.key;
+  graphSim.selected = null;
+  renderGraphDetail(null);
+  const typeFilter = $('kg-g-type');
+  if (meta.kind === 'type' && typeFilter && typeFilter.value !== meta.type) {
+    typeFilter.value = meta.type;
+    startGraphSim();
+    return;
+  }
+  if (meta.kind === 'root' && typeFilter && typeFilter.value) {
+    typeFilter.value = '';
+    startGraphSim();
+    return;
+  }
+  renderGraphHierarchy();
+  drawGraph();
+}
+
+function hoverGraphHierarchyItem(item) {
+  const meta = (item && item.meta) || {};
+  setHoverNode(meta.kind === 'entity' ? graphHierarchyEntityNode(meta.entityId) : null);
+}
+
+function syncGraphHierarchySelection(opts = {}) {
+  const tree = graphHierarchyState();
+  if (graphSim.selected != null && tree.hierarchy) {
+    const key = tree.hierarchy.entityToKey.get(String(graphSim.selected));
+    if (key) {
+      tree.selectedKey = key;
+      expandGraphHierarchyAncestors(tree, key);
+    }
+  } else if (tree.selectedKey && String(tree.selectedKey).startsWith('graph:entity:')) {
+    tree.selectedKey = null;
+  }
+  renderGraphHierarchy();
+  if (opts.scroll) scrollGraphHierarchySelection();
+}
+
+function centerGraphOnNode(node) {
+  const canvas = $('graph-canvas');
+  if (!node || !canvas) return;
+  const W = canvas.clientWidth || 800;
+  const H = canvas.clientHeight || 600;
+  graphSim.ox = -(node.x - W / 2) * graphSim.zoom;
+  graphSim.oy = -(node.y - H / 2) * graphSim.zoom;
+  updateGraphStats();
+  drawGraph();
+}
+
+function selectGraphNode(node, opts = {}) {
+  const selected = node || null;
+  graphSim.selected = selected ? selected.id : null;
+  renderGraphDetail(selected);
+  if (selected && opts.center) centerGraphOnNode(selected);
+  else drawGraph();
+  syncGraphHierarchySelection({ scroll: opts.scrollTree !== false });
 }
 
 // KG_TAB_NAMES 定义于 renderer/constants.js
@@ -592,10 +775,10 @@ function renderKgEntityDetail(id) {
   const neighborBtn = $('btn-kg-neighbor');
   if (neighborBtn) neighborBtn.addEventListener('click', () => {
     state.kg.focus = id; // 邻居视图：画布只看该节点的邻居
-    switchKgTab('graph');
     graphSim.selected = id;
-    renderGraphDetail(graphSim.nodes.find((x) => x.id === id) || null);
-    recenterGraph();
+    switchKgTab('graph');
+    const selected = graphHierarchyEntityNode(id);
+    if (selected) selectGraphNode(selected, { center: true });
   });
   const detailCloseBtn = $('btn-kg-edetail-close');
   if (detailCloseBtn) detailCloseBtn.addEventListener('click', () => {
@@ -874,7 +1057,12 @@ async function renderKgOntology() {
         <div class="kg-class-ex">示例：${(c.examples || []).map((s) => `<span class="mini-tag">${escapeHtml(s)}</span>`).join(' ') || '—'}</div>
       </div>`).join('');
   } else if (state.kg.ontoTab === 'preds') {
-    body.innerHTML = o.predicates.map((p) => `<div class="kg-class"><div class="kg-class-head"><code>${escapeHtml(p.key)}</code><span>${escapeHtml(p.desc)}</span>${acts({ custom: p.custom, data: `data-key="${escapeHtml(p.key)}"` }, p.builtin && !p.custom)}</div></div>`).join('');
+    body.innerHTML = o.predicates.map((p) => {
+      const aliasStr = Array.isArray(p.aliases) && p.aliases.length
+        ? `<div class="kg-class-ex"><span class="mini-tag" style="opacity:.55">别名</span>${p.aliases.map(escapeHtml).join(' <span style="opacity:.35">·</span> ')}</div>`
+        : '';
+      return `<div class="kg-class"><div class="kg-class-head"><code>${escapeHtml(p.key)}</code><span>${escapeHtml(p.desc)}</span>${acts({ custom: p.custom, data: `data-key="${escapeHtml(p.key)}"` }, p.builtin && !p.custom)}</div>${aliasStr}</div>`;
+    }).join('');
   } else if (state.kg.ontoTab === 'cons') {
     // 合并顺序：[...内置(from base), ...自定义(from custom)]；自定义项 data-idx 需映射回 userConstraints 索引（减去内置数）
     const baseCount = (o.constraints || []).filter((c) => typeof c === 'object' && c.from === 'base').length;
@@ -892,20 +1080,186 @@ async function renderKgOntology() {
 }
 
 // ---------- 「推理」Tab（融合设计 §6.6）----------
+function reasonValidationCounts(v) {
+  return {
+    violations: Number.isFinite(v && v.totalViolations) ? v.totalViolations : ((v && v.violations) || []).length,
+    disjoint: Number.isFinite(v && v.totalDisjointConflicts) ? v.totalDisjointConflicts : ((v && v.disjointConflicts) || []).length,
+  };
+}
+
+function reasonRunInfo(ctx) {
+  const { rs, meta, ls } = ctx;
+  if (rs.available === false) return { tone: 'danger', label: '不可用', detail: rs.unavailableReason || '推理模块不可用' };
+  if (rs.enabled === false) return { tone: 'muted', label: '已关闭', detail: '可在设置中重新启用' };
+  if (!ls) return { tone: 'info', label: '尚未运行', detail: '运行推理后生成推理边与冲突结果' };
+  if (ls.skipped) return { tone: 'warn', label: '已跳过', detail: reasonSkipText(ls.skipReason) };
+  if (meta.inferredStale) return { tone: 'warn', label: '结果已过期', detail: '图谱已变更，建议重新推理' };
+  return {
+    tone: 'ok',
+    label: '已完成',
+    detail: `${Number(ls.rounds) || 0} 轮 · ${((Number(ls.elapsedMs) || 0) / 1000).toFixed(1)}s · ${reasonTimeText(ls.at || meta.lastInferredAt)}`,
+  };
+}
+
+function renderReasonMetric(label, value, detail, tone) {
+  return `<article class="kg-health-metric is-${tone || 'info'}"><span>${escapeHtml(label)}</span><b>${escapeHtml(String(value))}</b><small>${escapeHtml(detail || '')}</small></article>`;
+}
+
+function renderReasonProfilePicker(profileId, profiles) {
+  const list = Array.isArray(profiles) && profiles.length
+    ? profiles
+    : [{ id: profileId || 'bfo-lite', name: profileId || 'bfo-lite' }];
+  const options = list.map((p) => `<option value="${escapeHtml(p.id)}"${p.id === profileId ? ' selected' : ''}>${escapeHtml(p.name || p.id)}</option>`).join('');
+  return `<label class="kg-reason-profile-picker"><span>当前本体体系</span><select id="kg-reason-profile" title="切换后刷新本页体检与本体诊断，不影响抽取和问答的自动体系选择">${options}</select><em>用于体检与本体诊断</em></label>`;
+}
+
+function renderReasonValidationMetric(v) {
+  if (v === undefined) return renderReasonMetric('图谱体检', '进行中', '正在检查全图约束与公理', 'info');
+  if (!v || v.ok === false) return renderReasonMetric('图谱体检', '未完成', (v && v.error) || '体检失败，可重试', 'danger');
+  const counts = reasonValidationCounts(v);
+  const total = counts.violations + counts.disjoint;
+  return total
+    ? renderReasonMetric('图谱体检', `发现 ${total} 项`, `${counts.violations} 条越界边 · ${counts.disjoint} 处不相交归属`, 'warn')
+    : renderReasonMetric('图谱体检', '健康', `已检查 ${Number(v.checked) || 0} 条边，未发现约束违规`, 'ok');
+}
+
+function renderReasonOverview(ctx) {
+  const { rs, meta, ls, counts, profileId, profiles } = ctx;
+  const run = reasonRunInfo(ctx);
+  const coverage = rs.coverage || {};
+  const pct = counts.total ? Math.round((counts.inferred / counts.total) * 100) : 0;
+  const unavailable = rs.available === false;
+  const notices = [
+    unavailable ? `<div class="kg-reason-off">推理模块不可用：${escapeHtml(rs.unavailableReason || '未知原因')}。图谱浏览与只读体检不受影响。</div>` : '',
+    !unavailable && rs.enabled === false ? '<div class="kg-reason-off">推理已在“设置”中关闭；可继续执行只读体检。</div>' : '',
+    meta.inferredStale ? '<div class="kg-reason-stale">图谱已变更，当前推理结果可能过期。下次问答会自动重跑，也可立即手动重推。</div>' : '',
+  ].join('');
+  return `<section class="kg-reason-dashboard">
+    <div class="kg-reason-dashboard-head">
+      <div><div class="kg-reason-kicker">推理与校验</div><h3>图谱健康概览</h3><p>${renderReasonProfilePicker(profileId, profiles)}</p></div>
+      <div class="kg-reason-action-groups"><span>更新结果</span><button class="btn btn-primary" id="btn-reason-run"${unavailable ? ' disabled title="推理模块不可用"' : ' title="对全图各体系重新执行物化推理"'}>重新推理</button><button class="btn btn-ghost" id="btn-reason-validate" title="使用当前体系对整张图做只读体检，不改写数据">刷新体检</button>${counts.inferred ? '<span class="kg-reason-action-sep"></span><span>维护推理层</span><button class="btn btn-ghost danger" id="btn-reason-clear" title="只清除推理得出的边，原始图谱不受影响">清除推理边</button>' : ''}</div>
+    </div>
+    ${notices}
+    <div class="kg-health-grid">
+      ${renderReasonMetric('推理状态', run.label, run.detail, run.tone)}
+      ${renderReasonMetric('推理边', `${Number(counts.inferred) || 0} 条`, `全图 ${Number(counts.total) || 0} 条关系 · 占 ${pct}%`, counts.inferred ? 'info' : 'muted')}
+      <div id="kg-reason-validation-metric">${renderReasonValidationMetric()}</div>
+      ${renderReasonMetric('护栏覆盖', `${coverage.coveragePct == null ? '—' : coverage.coveragePct + '%'}`, coverage.predicates == null ? '当前体系未返回谓词覆盖信息' : `${coverage.withAny || 0}/${coverage.predicates || 0} 个谓词声明 domain/range`, coverage.coveragePct ? 'ok' : 'muted')}
+    </div>
+  </section>`;
+}
+
+function renderReasonIssues(ctx, v) {
+  if (v === undefined) return '<div class="kg-issues-loading">正在汇总推理冲突与全图体检结果…</div>';
+  if (!v || v.ok === false) return `<div class="kg-issues-error"><b>体检未完成</b><span>${escapeHtml((v && v.error) || '未知错误')}</span><button class="btn btn-ghost" id="btn-reason-validate-retry">重试体检</button></div>`;
+  const { violations, disjoint } = reasonValidationCounts(v);
+  const total = ctx.conTotal + violations + disjoint;
+  if (!total) return '<div class="kg-issues-clean"><b>未发现待处理问题</b><span>推理未检出语义矛盾，体检也未发现越界边或不相交归属冲突。</span></div>';
+  const conflict = ctx.conTotal ? `<article class="kg-issue-group is-danger"><div><span class="kg-issue-source">推理结果</span><b>不一致冲突 ${ctx.conTotal} 处</b><p>${ctx.det && (ctx.det.items || []).length ? '推理规则发现语义矛盾；可在明细中查看规则与涉及对象。' : '旧结果未保存明细；重新推理后可查看并定位具体冲突。'}</p></div></article>` : '';
+  const checked = (violations || disjoint) ? `<article class="kg-issue-group is-warn"><div><span class="kg-issue-source">只读体检</span><b>约束问题 ${violations + disjoint} 项</b><p>${violations} 条 domain/range 或词表越界边；${disjoint} 处由约束推导出的不相交归属。</p></div></article>` : '';
+  return `<div class="kg-issues-head"><div><div class="kg-reason-kicker">需要关注</div><h3>待处理问题（${total}）</h3><p>推理冲突来自全图结果；只读体检按当前选择的体系执行，以下保留来源以便判断处理方式。</p></div><div class="kg-issue-actions"><button class="btn btn-primary" id="btn-reason-fix-all" title="先重新执行全量体检并规划修复动作；预览确认后才会改图">一键规划修复</button><button class="btn btn-ghost" data-reason-show-details>查看明细</button>${ctx.rs.repairUndoAvailable ? '<button class="btn btn-ghost" id="btn-reason-repair-undo">撤销上次修复</button>' : ''}</div></div><div class="kg-issue-groups">${conflict}${checked}</div>`;
+}
+
+function renderReasonDiagnostics(ctx) {
+  const { lg, guardHtml, featHtml, covHtml, viaHtml } = ctx;
+  const guardTotal = Number((lg && lg.total) || 0);
+  return `<section class="kg-reason-diagnostics"><div class="kg-reason-section-head"><div><div class="kg-reason-kicker">按需查看</div><h3>诊断详情</h3></div><p>体检明细、护栏记录和本体谓词特性。</p></div>
+    <details class="kg-diagnostic" id="kg-diagnostic-validation"><summary><span>全图校验明细</span><em id="kg-validate-summary">体检中…</em></summary><div class="kg-diagnostic-body" id="kg-validate-body"><div class="kg-issues-loading">正在执行只读体检…</div></div></details>
+    <details class="kg-diagnostic"${guardTotal ? ' open' : ''}><summary><span>护栏拦截日志</span><em>${guardTotal ? `${guardTotal} 条越界连线已降级` : '最近一次提取未发现越界连线'}</em></summary><div class="kg-diagnostic-body">${guardHtml}</div></details>
+    <details class="kg-diagnostic"><summary><span>本体诊断</span><em>谓词特性与护栏覆盖</em></summary><div class="kg-diagnostic-body">${covHtml}${viaHtml ? `<div class="kg-reason-row"><span>推导方式</span><b class="kg-reason-vias">${viaHtml}</b></div>` : ''}${featHtml}</div></details>
+  </section>`;
+}
+
+function updateReasonValidation(body, ctx, v) {
+  if (!body || !document.contains(body) || body.dataset.reasonRenderId !== ctx.renderId) return;
+  const metric = body.querySelector('#kg-reason-validation-metric');
+  const issues = body.querySelector('#kg-reason-issues');
+  const report = body.querySelector('#kg-validate-body');
+  const summary = body.querySelector('#kg-validate-summary');
+  if (metric) metric.innerHTML = renderReasonValidationMetric(v);
+  if (issues) issues.innerHTML = renderReasonIssues(ctx, v);
+  if (v === undefined) {
+    if (report) report.innerHTML = '<div class="kg-issues-loading">正在执行只读体检…</div>';
+    if (summary) summary.textContent = '体检中…';
+    return;
+  }
+  if (report) {
+    report.innerHTML = renderValidateReport(v, ctx.det);
+    bindValidateFilters(report);
+  }
+  if (summary) {
+    const counts = v && v.ok !== false ? reasonValidationCounts(v) : null;
+    summary.textContent = counts ? (counts.violations + counts.disjoint ? `发现 ${counts.violations + counts.disjoint} 项` : '未发现约束违规') : '体检失败';
+  }
+  const detail = body.querySelector('#kg-diagnostic-validation');
+  if (detail && v && v.ok !== false) {
+    const counts = reasonValidationCounts(v);
+    detail.open = ctx.conTotal + counts.violations + counts.disjoint > 0;
+  }
+  const badge = $('kg-reason-badge');
+  if (badge && v && v.ok !== false) {
+    const counts = reasonValidationCounts(v);
+    const total = ctx.conTotal + counts.violations + counts.disjoint;
+    if (total) { badge.hidden = false; badge.textContent = String(total); badge.className = 'kg-badge kg-badge-warn'; }
+  }
+  bindReasonIssueActions(body, ctx);
+}
+
+function bindReasonIssueActions(body, ctx) {
+  const retry = body.querySelector('#btn-reason-validate-retry');
+  if (retry) retry.addEventListener('click', () => ctx.refreshValidation());
+  const show = body.querySelector('[data-reason-show-details]');
+  if (show) show.addEventListener('click', () => { const detail = body.querySelector('#kg-diagnostic-validation'); if (detail) { detail.open = true; detail.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
+  const fix = body.querySelector('#btn-reason-fix-all');
+  if (fix) fix.addEventListener('click', () => fixAllIssues(fix));
+  const undo = body.querySelector('#btn-reason-repair-undo');
+  if (undo) undo.addEventListener('click', () => undoLastRepair());
+}
+
+async function refreshReasonValidation(body, ctx, opts) {
+  const o = opts || {};
+  const seq = (ctx.validationSeq || 0) + 1;
+  ctx.validationSeq = seq;
+  updateReasonValidation(body, ctx, undefined);
+  const v = await runFullGraphValidate(ctx.profileId);
+  if (ctx.validationSeq !== seq || !document.contains(body) || body.dataset.reasonRenderId !== ctx.renderId) return v;
+  updateReasonValidation(body, ctx, v);
+  if (o.showBar) showGraphValidateBar(v, ctx.profileId);
+  return v;
+}
 // 数据源：IPC graph:reasonState → getReasonState(profileId)，一次拿齐四区块所需的全部字段。
 // 注意 lastStats.inconsistencies 是「条数」，明细在 lastStats.inconsistencyDetails.items。
 async function renderKgReasonTab(body, profileId) {
   if (!body) return;
+  const renderId = `${Date.now()}-${Math.random()}`;
+  // 先标记请求批次，避免快速切换体系后旧请求覆盖新页面。
+  body.dataset.reasonRequestId = renderId;
   // 静默降级：桥接层没有这个绑定（旧版 preload / web shim 未同步）时如实说明，不抛错
   if (typeof window.kb.graphReasonState !== 'function') {
     body.innerHTML = '<div class="gd-desc">当前环境不支持推理状态查询（缺少 graphReasonState 桥接）。</div>';
     return;
   }
+  let profiles = state.kg.graphProfiles || [];
+  if (!profiles.length && typeof window.kb.graphProfiles === 'function') {
+    try {
+      profiles = (await window.kb.graphProfiles()) || [];
+      state.kg.graphProfiles = profiles;
+    } catch (_) { /* 保留当前体系作为唯一可选项 */ }
+  }
+  if (body.dataset.reasonRequestId !== renderId) return;
+  const fallbackProfileId = profileId || (state.kg.onto && state.kg.onto.profileId) || 'bfo-lite';
+  const requestedProfileId = state.kg.reasonProfileId || fallbackProfileId;
+  const activeProfileId = profiles.some((p) => p.id === requestedProfileId)
+    ? requestedProfileId
+    : ((profiles[0] && profiles[0].id) || fallbackProfileId);
+  state.kg.reasonProfileId = activeProfileId;
   let rs = null;
-  try { rs = await window.kb.graphReasonState(profileId); } catch (err) {
+  try { rs = await window.kb.graphReasonState(activeProfileId); } catch (err) {
+    if (body.dataset.reasonRequestId !== renderId) return;
     body.innerHTML = `<div class="gd-desc">推理状态读取失败：${escapeHtml(String((err && err.message) || err))}</div>`;
     return;
   }
+  if (body.dataset.reasonRequestId !== renderId) return;
   if (!rs || rs.ok === false) {
     body.innerHTML = `<div class="gd-desc">推理状态读取失败：${escapeHtml((rs && rs.error) || '未知错误')}</div>`;
     return;
@@ -916,62 +1270,9 @@ async function renderKgReasonTab(body, profileId) {
   const counts = rs.counts || { total: 0, inferred: 0, raw: 0, byVia: {} };
   const badge = $('kg-reason-badge');
 
-  // ---- 区块 1：上次推理 ----
-  const pct = counts.total ? Math.round((counts.inferred / counts.total) * 100) : 0;
-  let runHtml;
-  if (!ls) {
-    runHtml = '<div class="gd-desc">尚未运行过推理。点击下方「重新推理」对当前图谱做一次 OWL 2 RL 物化。</div>';
-  } else if (ls.skipped) {
-    runHtml = `<div class="kg-reason-row"><span>上次运行</span><b>${escapeHtml(reasonTimeText(ls.at || meta.lastInferredAt))}</b></div>
-      <div class="kg-reason-row"><span>结果</span><b class="kg-reason-warn">已跳过：${escapeHtml(reasonSkipText(ls.skipReason))}</b></div>`;
-  } else {
-    runHtml = `
-      <div class="kg-reason-row"><span>时间</span><b>${escapeHtml(reasonTimeText(ls.at || meta.lastInferredAt))}</b></div>
-      <div class="kg-reason-row"><span>推理边</span><b>+${Number(ls.inferredEdges) || 0} 条（占全图 ${pct}%）</b></div>
-      <div class="kg-reason-row"><span>轮数</span><b>${Number(ls.rounds) || 0} 轮收敛 · 耗时 ${((Number(ls.elapsedMs) || 0) / 1000).toFixed(1)}s</b></div>
-      ${ls.profiles ? `<div class="kg-reason-row"><span>体系</span><b>${Number(ls.profiles) || 0} 个参与推理${ls.skippedProfiles ? ` · ${ls.skippedProfiles} 个跳过` : ''}</b></div>` : ''}
-      ${ls.profileId ? `<div class="kg-reason-row"><span>来源</span><b>${escapeHtml(ls.profileId)}</b></div>` : ''}`;
-  }
-  const staleHtml = meta.inferredStale
-    ? '<div class="kg-reason-stale">⚠ 图谱已变更（删除过节点/边），推理结果已过期 —— 下次问答会自动重跑，也可立即手动重推。</div>'
-    : '';
-  const offHtml = rs.available === false
-    ? `<div class="kg-reason-off">推理模块不可用：${escapeHtml(rs.unavailableReason || '未知原因')}（图谱功能不受影响，仅推理相关能力静默降级）</div>`
-    : (rs.enabled === false ? '<div class="kg-reason-off">推理已在「设置」中关闭</div>' : '');
-
-  // ---- 区块 2：不一致冲突 ----
+  // 推理冲突与体检结果分别保留来源；体检返回后在“待处理问题”中汇总展示。
   const det = (ls && ls.inconsistencyDetails) || null;
   const conTotal = det ? (Number(det.total) || 0) : (Number(rs.lastInconsistencies) || 0);
-  let conHtml;
-  if (!conTotal) {
-    conHtml = '<div class="gd-desc">未检出语义冲突（不相交类同时归属、非对称谓词双向断言等）。</div>';
-  } else if (!det || !det.items || !det.items.length) {
-    conHtml = `<div class="gd-desc">检出 ${conTotal} 处冲突，但明细未落库（旧版本推理结果）。点击「重新推理」即可看到明细。</div>`;
-  } else {
-    conHtml = det.items.map((c, ci) => {
-      // 归属：体系「profileName」· 知识图谱「scope.label」（scopes 缺失时退回仅体系，兼容旧数据）
-      const scopeText = (c.scopes && c.scopes.length)
-        ? c.scopes.map((s) => s.label || s.domain || '通用').join('、')
-        : '';
-      const owner = `体系「${escapeHtml(c.profileName || c.profileId || '未知')}」${scopeText ? ` · 图谱「${escapeHtml(scopeText)}」` : ''}`;
-      // 中文原因：新数据带 messageZh/reasonZh；旧数据只有英文 message → 降级显示原文
-      const zh = c.messageZh
-        ? `<span class="kg-conflict-zh">${escapeHtml(c.messageZh)}</span>${c.reasonZh ? `<span class="kg-conflict-why">${escapeHtml(c.reasonZh)}</span>` : ''}`
-        : `<span class="kg-conflict-zh">${escapeHtml(c.message || '（无描述）')}</span>`;
-      // 「修复」按钮：先 dry-run 规划该条冲突的动作，弹窗预览后再落库（冲突自动处理方案2）
-      const fixBtn = `<button class="btn btn-ghost kg-conflict-fix" data-cidx="${ci}" title="规划并预览该冲突的修复动作（先预览、确认后才改图）">修复</button>`;
-      return `<div class="kg-conflict"><div class="kg-conflict-head"><code class="kg-conflict-rule" title="规则代码">${escapeHtml(c.rule || 'conflict')}</code><span class="kg-conflict-owner">${owner}</span>${fixBtn}</div>${zh}</div>`;
-    }).join('')
-      + (det.truncated ? `<div class="gd-desc">（仅显示前 ${det.items.length} 条，共 ${conTotal} 处）</div>` : '');
-  }
-  // 冲突区块头部操作：一键修复（规划全部冲突）+ 撤销上次修复（有快照才可用）
-  const conActs = conTotal
-    ? `<div class="kg-reason-acts kg-conflict-acts">
-        <button class="btn btn-primary" id="btn-reason-repair" title="对全部冲突规划修复动作（降级谓词/删边/改类型），弹窗预览确认后才改图，并自动重推理验证">一键修复</button>
-        <button class="btn btn-ghost" id="btn-reason-repair-undo"${rs.repairUndoAvailable ? '' : ' disabled title="没有可撤销的修复记录"'}>撤销上次修复</button>
-        ${rs.repairLlm ? '<span class="form-hint" title="设置 → 知识图谱 → 修复时允许 LLM 语义仲裁">LLM 仲裁已开启</span>' : ''}
-      </div>`
-    : '';
 
   // ---- 区块 3：护栏拦截日志 ----
   let guardHtml;
@@ -1023,39 +1324,16 @@ async function renderKgReasonTab(body, profileId) {
   const viaHtml = Object.entries(counts.byVia || {}).map(([k, v]) =>
     `<span class="mini-tag" title="${escapeHtml(inferredViaName(k))}">${escapeHtml(inferredViaName(k) || k)} × ${v}</span>`).join(' ');
 
-  body.innerHTML = `
-    ${offHtml}
-    <div class="kg-reason-block">
-      <div class="kg-reason-head">上次推理</div>
-      <div class="kg-reason-row"><span>推理边总数</span><b>${counts.inferred} / ${counts.total} 条（${pct}%）</b></div>
-      ${viaHtml ? `<div class="kg-reason-row"><span>推导方式</span><b class="kg-reason-vias">${viaHtml}</b></div>` : ''}
-      ${runHtml}
-      ${staleHtml}
-      <div class="kg-reason-acts">
-        <button class="btn btn-primary" id="btn-reason-run"${rs.available === false ? ' disabled title="推理模块不可用"' : ''}>重新推理</button>
-        <button class="btn btn-ghost danger" id="btn-reason-clear"${counts.inferred ? '' : ' disabled title="当前没有推理边"'}>清除所有推理边</button>
-        <button class="btn btn-ghost" id="btn-reason-validate" title="对已落库的整张图按当前体系重跑约束/公理检查（只读，不改图）；面板打开时已自动跑过一次">刷新校验</button>
-        <span class="form-hint" id="reason-run-hint"></span>
-      </div>
-    </div>
-    <div class="kg-reason-block">
-      <div class="kg-reason-head">不一致冲突（${conTotal}）</div>
-      ${conHtml}
-      ${conActs}
-    </div>
-    <div class="kg-reason-block">
-      <div class="kg-reason-head">护栏拦截日志（§4.3 domain/range 越界降级）</div>
-      ${guardHtml}
-    </div>
-    <div class="kg-reason-block">
-      <div class="kg-reason-head">谓词特性一览</div>
-      ${covHtml}
-      ${featHtml}
-    </div>
-    <div class="kg-reason-block">
-      <div class="kg-reason-head">全图校验（通道 C · 只读体检）</div>
-      <div id="kg-validate-body"><div class="gd-desc">校验中…</div></div>
-    </div>`;
+  const reasonCtx = {
+    rs, meta, ls, lg, counts, det, conTotal, profileId: activeProfileId, profiles,
+    guardHtml, featHtml, covHtml, viaHtml,
+    renderId,
+    validationSeq: 0,
+  };
+  body.dataset.reasonRenderId = reasonCtx.renderId;
+  body.innerHTML = `${renderReasonOverview(reasonCtx)}
+    <section class="kg-reason-issues-section"><div id="kg-reason-issues">${renderReasonIssues(reasonCtx, undefined)}</div></section>
+    ${renderReasonDiagnostics(reasonCtx)}`;
 
   // 徽标：冲突数优先（红色告警），否则显示推理边数
   if (badge) {
@@ -1064,49 +1342,31 @@ async function renderKgReasonTab(body, profileId) {
     else { badge.hidden = true; badge.textContent = ''; }
   }
 
+  const profileSelect = $('kg-reason-profile');
+  if (profileSelect) profileSelect.addEventListener('change', () => {
+    state.kg.reasonProfileId = profileSelect.value;
+    renderKgReasonTab(body, profileSelect.value);
+  });
   const runBtn = $('btn-reason-run');
   if (runBtn) runBtn.addEventListener('click', async () => {
     await runGraphInference();
     renderKgOntology();
-    if (state.kg.tab === 'reason') renderKgReasonTab($('kg-reason-body'), profileId);
+    if (state.kg.tab === 'reason') renderKgReasonTab($('kg-reason-body'), reasonCtx.profileId);
   });
   const clearBtn = $('btn-reason-clear');
   if (clearBtn) clearBtn.addEventListener('click', async () => {
     await clearAllInferredEdges();
     renderKgOntology();
-    if (state.kg.tab === 'reason') renderKgReasonTab($('kg-reason-body'), profileId);
+    if (state.kg.tab === 'reason') renderKgReasonTab($('kg-reason-body'), reasonCtx.profileId);
   });
+  reasonCtx.refreshValidation = (opts) => refreshReasonValidation(body, reasonCtx, opts);
   const valBtn = $('btn-reason-validate');
   if (valBtn) valBtn.addEventListener('click', async () => {
-    const box = $('kg-validate-body');
-    if (!box) return;
     valBtn.disabled = true;
-    box.innerHTML = '<div class="gd-desc">校验中…</div>';
-    const v = await runFullGraphValidate(profileId);
-    valBtn.disabled = false;
-    box.innerHTML = renderValidateReport(v, det);
-    bindValidateFilters(box);
+    try { await reasonCtx.refreshValidation({ showBar: true }); } finally { valBtn.disabled = false; }
   });
-  // 面板打开即自动跑一次全图校验：越界边/不相交归属与不一致冲突合并进同一张问题表，默认可见
-  // （摘要条说「N 条越界边」而面板看不到的问题，根因就是校验只在手动点按钮后才跑）
-  (async () => {
-    const box = $('kg-validate-body');
-    if (!box) return;
-    const v = await runFullGraphValidate(profileId);
-    // 渲染期间用户可能已切走面板；只有 body 还在文档里才写回
-    if (!document.contains(box)) return;
-    box.innerHTML = renderValidateReport(v, det);
-    bindValidateFilters(box);
-  })();
-  // 冲突自动修复（方案2/3）：一键修复 = 重推理取最新冲突 → 规划全部 → 预览 → 确认落库
-  const repBtn = $('btn-reason-repair');
-  if (repBtn) repBtn.addEventListener('click', () => planAndPreviewRepairs({ refresh: true }));
-  const undoBtn = $('btn-reason-repair-undo');
-  if (undoBtn) undoBtn.addEventListener('click', () => undoLastRepair());
-  // 单条冲突的「修复」按钮：只规划该条（data-cidx 是明细列表中的下标）
-  document.querySelectorAll('.kg-conflict-fix').forEach((b) => {
-    b.addEventListener('click', () => planAndPreviewRepairs({ conflictIdxs: [Number(b.dataset.cidx)] }));
-  });
+  // 打开页面即执行一次只读体检；结果只更新仍处于当前渲染批次的页面。
+  reasonCtx.refreshValidation();
 }
 
 // ---- 冲突自动修复 UI（方案2/3）----
@@ -1232,28 +1492,17 @@ async function undoLastRepair() {
 // 通道 C 体检报告 → HTML（复用既有 .kg-reason-row / .kg-conflict / .kg-guard-item 样式，不新增 CSS）
 // det = 推理「不一致冲突」明细（ls.inconsistencyDetails），可选；传入则合并进同一张问题表
 function renderValidateReport(v, det) {
+  // 报告仅负责诊断明细；概览和待处理问题由上层独立呈现。
+  lastValidateReport = v || null;
+  lastConflictDetails = det || null;
   if (!v || v.ok === false) {
-    return `<div class="gd-desc">全图校验不可用：${escapeHtml((v && v.error) || '未知错误')}（图谱数据不受影响）</div>`;
+    return `<div class="kg-issues-error"><b>全图体检不可用</b><span>${escapeHtml((v && v.error) || '未知错误')}（图谱数据不受影响）</span></div>`;
   }
-  const cov = v.coverage;
-  const covHtml = cov
-    ? `<div class="kg-reason-row"><span>体系声明</span><b>${cov.predicates} 个谓词中 ${cov.withAny} 个带 domain/range（覆盖 ${cov.coveragePct}%）· ${cov.disjointPairs.length} 对不相交类</b></div>`
-    : '';
-  // 计数用全量 totals（按 reason 累加、不受明细上限 VIOLATION_CAP=50 影响）：
-  // violations / disjointConflicts 明细数组封顶 50，直接取其长度会在截断时少报
-  // （「摘要条 50 条越界边、实际 195」事故，v1.2.2）；旧后端无 totals 时回退明细长度。
-  const nV = Number.isFinite(v.totalViolations) ? v.totalViolations : (v.violations || []).length;
-  const nD = Number.isFinite(v.totalDisjointConflicts) ? v.totalDisjointConflicts : (v.disjointConflicts || []).length;
+  // 计数用全量 totals（按 reason 累加、不受明细上限 VIOLATION_CAP=50 影响）。
+  const { violations: nV, disjoint: nD } = reasonValidationCounts(v);
   const shownV = (v.violations || []).length;
   const shownD = (v.disjointConflicts || []).length;
-  const headHtml = `
-    <div class="kg-reason-row"><span>校验范围</span><b>体系「${escapeHtml(v.profileName || v.profileId)}」· 检查 ${v.checked} 条边</b></div>
-    <div class="kg-reason-row"><span>结果</span><b class="${(nV || nD) ? 'kg-reason-warn' : ''}">${(nV || nD) ? `发现 ${nV} 条越界边、${nD} 处不相交归属冲突` : '未发现约束违规'}${v.truncated ? `（明细各最多列 ${shownV}/${shownD} 条）` : ''}</b></div>
-    ${covHtml}`;
-  // v1.2.2：越界边 + 不相交归属 + 推理不一致冲突**汇成一张问题表**，列含「违反的约束或公理 /
-  // 所属体系 / 知识图谱」，并带知识图谱与问题类型两个筛选下拉（客户端过滤）。
-  lastValidateReport = v;
-  lastConflictDetails = det || null;
+  // 越界边 + 不相交归属 + 推理不一致冲突汇成同一张表，保留来源列与筛选能力。
   const valRows = validateIssueRows(v);
   const conRows = conflictIssueRows(det);
   // 统一重编号（冲突行排在越界/不相交行之前，与「先看推理矛盾、再看体检问题」的阅读顺序一致）
@@ -1280,13 +1529,10 @@ function renderValidateReport(v, det) {
       </table></div>`
     : '<div class="gd-desc">所有边均通过谓词白名单与 domain/range 检查，且未检出不相交归属冲突（覆盖率为 0% 的体系越界项恒通过，属预期）。</div>';
   const totalShown = nInconRows + nV + nD;
-  const fixAllBtn = totalShown
-    ? `<button class="btn btn-ghost" id="kg-vr-fix-all" title="把当前全部问题（不一致冲突 + 越界边 + 不相交归属，共 ${totalShown} 条）一次性规划修复：先预览、确认后才改图">⚒ 一键修复所有（${totalShown}）</button>`
-    : '';
-  return `${headHtml}
-    <div class="kg-reason-head" style="margin-top:8px">问题汇总（${totalShown}${rows.length < totalShown ? `，列出前 ${rows.length} 条` : ''}）${fixAllBtn}</div>
+  const resultText = totalShown ? `共发现 ${totalShown} 项问题` : '未发现约束违规';
+  return `<div class="kg-validate-report-head"><span>体系「${escapeHtml(v.profileName || v.profileId)}」</span><b class="${totalShown ? 'kg-reason-warn' : 'kg-reason-ok'}">${resultText}</b><span>检查 ${Number(v.checked) || 0} 条边</span></div>
     ${tableHtml}
-    <div class="gd-desc">体检为只读：不改写任何边、不删除数据；修复请调整体系公理或删除违规边。校验时间 ${escapeHtml(reasonTimeText(v.at))}。</div>`;
+    <div class="gd-desc">体检为只读：不改写任何边、不删除数据；修复动作需先预览并确认。校验时间 ${escapeHtml(reasonTimeText(v.at))}。</div>`;
 }
 
 // v1.2.2 问题汇总表：把「越界边」与「不相交归属」两类问题归一成同构行数据，
@@ -1860,15 +2106,13 @@ async function kgAskFlow() {
   }
 }
 
-// 自适应：重置缩放/平移，包围盒居中适配画布
+// 自适应：重置视口变换并按包围盒完整适配画布，不再改写布局坐标。
 function fitGraphView() {
-  graphSim.zoom = 1;
-  graphSim.ox = 0;
-  graphSim.oy = 0;
   recenterGraph();
+  updateGraphStats();
 }
 
-// 画布尺寸变化（AI 面板开关/列表收起/窗口缩放）时包围盒居中+自适应缩放，保证图谱默认完整居中可见
+// 画布尺寸变化时只更新缩放/平移。节点保持其物理布局，避免“缩坐标但不缩半径”产生二次重叠。
 function recenterGraph() {
   const canvas = $('graph-canvas');
   const W = canvas.clientWidth || 800;
@@ -1877,30 +2121,24 @@ function recenterGraph() {
   if (!nodes.length) return;
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const n of nodes) {
-    minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
-    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+    minX = Math.min(minX, n.x - n.r); maxX = Math.max(maxX, n.x + n.r);
+    minY = Math.min(minY, n.y - n.r); maxY = Math.max(maxY, n.y + n.r);
   }
   const bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
   const pad = Math.max(40, Math.min(80, Math.min(W, H) * 0.08));
-  // 缩放下限给到 0.25：下限太高（原 0.6）会让大布局“缩不下”而溢出画布，节点全贴在上下边上
-  const s = Math.min(1.6, Math.max(0.25, Math.min((W - pad * 2) / bw, (H - pad * 2) / bh)));
+  const s = Math.min(1.6, Math.max(0.4, Math.min((W - pad * 2) / bw, (H - pad * 2) / bh)));
   const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-  for (const n of nodes) {
-    n.x = W / 2 + (n.x - cx) * s;
-    n.y = H / 2 + (n.y - cy) * s;
-    n.vx = 0; n.vy = 0;
-  }
-  // 缩放只缩坐标不缩半径，因此 s<1 时会凭空出现重叠；在绘制前一次性分开，
-  // 而不依赖每帧物理去推（后者就是点击后持续抖动的根源）
-  settleCollisions();
+  graphSim.zoom = s;
+  graphSim.ox = -(cx - W / 2) * s;
+  graphSim.oy = -(cy - H / 2) * s;
+  graphSim.metrics = GraphDensity.layoutMetrics({ width: W, height: H, nodeCount: nodes.length });
   drawGraph();
 }
 
-// 一次性几何分开（不涉速度、不依赖温度）：只在布局/缩放变更后调一次，
-// 把相互叠圈的节点推到至少留 GAP 的距离，保证“节点不重叠”而不引入持续动画
-function settleCollisions(iters = 6) {
+// 一次性几何分开（不涉速度、不依赖温度）：只在初始布局后调用，避免交互期间持续抖动。
+function settleCollisions(iters = graphSim.nodes.length > 200 ? 18 : 8) {
   const nodes = graphSim.nodes;
-  const GAP = 10;
+  const GAP = (graphSim.metrics || {}).gap || 10;
   for (let k = 0; k < iters; k++) {
     let moved = 0;
     for (let i = 0; i < nodes.length; i++) {
@@ -1908,12 +2146,14 @@ function settleCollisions(iters = 6) {
       for (let j = i + 1; j < nodes.length; j++) {
         const b = nodes[j];
         const dx = a.x - b.x, dy = a.y - b.y;
-        const d2 = dx * dx + dy * dy || 1;
+        const d2 = dx * dx + dy * dy;
         const minD = a.r + b.r + GAP;
         if (d2 >= minD * minD) continue;
         const d = Math.sqrt(d2);
+        const angle = d > 0.001 ? 0 : ((i * 0.73 + j * 1.17) % (Math.PI * 2));
+        const ux = d > 0.001 ? dx / d : Math.cos(angle);
+        const uy = d > 0.001 ? dy / d : Math.sin(angle);
         const push = (minD - d) / 2;
-        const ux = dx / d, uy = dy / d;
         a.x += ux * push; a.y += uy * push;
         b.x -= ux * push; b.y -= uy * push;
         moved++;
@@ -1939,51 +2179,58 @@ function drawGraph() {
   ctx.scale(graphSim.zoom, graphSim.zoom);
   ctx.translate(-W / 2, -H / 2);
   const byId = new Map(graphSim.nodes.map((n) => [n.id, n]));
-  // 边（弧线 + 方向箭头：from → to，代表归属/关系指向）
-  // 融合设计 §6.1：推理边用紫色虚线（INFERRED_EDGE），原始边保持灰色实线，
-  // 让「哪些关系是 OWL 2 RL 推出来的」在画布上一眼可辨。
+  const policy = graphDensityPolicy();
+  graphSim.density = policy;
+  const activeIds = graphActiveNodeIds();
+  const activeCenter = graphSim.hoverNode || graphSim.selected;
+  // 大图概览保留全量边的拓扑，但弱化普通边并收起箭头；聚焦节点的关联边始终完整呈现。
   for (const e of graphSim.edges) {
     const a = byId.get(e.from), b = byId.get(e.to);
     if (!a || !b) continue;
     const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-    // 两端按节点半径裁剪，避免线/箭头被节点圆盖住
     if (len <= a.r + b.r + 8) continue;
     const isInferred = !!e.inferred;
     const isHover = graphSim.hover && graphSim.hover.edge === e;
+    const isRelated = !!activeCenter && (e.from === activeCenter || e.to === activeCenter);
+    ctx.globalAlpha = activeIds && !isRelated ? 0.08 : (isRelated || isHover ? 1 : policy.edgeOpacity);
     ctx.strokeStyle = isInferred ? INFERRED_EDGE.stroke : RAW_EDGE.stroke;
-    ctx.lineWidth = (isInferred ? INFERRED_EDGE.width : RAW_EDGE.width) + (isHover ? 1.2 : 0);
+    ctx.lineWidth = (isInferred ? INFERRED_EDGE.width : RAW_EDGE.width) + (isHover || isRelated ? 1.2 : 0);
     if (isInferred) ctx.setLineDash(INFERRED_EDGE.dash);
     const { cx: qx, cy: qy } = edgeBow(a, b, 1);
-    // 起点沿“a→控制点”、终点沿“控制点→b”方向裁切，使弧线两端与圆相切
     const i1 = Math.hypot(qx - a.x, qy - a.y) || 1;
     const sx = a.x + ((qx - a.x) / i1) * (a.r + 2), sy = a.y + ((qy - a.y) / i1) * (a.r + 2);
     const i2 = Math.hypot(b.x - qx, b.y - qy) || 1;
-    const ux = (b.x - qx) / i2, uy = (b.y - qy) / i2;   // 终点处切线方向（箭头指向）
+    const ux = (b.x - qx) / i2, uy = (b.y - qy) / i2;
     const tipX = b.x - ux * (b.r + 3), tipY = b.y - uy * (b.r + 3);
-    const al = 7; // 箭头长度
-    const bx = tipX - ux * al, by = tipY - uy * al; // 箭头底边中心（弧线终点）
+    const al = 7;
+    const bx = tipX - ux * al, by = tipY - uy * al;
     ctx.beginPath(); ctx.moveTo(sx, sy); ctx.quadraticCurveTo(qx, qy, bx, by); ctx.stroke();
-    ctx.setLineDash([]);   // 虚线只作用于连线，箭头必须实心
-    // 箭头三角
-    const px = -uy, py = ux, hw = al * 0.45;
-    ctx.fillStyle = isInferred ? INFERRED_EDGE.arrow : RAW_EDGE.arrow;
-    ctx.beginPath();
-    ctx.moveTo(tipX, tipY);
-    ctx.lineTo(bx + px * hw, by + py * hw);
-    ctx.lineTo(bx - px * hw, by - py * hw);
-    ctx.closePath();
-    ctx.fill();
+    ctx.setLineDash([]);
+    if (policy.showArrows || isRelated || isHover) {
+      const px = -uy, py = ux, hw = al * 0.45;
+      ctx.fillStyle = isInferred ? INFERRED_EDGE.arrow : RAW_EDGE.arrow;
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(bx + px * hw, by + py * hw);
+      ctx.lineTo(bx - px * hw, by - py * hw);
+      ctx.closePath();
+      ctx.fill();
+    }
   }
-  // 节点
+  // 节点：聚焦时仅突出中心节点和一跳邻居，其余节点降噪但仍保持可见。
   for (const n of graphSim.nodes) {
+    const isSelected = graphSim.selected === n.id;
+    const isHoverNode = graphSim.hoverNode === n.id;
+    ctx.globalAlpha = activeIds && !activeIds.has(n.id) ? 0.18 : 1;
     ctx.beginPath();
     ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
     ctx.fillStyle = graphTypeColor(n.type);
     ctx.fill();
-    ctx.strokeStyle = graphSim.selected === n.id ? '#1f2329' : '#ffffff';
-    ctx.lineWidth = graphSim.selected === n.id ? 2.5 : 2;
+    ctx.strokeStyle = isSelected ? '#1f2329' : (isHoverNode ? '#0f9f6e' : '#ffffff');
+    ctx.lineWidth = isSelected || isHoverNode ? 2.8 : 2;
     ctx.stroke();
   }
+  ctx.globalAlpha = 1;
   drawGraphLabels(ctx, dpr, W, H);
 }
 
@@ -2005,84 +2252,97 @@ function edgeBow(a, b, scale) {
   };
 }
 
-// 标签绘制（防重叠）：在屏幕坐标系下画（不随缩放变字号），因此放大后节点间距变大、
-// 能自动显示更多标签——密集区看不清时滚轮放大即可逐步读全。
-// 遮挡物包括「已画的标签」与「所有节点圆」；位置摆不下就降级文本，再不行才不画。
+// 标签绘制在屏幕坐标系下进行：缩小看结构、放大自动恢复更多细节；所有标签始终避开节点和已放置文字。
 function drawGraphLabels(ctx, dpr, W, H) {
   const z = graphSim.zoom;
-  // 标签固定屏幕字号：重置为设备像素变换，自行把布局坐标换算成屏幕坐标
+  const policy = graphSim.density || graphDensityPolicy();
+  const focusId = graphSim.hoverNode || graphSim.selected;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const sx = (x) => W / 2 + graphSim.ox + (x - W / 2) * z;
   const sy = (y) => H / 2 + graphSim.oy + (y - H / 2) * z;
-  // 只处理视窗内（外扩 40px）的节点：既避免白做活，也避免屏外节点占位
   const view = graphSim.nodes
     .map((n) => ({ n, x: sx(n.x), y: sy(n.y), r: Math.max(2, n.r * z) }))
     .filter((p) => p.x > -40 && p.x < W + 40 && p.y > -40 && p.y < H + 40);
   const LH = 13;
-  const PAD = 2;   // 碰撞盒向外的宽余，避免两段文字刚好相贴
+  const PAD = 2;
   const placed = [];
-  const overlaps = (r) => placed.some((p) => !(r.x2 < p.x1 || r.x1 > p.x2 || r.y2 < p.y1 || r.y1 > p.y2));
-  // 节点圆作为遮挡物：矩形与圆相交则认为被占（取圆心到矩形的最近点比半径）
-  const hitsNode = (r) => view.some((p) => {
-    const nx = Math.max(r.x1, Math.min(p.x, r.x2));
-    const ny = Math.max(r.y1, Math.min(p.y, r.y2));
-    const dx = p.x - nx, dy = p.y - ny;
-    return dx * dx + dy * dy < (p.r + 1) * (p.r + 1);
-  });
-  const blocked = (r) => overlaps(r) || hitsNode(r);
   const rectOf = (x, y, w, align) => {
     const x1 = align === 'center' ? x - w / 2 : (align === 'left' ? x : x - w);
     return { x1: x1 - PAD, x2: x1 + w + PAD, y1: y - LH + 3 - PAD, y2: y + 3 + PAD };
   };
-  // 社区质心（屏幕坐标）：把枢纽标签沿“远离团心”方向甩到人群外侧，比在团内硬挤更易成功
+  const rectGap = (a, b) => Math.hypot(Math.max(a.x1 - b.x2, b.x1 - a.x2, 0), Math.max(a.y1 - b.y2, b.y1 - a.y2, 0));
+  const nodeGap = (r, p) => {
+    const nx = Math.max(r.x1, Math.min(p.x, r.x2));
+    const ny = Math.max(r.y1, Math.min(p.y, r.y2));
+    return Math.hypot(p.x - nx, p.y - ny) - (p.r + 1);
+  };
+  // 对多个可行候选位评分：优先选择离其他节点/标签更远的位置，而不是机械取第一个位置。
+  const scoreSpot = (rect, cand, owner) => {
+    let clearance = Infinity;
+    for (const p of view) {
+      const gap = nodeGap(rect, p);
+      if (gap < 0) return -Infinity;
+      clearance = Math.min(clearance, gap);
+    }
+    for (const other of placed) {
+      const gap = rectGap(rect, other);
+      if (gap <= 0) return -Infinity;
+      clearance = Math.min(clearance, gap);
+    }
+    return Math.min(clearance, 80) - Math.hypot(cand.x - owner.x, cand.y - owner.y) * 0.035;
+  };
+  const findSpot = (text, cands, owner) => {
+    const w = ctx.measureText(text).width;
+    let best = null;
+    for (const cand of cands) {
+      const rect = rectOf(cand.x, cand.y, w, cand.align);
+      const score = scoreSpot(rect, cand, owner);
+      if (!best || score > best.score) best = { ...cand, rect, score };
+    }
+    return best && best.score > -Infinity ? best : null;
+  };
   const cenS = new Map();
+  const byComm = new Map();
   for (const p of view) {
     const c = cenS.get(p.n.comm) || { x: 0, y: 0, n: 0 };
     c.x += p.x; c.y += p.y; c.n++;
     cenS.set(p.n.comm, c);
-  }
-  cenS.forEach((c) => { c.x /= c.n; c.y /= c.n; });
-  // 聚类中心：每个社区按半径（=度数）取前 3 个，它们是理解图谱结构的锚点，
-  // 名字默认必须可见（摆不下就加白底牌强行显示）
-  const hubIds = new Set();
-  const byComm = new Map();
-  for (const p of view) {
     const arr = byComm.get(p.n.comm) || [];
     arr.push(p);
     byComm.set(p.n.comm, arr);
   }
+  cenS.forEach((c) => { c.x /= c.n; c.y /= c.n; });
+  const hubIds = new Set();
   byComm.forEach((arr) => {
-    arr.slice().sort((a, b) => b.r - a.r).slice(0, 3).forEach((p) => hubIds.add(p.n.id));
+    arr.slice().sort((a, b) => b.r - a.r).slice(0, policy.hubPerCommunity).forEach((p) => hubIds.add(p.n.id));
   });
-  // 白底牌：给强行显示的标签垫一层半透明底，即使压在节点/连线上也读得清
   const drawPlate = (r) => {
-    ctx.fillStyle = 'rgba(255,255,255,0.86)';
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
     const rr = 3;
     ctx.beginPath();
-    ctx.moveTo(r.x1 + rr, r.y1);
-    ctx.lineTo(r.x2 - rr, r.y1);
-    ctx.quadraticCurveTo(r.x2, r.y1, r.x2, r.y1 + rr);
-    ctx.lineTo(r.x2, r.y2 - rr);
-    ctx.quadraticCurveTo(r.x2, r.y2, r.x2 - rr, r.y2);
-    ctx.lineTo(r.x1 + rr, r.y2);
-    ctx.quadraticCurveTo(r.x1, r.y2, r.x1, r.y2 - rr);
-    ctx.lineTo(r.x1, r.y1 + rr);
-    ctx.quadraticCurveTo(r.x1, r.y1, r.x1 + rr, r.y1);
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(r.x1 + rr, r.y1); ctx.lineTo(r.x2 - rr, r.y1);
+    ctx.quadraticCurveTo(r.x2, r.y1, r.x2, r.y1 + rr); ctx.lineTo(r.x2, r.y2 - rr);
+    ctx.quadraticCurveTo(r.x2, r.y2, r.x2 - rr, r.y2); ctx.lineTo(r.x1 + rr, r.y2);
+    ctx.quadraticCurveTo(r.x1, r.y2, r.x1, r.y2 - rr); ctx.lineTo(r.x1, r.y1 + rr);
+    ctx.quadraticCurveTo(r.x1, r.y1, r.x1 + rr, r.y1); ctx.closePath(); ctx.fill();
   };
-  // 节点名：先选中节点 → 再聚类中心 → 其余按半径（度数）从大到小，
-  // 保证枢纽标签不被叶子节点先挤占位置
+  // 选中 > 悬停 > 枢纽 > 高连接度；不同密度模式只改变可入选范围，不隐藏任何节点。
   const order = view.slice().sort((a, b) => {
-    const rank = (p) => (graphSim.selected === p.n.id ? 2 : (hubIds.has(p.n.id) ? 1 : 0));
+    const rank = (p) => (graphSim.selected === p.n.id ? 3 : (graphSim.hoverNode === p.n.id ? 2 : (hubIds.has(p.n.id) ? 1 : 0)));
     return rank(b) - rank(a) || b.r - a.r;
   });
+  let ordinaryPlaced = 0;
+  let nodeLabelCount = 0;
   for (const p of order) {
     const n = p.n;
     const isSel = graphSim.selected === n.id;
+    const isHover = graphSim.hoverNode === n.id;
+    const isPinned = isSel || isHover;
     const isHub = hubIds.has(n.id);
-    ctx.font = isHub ? '600 12px sans-serif' : '11px sans-serif';
-    // 位置候选：下/上/右/左 + 四个斜角，共 8 处；节点圆也是遮挡物，多给候选才能多保住标签
+    if (policy.labelMode === 'hubs' && !isPinned && !isHub) continue;
+    if (policy.labelMode === 'ranked' && !isPinned && !isHub && ordinaryPlaced >= policy.labelBudget) continue;
+    if (policy.labelMode === 'all' && !isPinned && ordinaryPlaced >= policy.labelBudget) continue;
+    ctx.font = isHub || isPinned ? '600 12px sans-serif' : '11px sans-serif';
     const cands = [
       { x: p.x, y: p.y + p.r + LH, align: 'center' },
       { x: p.x, y: p.y - p.r - 4, align: 'center' },
@@ -2093,36 +2353,25 @@ function drawGraphLabels(ctx, dpr, W, H) {
       { x: p.x + p.r + 4, y: p.y - p.r - 2, align: 'left' },
       { x: p.x - p.r - 4, y: p.y - p.r - 2, align: 'right' },
     ];
-    // 枢纽额外给“往团外甩”的远位候选：沿质心→节点方向依次外推，跳出拥挤的团内
-    if (isHub) {
+    if (isHub || isPinned) {
       const c = cenS.get(n.comm) || { x: W / 2, y: H / 2 };
       const dx = p.x - c.x, dy = p.y - c.y;
       const len = Math.hypot(dx, dy) || 1;
       const ux = dx / len, uy = dy / len;
-      for (const k of [1.6, 2.6, 3.6]) {
-        const ox = p.x + ux * (p.r + 10) * k;
-        const oy = p.y + uy * (p.r + 10) * k;
-        cands.push({ x: ox, y: oy, align: ux >= 0 ? 'left' : 'right' });
-      }
+      for (const k of [1.6, 2.6, 3.6]) cands.push({ x: p.x + ux * (p.r + 10) * k, y: p.y + uy * (p.r + 10) * k, align: ux >= 0 ? 'left' : 'right' });
     }
-    // 文本逐级降级：先试「类型:名称」，摆不下就只留名称（类型已由颜色+图例表达），
-    // 这比直接不画更有信息量
     const full = `${n.type}:${n.name}`;
     const variants = [full.length > 22 ? full.slice(0, 21) + '…' : full, String(n.name).length > 16 ? String(n.name).slice(0, 15) + '…' : String(n.name)];
     let spot = null;
     let used = variants[0];
     for (const text of variants) {
-      const w = ctx.measureText(text).width;
-      for (const c of cands) {
-        const rect = rectOf(c.x, c.y, w, c.align);
-        if (!blocked(rect)) { spot = { ...c, rect }; used = text; break; }
-      }
-      if (spot) break;
+      spot = findSpot(text, cands, p);
+      if (spot) { used = text; break; }
     }
-    // 选中节点与聚类中心：宁可压东西也要显示（配白底牌保证可读）
+    // 仅选中/悬停节点允许白底兜底；概览中的普通枢纽绝不强行压在其他标签上。
     let forced = false;
     if (!spot) {
-      if (!isSel && !isHub) continue;
+      if (!isPinned) continue;
       forced = true;
       used = variants[1];
       const w = ctx.measureText(used).width;
@@ -2134,34 +2383,39 @@ function drawGraphLabels(ctx, dpr, W, H) {
     ctx.strokeStyle = 'rgba(255,255,255,0.92)';
     ctx.lineWidth = 3;
     ctx.strokeText(used, spot.x, spot.y);
-    ctx.fillStyle = isSel ? '#1f2329' : (isHub ? '#1f2329' : '#3c4048');
+    ctx.fillStyle = isPinned || isHub ? '#1f2329' : '#3c4048';
     ctx.fillText(used, spot.x, spot.y);
+    nodeLabelCount++;
+    if (!isPinned && !isHub) ordinaryPlaced++;
   }
-  // 关系谓词：优先级最低。只在“两端节点之间真的装得下文字”且中点无遮挡时才画，
-  // 否则短边上的“包含/属于”会盖在节点圆上，正是密集区一片乱的来源
-  const byId = new Map(view.map((p) => [p.n.id, p]));
-  ctx.font = '10px sans-serif';
-  ctx.textAlign = 'center';
-  for (const e of graphSim.edges) {
-    const a = byId.get(e.from), b = byId.get(e.to);
-    if (!a || !b) continue;
-    // 融合设计 §6.1：推理边的谓词标签加 ⚡ 前缀并染紫色，与画布虚线呼应
-    const label = e.inferred ? `${e.rel} ⚡` : e.rel;
-    const span = Math.hypot(b.x - a.x, b.y - a.y) - a.r - b.r;
-    const w = ctx.measureText(label).width;
-    if (span < w + 14) continue; // 两圆之间的空隙装不下这个词，就不画
-    // 谓词跟着弧线走：落在弧线中点（而不是直线中点），否则会脱离连线
-    const g = edgeBow({ id: a.n.id, x: a.x, y: a.y }, { id: b.n.id, x: b.x, y: b.y }, z);
-    const mx = g.mx, my = g.my - 3;
-    const rect = rectOf(mx, my, w, 'center');
-    if (blocked(rect)) continue;
-    placed.push(rect);
-    ctx.strokeStyle = 'rgba(245,246,248,0.92)';
-    ctx.lineWidth = 3;
-    ctx.strokeText(label, mx, my);
-    ctx.fillStyle = e.inferred ? INFERRED_EDGE.color : RAW_EDGE.color;
-    ctx.fillText(label, mx, my);
+  // 概览中隐藏普通谓词；聚焦节点或放大后才显示关系名称，防止“关系文字云”。
+  let edgeLabelCount = 0;
+  if (policy.showEdgeLabels || focusId) {
+    const byId = new Map(view.map((p) => [p.n.id, p]));
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+    for (const e of graphSim.edges) {
+      if (focusId && e.from !== focusId && e.to !== focusId) continue;
+      const a = byId.get(e.from), b = byId.get(e.to);
+      if (!a || !b) continue;
+      const label = e.inferred ? `${e.rel} ⚡` : e.rel;
+      const span = Math.hypot(b.x - a.x, b.y - a.y) - a.r - b.r;
+      const w = ctx.measureText(label).width;
+      if (span < w + 14) continue;
+      const g = edgeBow({ id: a.n.id, x: a.x, y: a.y }, { id: b.n.id, x: b.x, y: b.y }, z);
+      const mx = g.mx, my = g.my - 3;
+      const rect = rectOf(mx, my, w, 'center');
+      if (scoreSpot(rect, { x: mx, y: my }, { x: mx, y: my }) === -Infinity) continue;
+      placed.push(rect);
+      ctx.strokeStyle = 'rgba(245,246,248,0.92)';
+      ctx.lineWidth = 3;
+      ctx.strokeText(label, mx, my);
+      ctx.fillStyle = e.inferred ? INFERRED_EDGE.color : RAW_EDGE.color;
+      ctx.fillText(label, mx, my);
+      edgeLabelCount++;
+    }
   }
+  graphSim.labelInfo = { nodeLabelCount, edgeLabelCount, level: policy.level };
 }
 
 // 屏幕坐标 → 模拟坐标（逆变换）
@@ -2295,6 +2549,14 @@ function hideEdgeTooltip() {
   if (el) el.hidden = true;
 }
 
+// 节点悬停优先于边：高亮一跳邻居，并把节点名称纳入标签优先级。
+function setHoverNode(node) {
+  const id = node ? node.id : null;
+  if (graphSim.hoverNode === id) return;
+  graphSim.hoverNode = id;
+  if (!$('graph-view').hidden) drawGraph();
+}
+
 // 悬停状态变更：更新 graphSim.hover 并重绘一次（高亮该边）。
 // 只在「悬停目标真的变了」时重绘，避免 mousemove 每帧全量重画。
 function setHoverEdge(e, clientX, clientY) {
@@ -2373,11 +2635,8 @@ function renderGraphDetail(node) {
     el.addEventListener('click', (ev) => {
       // 点删除按钮时不触发跳转
       if (ev.target.closest('.gd-rel-del')) return;
-      const target = graphSim.nodes.find((n) => n.id === el.dataset.node);
-      if (target) {
-        graphSim.selected = target.id;
-        renderGraphDetail(target);
-      }
+      const target = graphHierarchyEntityNode(el.dataset.node);
+      if (target) selectGraphNode(target, { center: true });
     });
   });
   box.querySelectorAll('.gd-rel-del').forEach((btn) => {
@@ -2491,63 +2750,46 @@ async function runFullGraphValidate(profileId, opts) {
   }
 }
 
-// 校验结果摘要条：与推理条共用 .graph-reason-bar 容器（同时只显示一条，后写覆盖先写）。
-// 展示受检边数、越界边/不相交冲突计数与公理覆盖率；「查看明细」跳本体定义·推理 Tab 并就地展开同一份报告。
-function showGraphValidateBar(v, profileId, inferred) {
+// 图谱工具栏中的摘要同时保留最近一次推理与体检结果，避免后到结果覆盖先到结果。
+let graphReasonSummaryState = { reason: null, validation: null };
+function renderGraphReasonBar() {
   const bar = $('graph-reason-bar');
   if (!bar) return;
-  const closeBtn = `<button class="icon-btn" id="btn-graph-reasonbar-x" title="关闭">${icoSvg('close', 12)}</button>`;
-  const bindClose = () => { const x = $('btn-graph-reasonbar-x'); if (x) x.addEventListener('click', () => { bar.hidden = true; }); };
-  if (!v || v.ok === false) {
-    bar.innerHTML = `<span class="kg-badge kg-badge-warn">校验失败</span><span>${escapeHtml((v && v.error) || '未知错误')}（图谱数据不受影响）</span>${closeBtn}`;
-    bar.hidden = false;
-    bindClose();
-    return;
+  const cards = [];
+  const reason = graphReasonSummaryState.reason;
+  if (reason) {
+    const scopeInferred = countInferredEdges(kgFilteredGraph().edges);
+    const conflicts = (reason.inconsistencies || []).length;
+    cards.push(`<div class="graph-reason-summary is-reason"><span class="kg-badge" title="推理对全图运行，当前筛选仅影响画布视图">推理</span><span>新增 <b>${Number(reason.inferredEdges) || 0}</b> 条边 · ${Number(reason.rounds) || 0} 轮 · ${((Number(reason.elapsedMs) || 0) / 1000).toFixed(1)}s</span>${conflicts ? `<b class="kg-reason-conflict">${conflicts} 处不一致冲突</b>` : '<b class="kg-reason-ok">无冲突</b>'}<span class="form-hint">当前筛选命中 ${scopeInferred} 条</span><button class="btn btn-ghost" data-graph-summary-goto="reason">查看详情</button></div>`);
   }
-  // 全量计数口径同 renderValidateReport：明细数组封顶 50，计数必须用 totals（v1.2.2）
-  const nV = Number.isFinite(v.totalViolations) ? v.totalViolations : (v.violations || []).length;
-  const nD = Number.isFinite(v.totalDisjointConflicts) ? v.totalDisjointConflicts : (v.disjointConflicts || []).length;
-  const cov = v.coverage || {};
-  const infHint = inferred && inferred.ok && !inferred.skipped ? `本轮推理 +${inferred.inferredEdges} 边 · ` : '';
-  bar.innerHTML = `
-    <span class="kg-badge" title="校验只读：用本体约束与公理体检，不改写任何边、不删除数据">✓ 校验（全图·只读）</span>
-    <span>体系「${escapeHtml(v.profileName || profileId || v.profileId || '')}」· 检查 <b>${v.checked}</b> 条边</span>
-    ${(nV || nD) ? `<span class="kg-reason-conflict">⚠ ${nV} 条越界边 · ${nD} 处不相交冲突</span>` : '<span class="kg-reason-ok">✓ 未发现约束违规</span>'}
-    <span class="form-hint">${infHint}公理覆盖 ${cov.coveragePct != null ? cov.coveragePct + '%' : '—'}（${cov.withAny || 0}/${cov.predicates || 0} 谓词声明 domain/range）</span>
-    <button class="btn btn-ghost" id="btn-graph-goto-validate">查看明细 →</button>
-    ${closeBtn}`;
+  const validation = graphReasonSummaryState.validation;
+  if (validation) {
+    const { v, profileId, inferred } = validation;
+    if (!v || v.ok === false) {
+      cards.push(`<div class="graph-reason-summary is-error"><span class="kg-badge kg-badge-warn">体检失败</span><span>${escapeHtml((v && v.error) || '未知错误')}（图谱数据不受影响）</span><button class="btn btn-ghost" data-graph-summary-goto="reason">查看详情</button></div>`);
+    } else {
+      const counts = reasonValidationCounts(v);
+      const coverage = v.coverage || {};
+      const infHint = inferred && inferred.ok && !inferred.skipped ? `本轮推理 +${inferred.inferredEdges} 边 · ` : '';
+      cards.push(`<div class="graph-reason-summary is-validate"><span class="kg-badge" title="体检只读：不改写任何边、不删除数据">体检</span><span>体系「${escapeHtml(v.profileName || profileId || v.profileId || '')}」· 检查 <b>${Number(v.checked) || 0}</b> 条边</span>${counts.violations + counts.disjoint ? `<b class="kg-reason-conflict">${counts.violations} 条越界 · ${counts.disjoint} 处不相交</b>` : '<b class="kg-reason-ok">未发现约束违规</b>'}<span class="form-hint">${infHint}覆盖 ${coverage.coveragePct != null ? coverage.coveragePct + '%' : '—'}</span><button class="btn btn-ghost" data-graph-summary-goto="reason">查看详情</button></div>`);
+    }
+  }
+  if (!cards.length) { bar.hidden = true; return; }
+  bar.innerHTML = `${cards.join('')}<button class="icon-btn" id="btn-graph-reasonbar-x" title="关闭">${icoSvg('close', 12)}</button>`;
   bar.hidden = false;
-  bindClose();
-  const gotoBtn = $('btn-graph-goto-validate');
-  if (gotoBtn) gotoBtn.addEventListener('click', () => {
-    // 冲突/校验明细已移到一级菜单「推理与校验」；面板打开时会自动跑校验并合并冲突明细
-    switchKgTab('reason');
-  });
+  const close = $('btn-graph-reasonbar-x');
+  if (close) close.addEventListener('click', () => { graphReasonSummaryState = { reason: null, validation: null }; bar.hidden = true; });
+  bar.querySelectorAll('[data-graph-summary-goto]').forEach((btn) => btn.addEventListener('click', () => switchKgTab('reason')));
 }
 
-// 推理结果摘要条：全图结果 + 当前筛选范围内的命中数（筛选只是视图过滤，推理始终跑全图）
+function showGraphValidateBar(v, profileId, inferred) {
+  graphReasonSummaryState.validation = { v, profileId, inferred };
+  renderGraphReasonBar();
+}
+
 function showGraphReasonBar(r) {
-  const bar = $('graph-reason-bar');
-  if (!bar) return;
-  // 当前筛选范围内的推理边：kgFilteredGraph 已按体系/知识图谱/边类型等条件裁好
-  const { edges } = kgFilteredGraph();
-  const scopeInferred = countInferredEdges(edges);
-  const conN = (r.inconsistencies || []).length;
-  const secs = ((r.elapsedMs || 0) / 1000).toFixed(1);
-  bar.innerHTML = `
-    <span class="kg-badge" title="推理对整个知识库的全局图谱运行，与当前筛选无关">⚡ 上次推理（全图）</span>
-    <span>新增推理边 <b>${r.inferredEdges}</b> 条 · ${r.rounds} 轮 · ${secs}s</span>
-    ${conN ? `<span class="kg-reason-conflict">⚠ ${conN} 处不一致冲突</span>` : '<span class="kg-reason-ok">✓ 无冲突</span>'}
-    <span class="form-hint">当前筛选范围内命中推理边 <b>${scopeInferred}</b> 条</span>
-    ${conN ? '<button class="btn btn-ghost" id="btn-graph-goto-conflict">查看冲突 →</button>' : ''}
-    <button class="icon-btn" id="btn-graph-reasonbar-x" title="关闭">${icoSvg('close', 12)}</button>`;
-  bar.hidden = false;
-  $('btn-graph-reasonbar-x').addEventListener('click', () => { bar.hidden = true; });
-  const gotoBtn = $('btn-graph-goto-conflict');
-  if (gotoBtn) gotoBtn.addEventListener('click', () => {
-    // 冲突明细已移到一级菜单「推理与校验」
-    switchKgTab('reason');
-  });
+  graphReasonSummaryState.reason = r;
+  renderGraphReasonBar();
 }
 
 // 清除全部推理边（§9 风险 3 的「一键还原」）：只删 inferred，原始边与节点不动
@@ -2627,7 +2869,7 @@ function bindGraphEvents() {
     renderGraphDomainFilter();
     startGraphSim();
   });
-  ['kg-g-type', 'kg-g-max', 'kg-g-sort', 'kg-g-domain', 'kg-g-edgekind'].forEach((id) => {
+  ['kg-g-type', 'kg-g-max', 'kg-g-density', 'kg-g-sort', 'kg-g-domain', 'kg-g-edgekind'].forEach((id) => {
     const filter = $(id);
     if (filter) filter.addEventListener('change', () => startGraphSim());
   });
@@ -2812,13 +3054,16 @@ function bindGraphEvents() {
     const node = graphHit(p);
     graphSim.drag = { node, startX: ev.clientX, startY: ev.clientY, ox: graphSim.ox, oy: graphSim.oy, moved: false };
     canvas.classList.add('dragging');
+    setHoverNode(null);
     setHoverEdge(null, 0, 0);   // 开始拖拽/平移时收起 tooltip，避免遮挡
   });
   canvas.addEventListener('mousemove', (ev) => {
     if (!graphSim.drag) {
-      // 未按住鼠标：做推理边悬停检测（融合设计 §6.2）。节点优先于边。
+      // 未按住鼠标：节点悬停优先；没有命中节点时才检测推理边。
       const p = graphPoint(ev);
-      if (graphHit(p)) setHoverEdge(null, ev.clientX, ev.clientY);
+      const node = graphHit(p);
+      setHoverNode(node);
+      if (node) setHoverEdge(null, ev.clientX, ev.clientY);
       else setHoverEdge(pickEdgeAt(p), ev.clientX, ev.clientY);
       return;
     }
@@ -2840,16 +3085,17 @@ function bindGraphEvents() {
     canvas.classList.remove('dragging');
     if (d && !d.moved) {
       const node = graphHit(graphPoint(ev));
-      graphSim.selected = node ? node.id : null;
-      renderGraphDetail(node || null);
+      selectGraphNode(node || null, { scrollTree: true });
     }
   });
-  canvas.addEventListener('mouseleave', () => { graphSim.drag = null; canvas.classList.remove('dragging'); setHoverEdge(null, 0, 0); });
+  canvas.addEventListener('mouseleave', () => { graphSim.drag = null; canvas.classList.remove('dragging'); setHoverNode(null); setHoverEdge(null, 0, 0); });
   canvas.addEventListener('dblclick', fitGraphView);
   canvas.addEventListener('wheel', (ev) => {
     ev.preventDefault();
     const next = graphSim.zoom * (ev.deltaY < 0 ? 1.1 : 0.9);
     graphSim.zoom = Math.min(3, Math.max(0.4, next));
+    updateGraphStats();
+    drawGraph();
   }, { passive: false });
   // 布局空间变化时自动重新居中，避免图谱偏出可视区（尺寸未变时跳过，防止多余位移）
   if (window.ResizeObserver) {
@@ -2859,6 +3105,7 @@ function bindGraphEvents() {
       if (!$('graph-view').hidden && (c.clientWidth !== lastW || c.clientHeight !== lastH)) {
         lastW = c.clientWidth; lastH = c.clientHeight;
         recenterGraph();
+        updateGraphStats();
       }
     }).observe(canvas);
   }

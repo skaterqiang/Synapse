@@ -59,7 +59,9 @@ function readMarkdown(settings, relPath) {
   return { text: fs.readFileSync(abs, 'utf-8'), name: path.basename(abs), dir };
 }
 
-// kb-asset / /api/asset 的额外放行判定：已登记预览目录内的图片文件
+// kb-asset / /api/asset 的额外放行判定：已登记预览目录内的图片文件，或语料库 corpus/ 下的图片。
+// 语料库分支（设计 §16.1「一处改、两端通」）：桌面 main.js:118 与网页 web/server.js:181 的 allowed
+// 表达式逐字相同且都以本函数收尾，故在此加一个 corpusRoot() 分支，两端同时生效，main.js/server.js 都不用动。
 function isAllowedAsset(absPath) {
   const p = path.resolve(String(absPath || ''));
   if (!IMG_EXT_RE.test(p)) return false;
@@ -67,6 +69,11 @@ function isAllowedAsset(absPath) {
   for (const d of allowedDirs) {
     if (key.startsWith(d + path.sep)) return true;
   }
+  // 语料库图片副产物（<数据根>/corpus/**/<名>.assets/img.png）：语料预览复用原始文件预览视图，需放行内嵌图片
+  try {
+    const corpusBase = dirKey(path.resolve(require('../common/paths').corpusRoot()));
+    if (corpusBase && key.startsWith(corpusBase + path.sep)) return true;
+  } catch (_) { /* paths 未就绪时忽略语料分支 */ }
   return false;
 }
 

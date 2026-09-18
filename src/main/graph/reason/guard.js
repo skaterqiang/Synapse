@@ -59,11 +59,18 @@ function isKnownClass(profile, typeKey) {
   return m.classLabel.has(typeKey);
 }
 
-/** 体系里是否声明了该谓词。 */
+/** 体系里是否声明了该谓词（含别名）。 */
 function isKnownPredicate(profile, relKey) {
   if (!relKey) return false;
   const m = modelOf(profile);
-  return m.relLabel.has(relKey);
+  return m.relLabel.has(relKey) || m.relAlias.has(relKey);
+}
+
+/** 取 canonical 谓词 key 的中文 label，找不到则回退 key。 */
+function labelOfRel(profile, relKey) {
+  if (!relKey) return relKey;
+  const m = modelOf(profile);
+  return (m.relLabel.get(relKey) || relKey);
 }
 
 /**
@@ -72,8 +79,9 @@ function isKnownPredicate(profile, relKey) {
  */
 function constraintOf(profile, relKey) {
   const m = modelOf(profile);
-  const domain = [...(m.domain.get(relKey) || [])];
-  const range = [...(m.range.get(relKey) || [])];
+  const canonical = m.relAlias.get(relKey) || relKey;
+  const domain = [...(m.domain.get(canonical) || [])];
+  const range = [...(m.range.get(canonical) || [])];
   return { domain, range, hasAny: !!(domain.length || range.length) };
 }
 
@@ -129,17 +137,21 @@ function checkEdge(profile, fromNode, rel, toNode, opts = {}) {
   const fromType = (fromNode && fromNode.type) || '';
   const toType = (toNode && toNode.type) || '';
 
-  // 1) 未知谓词：LLM 造了体系外的关系词
-  if (!m.relLabel.has(rel)) {
+  // 1) 未知谓词：LLM 造了体系外的关系词。
+  // 先按别名归一化为 canonical key；别名命中则视为已知谓词。
+  // 注意：不返回完整谓词白名单作为 expected——全量白名单在谓词多时巨大，
+  // 而 UI 对 unknown-predicate 只展示「rel 不在词表中」，不会展示 expected。
+  const canonicalRel = m.relAlias.get(rel) || rel;
+  if (!m.relLabel.has(canonicalRel)) {
     return {
       ok: false, reason: 'unknown-predicate', rel,
-      expected: [...m.relLabel.keys()], actual: rel, fallback,
+      expected: [], actual: rel, fallback,
       detail: `谓词「${rel}」不在体系受控词表中`,
     };
   }
 
-  const dom = m.domain.get(rel);
-  const rng = m.range.get(rel);
+  const dom = m.domain.get(canonicalRel);
+  const rng = m.range.get(canonicalRel);
 
   // 2) 定义域校验：fromNode.type 必须 ⊑ pred.domain 之一
   //    OWL 语义下多个 rdfs:domain 是**合取**（主体须同时属于所有 domain），
@@ -275,6 +287,7 @@ module.exports = {
   isSubClassOf,
   isKnownClass,
   isKnownPredicate,
+  labelOfRel,
   constraintOf,
   forcingProbes,
   checkDisjoint,

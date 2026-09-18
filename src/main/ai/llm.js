@@ -4,6 +4,7 @@
 const { num } = require('../common/config');
 // 默认模型 / API 基础 URL 统一引用单一配置源（defaults.js）
 const { DEFAULTS, normalizeModel } = require('./defaults');
+const { ensureOllamaServer } = require('../common/ollama');
 
 // 本地/慢推理模型（如 qwen3.8:27b 并发抽取）首字节可能远超 undici 默认 headersTimeout(≈300s)，
 // 触发 UND_ERR_HEADERS_TIMEOUT 致作业整体失败。用自定义 Agent 放大响应头/正文超时（默认一天，可在设置→作业→模型请求超时调整）。
@@ -20,6 +21,33 @@ function llmDispatcher(settings) {
   } catch (_) {}
   if (!agentCache[ms]) agentCache[ms] = new undici.Agent({ headersTimeout: ms, bodyTimeout: ms, connectTimeout: 60000 });
   return agentCache[ms];
+}
+
+// localhost 解析兜底：部分环境（如本机 /etc/hosts 缺 localhost 映射）下 Node 内置 fetch
+// 走 getaddrinfo 解析 "localhost" 会直接 ENOTFOUND，而 curl/浏览器用系统解析器不受影响。
+// 症状：Ollama 等本地服务的全链路 LLM 请求（含领域/体系判定思考流）秒失败、弹窗空白。
+// 对策：仅对 localhost 主机名的请求，DNS 失败时把主机名换成 127.0.0.1 重试一次。
+function isLocalhostHost(url) {
+  try { return String(new URL(url).hostname).toLowerCase() === 'localhost'; } catch (_) { return false; }
+}
+function urlWith127(url) {
+  try { const u = new URL(url); u.hostname = '127.0.0.1'; return u.toString(); } catch (_) { return url; }
+}
+function isDnsFail(err) {
+  const c = err && err.cause;
+  const code = (c && (c.code || c.errno)) || (err && err.code) || '';
+  const msg = String((err && err.message) || '') + String((c && c.message) || '');
+  return /ENOTFOUND|EAI_AGAIN|EADDRNOTAVAIL/i.test(String(code) + ' ' + msg);
+}
+async function fetchLoopback(url, opts) {
+  try {
+    return await fetch(url, opts);
+  } catch (err) {
+    if (isLocalhostHost(url) && isDnsFail(err)) {
+      return await fetch(urlWith127(url), opts);
+    }
+    throw err;
+  }
 }
 
 // 可选模型参数：仅当设置中填写时才透传（留空走接口默认值），供设置页调参
@@ -130,7 +158,8 @@ async function consumeSseStream(resp, onDelta) {
         new Promise((_, rej) => { stallTimer = setTimeout(() => rej(new Error('流式响应停滞超时（60 分钟无数据，连接可能已被对端关闭）')), stallMs); }),
       ]);
     } catch (e) {
-      try { reader.cancel(); } catch (_) {}
+      // 流被 abort/出错时 cancel() 返回被拒 Promise，必须吞掉否则成未处理拒绝打崩进程
+      try { reader.cancel().catch(() => {}); } catch (_) {}
       throw e;
     } finally {
       clearTimeout(stallTimer);
@@ -208,7 +237,8 @@ async function consumeOllamaNdjson(resp, onDelta) {
         new Promise((_, rej) => { stallTimer = setTimeout(() => rej(new Error('流式响应停滞超时（60 分钟无数据，连接可能已被对端关闭）')), stallMs); }),
       ]);
     } catch (e) {
-      try { reader.cancel(); } catch (_) {}
+      // 流被 abort/出错时 cancel() 返回被拒 Promise，必须吞掉否则成未处理拒绝打崩进程
+      try { reader.cancel().catch(() => {}); } catch (_) {}
       throw e;
     } finally {
       clearTimeout(stallTimer);
@@ -236,11 +266,16 @@ async function streamChat(event, settings, messages) {
   const baseUrl = (settings.apiBaseUrl || DEFAULTS.apiBaseUrl).replace(/\/$/, '');
   const apiKey = settings.apiKey || '';
   const model = normalizeModel(settings.model);
+  const isOllamaStream = String((settings || {}).apiProvider || '') === 'ollama';
 
   if (!apiKey && requiresApiKey(settings)) {
     event.sender.send('ai:error', '尚未配置 API Key，请先点击右上角设置按钮填写。');
     return;
   }
+
+  // Ollama 本地服务按需自动启动（AI 问答入口）
+  if (isOllamaStream) await ensureOllamaServer(baseUrl);
+
 
   let resp;
   // 开启新流：顶替（静默 abort）尚未结束的旧流，避免旧流事件串进本次回答
@@ -249,7 +284,7 @@ async function streamChat(event, settings, messages) {
   const send = (ch, d) => { if (isMine()) event.sender.send(ch, d); };
   const signal = ctrl.signal;
   try {
-    resp = await fetch(`${baseUrl}/chat/completions`, {
+    resp = await fetchLoopback(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -297,13 +332,16 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
   if (!settings.apiKey && requiresApiKey(settings)) throw new Error('尚未配置 API Key，请先在设置中填写。');
   if (signal && signal.aborted) throw abortErr();
 
+  // Ollama 本地服务按需自动启动，避免用户忘记运行 ollama serve 时批量作业全部 ENOTFOUND
+  const isOllama = String((settings || {}).apiProvider || '') === 'ollama';
+  if (isOllama) await ensureOllamaServer(baseUrl);
+
   // Ollama：OpenAI 兼容端点 /v1/chat/completions 在显存紧张时会把上下文窗口锁死在
   // num_ctx=4096（忽略 max_tokens / options.num_ctx，实测 total_tokens 恒为 4096）。
   // 思考型模型 thinking 动辄上千 token，在仅剩的几百输出预算内被挤爆 → 正文 0 字节、
   // finish_reason=length → 空返回。原生 /api/chat 不受此锁，可用 options.num_ctx 放大
   // 上下文，thinking 与正文都能完整产出。策略：先正常试 /v1（保留 mock/远程兼容），
   // 仅当空返回（4096 锁的典型信号）时升级走原生端点，保留 thinking。
-  const isOllama = String((settings || {}).apiProvider || '') === 'ollama';
 
   // 原生 /api/chat 兜底：/v1 空返回时升级。NDJSON 流，think:true 保留思考。
   const tryNativeChat = async () => {
@@ -325,7 +363,7 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
     }
     const mt = Number(s.maxTokens);
     if (Number.isFinite(mt) && mt > 0) body.options.num_predict = Math.round(mt);
-    const resp = await fetch(`${origin}/api/chat`, {
+    const resp = await fetchLoopback(`${origin}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -353,10 +391,11 @@ async function chatOnce(settings, messages, retries, onDelta, signal) {
     return await tryNativeChat();
   }
 
+
   try {
     let resp;
     try {
-      resp = await fetch(`${baseUrl}/chat/completions`, {
+      resp = await fetchLoopback(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
         body: JSON.stringify(withThinkingBudget(withThinking(withModelParams({ model: normalizeModel(settings.model), messages, stream: true }, settings), settings), settings)),
@@ -497,7 +536,7 @@ async function agenticChat(event, settings, messages, tools, toolRouter) {
     if (signal.aborted) { stopped(); return; }
     let resp;
     try {
-      resp = await fetch(`${baseUrl}/chat/completions`, {
+      resp = await fetchLoopback(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
         // 剔除内部标记字段（_toolResume），避免严格网关拒绝未知属性
@@ -507,7 +546,8 @@ async function agenticChat(event, settings, messages, tools, toolRouter) {
       });
     } catch (err) {
       if (signal.aborted || isAbortErr(err)) { stopped(); return; }
-      send('ai:error', `网络请求失败：${err.message}`); return;
+      send('ai:error', `网络请求失败：${err.message}`);
+      return;
     }
     if (!resp.ok) { const d = (await resp.text().catch(() => '')).slice(0, 300); send('ai:error', `接口返回错误 (${resp.status})：${d}`); return; }
     // 本轮是否已把正文实时流给渲染层，避免结尾重复下发
@@ -530,7 +570,8 @@ async function agenticChat(event, settings, messages, tools, toolRouter) {
       );
     } catch (err) {
       if (signal.aborted || isAbortErr(err)) { stopped(); return; }
-      send('ai:error', `读取响应流失败：${err.message}`); return;
+      send('ai:error', `读取响应流失败：${err.message}`);
+      return;
     }
     if (acc.toolCalls.length) {
       // 前言已实时流出时不再重复作为 thought 步骤下发
@@ -658,7 +699,7 @@ async function listModels(settings) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 15000);
     try {
-      const r = await fetch(url, { headers, signal: ctrl.signal });
+      const r = await fetchLoopback(url, { headers, signal: ctrl.signal });
       if (!r.ok) {
         const d = (await r.text().catch(() => '')).slice(0, 200);
         throw new Error(`HTTP ${r.status} ${d.trim()}`);

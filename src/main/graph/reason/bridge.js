@@ -13,6 +13,7 @@
 
 const { TripleStore } = require('@skaterqiang/protege-js/src/inference/TripleStore');
 const { NS, P, C } = require('@skaterqiang/protege-js/src/inference/rdf');
+const { RELATION_ALIASES } = require('../../common/constants');
 
 // ---------- IRI 命名空间 ----------
 const SYN_BASE = 'https://synapse.local/';
@@ -84,6 +85,23 @@ function normalizeProfile(profile) {
   const relLabel = new Map();     // key -> label
   for (const c of classes) if (c && c.key) classLabel.set(c.key, c.label || c.key);
   for (const r of predicates) if (r && r.key) relLabel.set(r.key, r.label || r.key);
+
+  // 谓词别名：canonical key 自身优先，再收 predicate.aliases 与全局 RELATION_ALIASES。
+  // canonical key 不会被其它谓词的别名覆盖。
+  const relAlias = new Map();
+  for (const r of predicates) {
+    if (r && r.key) relAlias.set(r.key, r.key);
+  }
+  for (const r of predicates) {
+    if (!r || !r.key) continue;
+    const list = new Set([
+      ...(Array.isArray(r.aliases) ? r.aliases : []),
+      ...(RELATION_ALIASES[r.key] || []),
+    ]);
+    for (const a of list) {
+      if (a && a !== r.key && !relAlias.has(a)) relAlias.set(a, r.key);
+    }
+  }
 
   // --- 类层级：classes[].parent 与 SubClassOf 公理合并（支持多继承） ---
   const parentsOf = new Map();    // childKey -> Set<parentKey>
@@ -202,7 +220,7 @@ function normalizeProfile(profile) {
     profile: p,
     id: p.id || '',
     classes, predicates, axioms,
-    classLabel, relLabel,
+    classLabel, relLabel, relAlias,
     parentsOf, ancestorsOf: ancestors,
     features, transitive, symmetric, inverseOf,
     domain, range,
@@ -329,7 +347,7 @@ function graphToTriples(graph, profile, opts = {}) {
   rawEdges.forEach((e, idx) => {
     if (!e || !e.from || !e.to) return;
     if (e.inferred) { staleInferred++; return; }   // 上一轮的推理产物，本轮重算
-    const rel = e.rel || model.fallbackRel || 'related';
+    const rel = model.relAlias.get(e.rel) || e.rel || model.fallbackRel || 'related';
     // 端点必须存在，否则会给不存在的节点造 IRI（删点后残留的悬空边）
     if (!validIds.has(e.from) || !validIds.has(e.to)) { skippedEdges++; return; }
     const k = edgeKey(e.from, e.to, rel);

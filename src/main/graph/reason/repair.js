@@ -162,14 +162,9 @@ async function planOne(c, graph, profile, opts = {}) {
   const edges = ((graph && graph.edges) || []).filter((e) => e && !e.inferred);
   const byId = new Map(nodes.map((n) => [n && n.id, n]));
   const nameOf = (id) => (byId.get(id) || {}).name || id;
-  const labelOfRel = (rel) => {
-    try {
-      const cons = guard.constraintOf(profile, rel);
-      void cons;
-    } catch (_) { /* 忽略 */ }
-    return rel;
-  };
+  const labelOfRel = (rel) => guard.labelOfRel(profile, rel) || rel;
   const fbRel = (profile && profile.fallbackRel) || '';
+  const fbRelZh = labelOfRel(fbRel);
   const out = [];
   const push = (a) => out.push(Object.assign({ rule, auto: true, viaLlm: false }, a));
 
@@ -217,7 +212,7 @@ async function planOne(c, graph, profile, opts = {}) {
               fromName: nameOf(e.from), toName: nameOf(e.to),
               nodeId: id, nodeName: node.name || id, declaredType: node.type,
               forcedType: ind.forcedType, via: ind.via, inverseRel: ind.inverseRel || '',
-              actionZh: `把「${nameOf(e.from)}」—${e.rel}→「${nameOf(e.to)}」的关系降级为「${fbRel}」`
+              actionZh: `把「${nameOf(e.from)}」—${e.rel}→「${nameOf(e.to)}」的关系降级为「${fbRelZh}」`
                 + `（${srcZh}会把「${node.name || id}」强制归入「${ind.forcedType}」，与其声明类型「${node.type}」互斥${ind.inverseRel ? '；该强制来自推理物化的逆边' : ''}）`,
               altActionZh: `或删除这条边`,
             });
@@ -408,6 +403,7 @@ async function planOneIssue(issue, graph, profile) {
   const byId = new Map(nodes.map((n) => [n && n.id, n]));
   const nameOf = (id) => (byId.get(id) || {}).name || id;
   const fbRel = (profile && profile.fallbackRel) || '';
+  const fbRelZh = guard.labelOfRel(profile, fbRel) || fbRel;
   const out = [];
   const push = (a) => out.push(Object.assign({ rule: it.reason || 'validate-issue', auto: true, viaLlm: false, source: 'issue' }, a));
 
@@ -435,7 +431,7 @@ async function planOneIssue(issue, graph, profile) {
     if (fbRel && fbRel !== rel && isUnconstrained(profile, fbRel)) {
       push(Object.assign({}, base, {
         kind: 'change-rel', newRel: fbRel,
-        actionZh: `把「${nameOf(fromId)}」—${rel}→「${nameOf(toId)}」的关系降级为「${fbRel}」（${whyZh}）`,
+        actionZh: `把「${nameOf(fromId)}」—${rel}→「${nameOf(toId)}」的关系降级为「${fbRelZh}」（${whyZh}）`,
         altActionZh: '或删除这条边',
       }));
     } else {

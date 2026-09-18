@@ -52,6 +52,7 @@ async function makeZip(entries) {
 
 const SKILL_DOCX = `---\nname: docx\ndescription: 生成 Word 文档时使用\n---\n\n正文指令：用 docx 库生成文档。\n`;
 const SKILL_PDF = `---\nname: pdf\ndescription: 处理 PDF 时使用\n---\n\nPDF 指令。\n`;
+const SKILL_EXTRACT = `---\nname: extract-table\ndescription: 从表格文件抽取语料\nkind: extract\naccepts: [xlsx, csv]\nmode: script\nentry: scripts/main.js\npriority: 70\nversion: 1.0.0\ntimeoutSec: 120\noutput: corpus-out.md\n---\n\n抽取正文。\n`;
 
 (async () => {
   console.log('\n【1】输入解析');
@@ -99,6 +100,24 @@ const SKILL_PDF = `---\nname: pdf\ndescription: 处理 PDF 时使用\n---\n\nPDF
   console.log('\n【4】重名去重（再装一次 docx，此前已有 docx / docx (2)）');
   r = await installSkill(null, { input: 'npx skills add https://github.com/anthropics/skills --skill docx' });
   check('重名目录加后缀', r.ok && /docx \(3\)/.test(r.installed[0].dir), r.installed && r.installed[0].dir);
+
+  console.log('\n【4.5】抽取技能安装后返回完整元数据');
+  const bufExtract = await makeZip({
+    'repo-main/extract-table/SKILL.md': SKILL_EXTRACT,
+    'repo-main/extract-table/scripts/main.js': 'console.log("extract")',
+  });
+  fetchMap = { 'https://codeload.github.com/extract/etable/zip/refs/heads/main': { status: 200, buffer: bufExtract } };
+  r = await installSkill(null, { input: 'extract/etable' });
+  check('抽取技能安装成功', r.ok && r.installed.length === 1, r.error);
+  const inst = r.installed[0];
+  check('返回 kind=extract', inst.kind === 'extract', JSON.stringify(inst));
+  check('返回 accepts', Array.isArray(inst.accepts) && inst.accepts.join(',') === 'xlsx,csv', JSON.stringify(inst.accepts));
+  check('返回 mode=script', inst.mode === 'script', inst.mode);
+  check('返回 entry', inst.entry === 'scripts/main.js', inst.entry);
+  check('返回 priority', inst.priority === 70, inst.priority);
+  check('返回 version', inst.version === '1.0.0', inst.version);
+  check('返回 timeoutSec', inst.timeoutSec === 120, inst.timeoutSec);
+  check('返回 output', inst.output === 'corpus-out.md', inst.output);
 
   console.log('\n【5】main→master 回退');
   const buf2 = await makeZip({ 'skills-master/my-skill/SKILL.md': '---\nname: my-skill\ndescription: t\n---\nbody\n' });

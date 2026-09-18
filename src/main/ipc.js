@@ -21,6 +21,7 @@ const notes = require('./notes/notes');
 const { FILE_EXTENSIONS, readRawText, extractFileContent, canImportAsNote, noteImportExts, runMineruTest, installMineru, applyMineruModel, titleFromFileName, attachMineruImages } = require('./raws/files');
 const { num } = require('./common/config');
 const jobs = require('./jobs/jobs');
+const corpusStore = require('./corpus/store');
 
 // getWindow：对话框与广播需要主窗口引用，由入口注入
 function registerIpc(getWindow) {
@@ -229,17 +230,35 @@ function registerIpc(getWindow) {
   // 预匹配/自动建模共用：把 rawPaths（raw/… 或 local:…）与 texts（内联文本）读成来源内容列表
   // 领域匹配只需粗粒度文本判断主题，禁用技能解析（skillParse:false）避免对每文件跑 LLM 重组 Markdown：
   // 否则 18 个 docx 会串行触发 18 次 LLM 技能解析（分钟级且不可见），用户看到步骤①长时间无思考过程
-  const buildMatchRaws = async (settings, rawPaths, texts) => {
+  const buildMatchRaws = async (settings, rawPaths, texts, { inlineSources = [], judgeBy } = {}) => {
     const matchSettings = { ...(settings || {}), skillParse: false };
+    const nameOnly = judgeBy === 'name';
     const raws = [];
     for (const p of rawPaths || []) {
+      const rawPath = String(p || '');
+      if (!rawPath.trim()) continue;
+      if (nameOnly) {
+        raws.push({ rawPath, content: '' });
+        continue;
+      }
       try {
-        const content = await readRawText(matchSettings, String(p));
-        if (content) raws.push({ rawPath: String(p), content });
+        const content = await readRawText(matchSettings, rawPath);
+        if (content) raws.push({ rawPath, content });
       } catch (_) { /* 单个来源提取失败不阻断 */ }
     }
+    // 带名来源保留完整标识，供语料/笔记分类结果回映射；仅文件名模式无需正文。
+    const namedTexts = new Set();
+    for (const s of inlineSources || []) {
+      const label = String((s && s.label) || '');
+      const text = String((s && s.text) || '');
+      if (!label.trim() || (!nameOnly && !text.trim())) continue;
+      raws.push({ rawPath: 'inline:' + label, content: nameOnly ? '' : text });
+      namedTexts.add(text);
+    }
+    // 兼容旧 texts 调用；同时携带 inlineSources 时避免同一正文重复参与判定。
     for (const t of texts || []) {
-      if ((t || '').trim()) raws.push({ rawPath: 'inline-text', content: String(t) });
+      const text = String(t || '');
+      if (text.trim() && !namedTexts.has(text)) raws.push({ rawPath: 'inline-text', content: nameOnly ? '' : text });
     }
     return raws;
   };
@@ -274,10 +293,10 @@ function registerIpc(getWindow) {
   });
 
   // 多领域归纳：识别来源内容包含的全部内聚领域（≤5），供多领域拆分提取的领域清单
-  ipcMain.handle('tpl:suggestDomains', async (_e, { settings, rawPaths, texts, judgeBy }) => {
+  ipcMain.handle('tpl:suggestDomains', async (_e, { settings, rawPaths, texts, inlineSources, judgeBy }) => {
     try {
-      const raws = await buildMatchRaws(settings, rawPaths, texts);
-      if (!raws.length) return { ok: false, error: '来源内容为空，无法归纳领域' };
+      const raws = await buildMatchRaws(settings, rawPaths, texts, { inlineSources, judgeBy });
+      if (!raws.length) return { ok: false, error: judgeBy === 'name' ? '来源文件名为空，无法归纳领域' : '来源内容为空，无法归纳领域' };
       const onDelta = (delta, isReasoning) => { try { _e.sender.send('tpl:suggest-domains-chunk', { text: delta, reasoning: !!isReasoning }); } catch (_) { /* 窗口已关闭 */ } };
       return { ok: true, ...(await templates.suggestDomains(settings, raws, onDelta, { judgeBy })) };
     } catch (err) {
@@ -290,13 +309,8 @@ function registerIpc(getWindow) {
   // inlineSources（笔记图谱的 {label,text}）以 rawPath='inline:<label>' 参与分类，键按此回映射
   ipcMain.handle('tpl:assignDomains', async (_e, { settings, rawPaths, domains, inlineSources, judgeBy }) => {
     try {
-      const raws = await buildMatchRaws(settings, rawPaths, []);
-      for (const s of inlineSources || []) {
-        const label = String((s && s.label) || '').trim();
-        const text = String((s && s.text) || '');
-        if (label && text.trim()) raws.push({ rawPath: 'inline:' + label, content: text });
-      }
-      if (!raws.length) return { ok: false, error: '来源内容为空，无法分类' };
+      const raws = await buildMatchRaws(settings, rawPaths, [], { inlineSources, judgeBy });
+      if (!raws.length) return { ok: false, error: judgeBy === 'name' ? '来源文件名为空，无法分类' : '来源内容为空，无法分类' };
       const onDelta = (delta, isReasoning) => { try { _e.sender.send('tpl:assign-domains-chunk', { text: delta, reasoning: !!isReasoning }); } catch (_) { /* 窗口已关闭 */ } };
       return { ok: true, ...(await templates.assignDomains(settings, raws, domains, onDelta, { judgeBy })) };
     } catch (err) {
@@ -662,7 +676,97 @@ function registerIpc(getWindow) {
     }
   });
 
-  ipcMain.handle('jobs:cancel', (_e, id) => jobs.cancel(id));
+  ipcMain.handle('jobs:cancel', (_e, id) => {
+    try {
+      return jobs.cancel(id);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // ---------- 语料库（设计 §11.1，7 个新通道）----------
+  // 语料是「机器产物、可重生成」：不进全局搜索、不注册为问答知识源、不随备份迁移（§15 问题 6/7）。
+  // 这组通道是语料库子页签（renderer/corpus.js）的唯一数据入口。
+  ipcMain.handle('corpus:list', (_e, { settings, domain, q } = {}) => {
+    try {
+      const items = corpusStore.listCorpus(settings || {}, { domain, q });
+      const staleCount = items.filter((c) => c.stale).length;
+      return { ok: true, items, total: items.length, staleCount };
+    } catch (err) { return { ok: false, error: err.message, items: [], total: 0, staleCount: 0 }; }
+  });
+
+  ipcMain.handle('corpus:read', (_e, { rel } = {}) => {
+    try { return corpusStore.readCorpus(rel); } catch (err) { return { ok: false, error: err.message, text: '', frontmatter: {}, rel: String(rel || '') }; }
+  });
+
+  ipcMain.handle('corpus:remove', (_e, payload = {}) => {
+    try {
+      const rels = Array.isArray(payload.rels) ? payload.rels : (payload.rel ? [payload.rel] : []);
+      if (!rels.length) return { ok: false, error: '没有要删除的语料' };
+      return corpusStore.removeCorpus(rels);
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+
+  // 提升为笔记：内部走 notes/store.js:444 importNote（按 source=corpus:<rel> upsert，重复提升不产生副本）
+  ipcMain.handle('corpus:promote', (_e, { rel, folderRel } = {}) => {
+    try { return corpusStore.promoteToNote(rel, { folderRel }); } catch (err) { return { ok: false, error: err.message }; }
+  });
+
+  // 在系统文件管理器中打开语料所在目录（复用 raw:open 的 shell.openPath 口径；网页模式由 kb-shim 给友好 stub）
+  ipcMain.handle('corpus:openDir', async (_e, { rel } = {}) => {
+    try {
+      const { shell } = require('electron');
+      if (!shell) return { ok: false, error: '当前环境不支持打开本地目录' };
+      const abs = corpusStore.absOfRel(rel);
+      if (!abs) return { ok: false, error: '非法语料路径' };
+      const target = fs.existsSync(abs) ? path.dirname(abs) : abs;
+      const err = await shell.openPath(target);
+      return err ? { ok: false, error: err } : { ok: true };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+
+  // 只读的「当前解析链」预览（§16.3 设置页）：不执行任何解析。
+  // ⚠️ recipe 只接受**内置配方名**（graph/corpus/note），不接受任意配方对象——
+  //    配方里的字符串表达式虽由受限求值器处理，但只暴露内置链可从根上杜绝外部构造层序。
+  ipcMain.handle('corpus:pipelinePreview', (_e, { settings, recipe } = {}) => {
+    try {
+      const { previewPipeline } = require('./corpus/build');
+      const { RECIPES } = require('./corpus/recipes');
+      const key = (typeof recipe === 'string' && RECIPES[recipe]) ? recipe : 'graph';
+      const layers = previewPipeline(RECIPES[key], { settings: settings || {}, payload: {} });
+      return { ok: true, recipe: key, layers };
+    } catch (err) { return { ok: false, error: err.message, layers: [] }; }
+  });
+
+  // 单技能试跑（§11.1）：对一个样本文件跑一次抽取，直接看产物。不落盘、不入缓存。
+  ipcMain.handle('skill:extractTest', async (_e, { settings, skillName, samplePath } = {}) => {
+    const t0 = Date.now();
+    try {
+      const skill = ((settings && settings.skills) || []).find((k) => k && k.name === skillName);
+      if (!skill) return { ok: false, error: '技能不存在：' + skillName };
+      const abs = String(samplePath || '').startsWith('local:') ? String(samplePath).slice('local:'.length) : String(samplePath || '');
+      if (!abs || !fs.existsSync(abs)) return { ok: false, error: '样本文件不存在：' + (samplePath || '') };
+      const { makeItem, originOf } = require('./corpus/item');
+      const { SkillMarkdownDecorator } = require('./corpus/decorators/parse');
+      const bytes = fs.readFileSync(abs);
+      const st = fs.statSync(abs);
+      const item = makeItem({
+        kind: 'raw', label: '原始·' + path.basename(abs),
+        origin: originOf({ path: 'local:' + abs, name: path.basename(abs), size: st.size, mtime: st.mtimeMs }),
+        bytes,
+      });
+      // 试跑只用这一个技能：临时把 settings.skills 收窄为它（并强制 enabled），不影响用户设置
+      const testSettings = { ...settings, skills: [{ ...skill, enabled: true }] };
+      const ctx = { settings: testSettings, signal: null, onLog: () => {}, errors: [], shared: {}, stats: {} };
+      const dec = new SkillMarkdownDecorator(null, {});
+      if (!dec.accepts(item, ctx)) {
+        return { ok: false, error: '该技能不接受此文件类型（accepts 不匹配），或技能解析未就绪（mode:llm 需可用模型）', elapsedMs: Date.now() - t0 };
+      }
+      const out = await dec.apply(item, ctx);
+      if (!out || !out.text) return { ok: false, error: '技能未产出 Markdown', elapsedMs: Date.now() - t0 };
+      return { ok: true, markdown: out.text, elapsedMs: Date.now() - t0, parseMethod: (out.meta && out.meta.parseMethod) || '' };
+    } catch (err) { return { ok: false, error: err.message, elapsedMs: Date.now() - t0 }; }
+  });
 
   // ---------- 知识图谱 ----------
   ipcMain.handle('graph:get', () => graph.getGraph());

@@ -187,6 +187,8 @@ function bindEvents() {
     if (!t || !t.id || t.id.indexOf('set-') !== 0) return;
     if (t.id === 'set-dataroot' || t.id === 'set-dbpath') return;
     saveSettingsFields();
+    // 流水线页改任一项（尤其开关/分块大小）时，同步刷新只读解析链预览
+    if (state.settingsTab === 'pipeline' && typeof renderPipelinePreview === 'function') renderPipelinePreview();
   });
   $('btn-apply-dataroot').addEventListener('click', applyDataRoot);
   $('btn-apply-dbpath').addEventListener('click', applyDbPath);
@@ -221,6 +223,28 @@ function bindEvents() {
   $('btn-skill-edit-cancel').addEventListener('click', () => { $('skill-edit-modal').hidden = true; });
   $('btn-skill-edit-opendir').addEventListener('click', openSkillEditDir);
   $('skill-search').addEventListener('input', renderSkillGrid);
+  // 技能三态筛选（§16.4②）：事件委托，一次绑定；切态后重画卡片网格
+  $('skill-kind-filter').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-kind]');
+    if (!btn) return;
+    state.skillKindFilter = btn.dataset.kind;
+    document.querySelectorAll('#skill-kind-filter button').forEach((b) => {
+      const on = b === btn;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    renderSkillGrid();
+  });
+  // 技能编辑弹窗联动（§16.4③）：kind/mode 单选→区段显隐；accepts 芯片→复选切换
+  ['skill-edit-kind-extract', 'skill-edit-kind-instruct', 'skill-edit-mode-script', 'skill-edit-mode-llm'].forEach((id) => {
+    const r = $(id); if (r) r.addEventListener('change', skillEditSyncVisibility);
+  });
+  document.querySelectorAll('#skill-edit-accepts .skill-acc-chip').forEach((chip) => {
+    chip.addEventListener('click', () => toggleSkillAcceptChip(chip));
+  });
+  // 单技能试跑（§16.4④）
+  $('btn-skill-pick-sample').addEventListener('click', pickSkillSample);
+  $('btn-skill-test-run').addEventListener('click', runSkillExtractTest);
   $('settings-tabs').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-tab]');
     if (btn) switchSettingsTab(btn.dataset.tab);
@@ -277,6 +301,33 @@ function bindEvents() {
       $('search-input').focus();
     }
   });
+}
+
+// ================= 技能编辑弹窗：kind/mode 联动与 accepts 芯片 =================
+// 根据 kind/mode 单选联动显隐：抽取技能才显示 6 字段区与试跑区；脚本模式才显示超时候选区。
+// 一律用 hidden 属性（不用内联 display:none），与弹窗其他显隐口径一致。
+function skillEditSyncVisibility() {
+  const isExtract = $('skill-edit-kind-extract') && $('skill-edit-kind-extract').checked;
+  const ef = $('skill-extract-fields'); if (ef) ef.hidden = !isExtract;
+  const ta = $('skill-test-area'); if (ta) ta.hidden = !isExtract;
+  const isScript = $('skill-edit-mode-script') && $('skill-edit-mode-script').checked;
+  const sf = $('skill-script-fields'); if (sf) sf.hidden = !(isExtract && isScript);
+  if (typeof updateSkillTestTimeoutHint === 'function') updateSkillTestTimeoutHint();
+}
+// accepts 芯片复选：选 `*` = 通配（清空具体扩展名）；选具体项 = 取消 `*`；全不选自动回到 `*`。
+function toggleSkillAcceptChip(chip) {
+  const wrap = $('skill-edit-accepts');
+  if (!wrap || !chip) return;
+  const chips = Array.prototype.slice.call(wrap.querySelectorAll('.skill-acc-chip'));
+  const star = chips.find((c) => c.dataset.ext === '*');
+  if (chip.dataset.ext === '*') {
+    chips.forEach((c) => c.classList.remove('active'));
+    if (star) star.classList.add('active');
+    return;
+  }
+  chip.classList.toggle('active');
+  const anyExt = chips.some((c) => c.dataset.ext !== '*' && c.classList.contains('active'));
+  if (star) star.classList.toggle('active', !anyExt);
 }
 
 // ================= 初始化 =================
@@ -354,6 +405,8 @@ async function init() {
   bindGraphEvents();
   bindTplEvents();
   bindRawEvents();
+  // 语料库子页签事件（corpus.js 在 raws.js 之后、app.js 之前加载，函数已就位）
+  if (typeof bindCorpusEvents === 'function') bindCorpusEvents();
   state.noteListHidden = localStorage.getItem('kb.noteListHidden') === '1';
   state.sidebarHidden = localStorage.getItem('kb.sidebarHidden') === '1';
   try { state.folderCollapsed = JSON.parse(localStorage.getItem('kb.folderCollapsed') || '{}') || {}; } catch (_) { state.folderCollapsed = {}; }

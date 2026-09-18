@@ -3,6 +3,8 @@
 //       多领域归纳 suggestDomains、逐文件归类 assignDomains（分批/多归属/置信度）
 // 运行：node test/templates-domains.test.js
 const path = require('path');
+const fs = require('fs');
+const vm = require('vm');
 const { bootEnv, mkCheck, startFakeLlm, sseText, REPO_ROOT } = require('./helpers/harness');
 
 const { check, section, summary } = mkCheck('领域模版层（templates）');
@@ -549,6 +551,115 @@ const json = (obj) => ({ status: 200, headers: { 'Content-Type': 'text/event-str
       try { await tpl.generateTemplate(fake.settings(), { name: '  ' }); } catch (e) { err = e.message; }
       check('名称为空抛「请先填写名称」', err === '请先填写名称' && fake.requests.length === 0, err);
     } finally { await fake.close(); }
+  }
+
+  section('Web 桥接 → IPC → 领域模型：带名语料与判定方式');
+  {
+    const files = require('../src/main/raws/files');
+    const originalRead = files.readRawText;
+    const reads = [];
+    files.readRawText = async (settings, rawPath) => {
+      reads.push({ settings, rawPath });
+      return '原始文件正文标记';
+    };
+    const domains = [{ name: '知识引擎', desc: '知识管理' }, { name: '资金安全', desc: '风控' }];
+    const fake = await startFakeLlm(({ body }) => {
+      const assignments = {};
+      for (const m of body.messages[1].content.matchAll(/- 路径：([^\n]+)/g)) {
+        assignments[m[1]] = { domains: ['知识引擎'], confidence: 0.92 };
+      }
+      const result = { domains, assignments, unassigned: [], name: '知识引擎', desc: '知识管理',
+        profile: 'bfo-lite', template: 'equip_ops', similarity: 88 };
+      return { headers: { 'Content-Type': 'text/event-stream' },
+        sse: sseText(JSON.stringify(result), { reasoning: '判定思考' }) };
+    });
+    try {
+      require('../src/main/ipc').registerIpc(() => null);
+      const calls = [];
+      let events;
+      const web = vm.createContext({
+        window: {},
+        EventSource: class { constructor(url) { this.url = url; events = this; } },
+        fetch: async (url, options) => {
+          const channel = decodeURIComponent(url.slice('/api/call/'.length));
+          const payload = JSON.parse(options.body);
+          calls.push({ url, options, payload });
+          const result = await env.el.invoke(channel, payload);
+          return { ok: true, json: async () => ({ result }) };
+        },
+      });
+      vm.runInContext(fs.readFileSync(path.join(REPO_ROOT, 'web/kb-shim.js'), 'utf8'), web);
+      const kb = web.window.kb;
+      check('Web 暴露多领域识别与分类接口', typeof kb.tplSuggestDomains === 'function' && typeof kb.tplAssignDomains === 'function');
+      check('Web 订阅统一 SSE 地址', events.url === '/api/events');
+      const streams = [
+        ['onTplSuggestNameChunk', 'tpl:suggest-name-chunk'],
+        ['onTplSuggestDomainsChunk', 'tpl:suggest-domains-chunk'],
+        ['onTplAssignDomainsChunk', 'tpl:assign-domains-chunk'],
+      ].map(([method, channel]) => {
+        const chunks = [];
+        return { channel, chunks, off: kb[method]((chunk) => chunks.push(chunk)) };
+      });
+      const settings = fake.settings({ skillParse: true });
+      const rel = 'AI知识引擎/AI数据知识引擎&AI知识库.md';
+      const inlineSources = [{ label: rel, text: '语料正文唯一标记' }, { label: '空正文/空正文.md', text: '' }];
+      const payload = { settings, rawPaths: ['raw/尚未解析.pdf'], inlineSources, judgeBy: 'name' };
+      const sug = await kb.tplSuggestDomains(payload);
+      const namePrompt = fake.requests.at(-1).body.messages[1].content;
+      check('Web 识别请求映射正确通道与 POST', calls[0].url === '/api/call/tpl%3AsuggestDomains' && calls[0].options.method === 'POST');
+      check('Web 请求完整透传带名来源与判定方式', JSON.stringify(calls[0].payload) === JSON.stringify(payload));
+      check('Web 返回实际 IPC 识别结果', sug.ok && sug.domains.length === 2);
+      check('仅文件名识别保留语料名与无正文来源', namePrompt.includes('AI数据知识引擎&AI知识库.md') && namePrompt.includes('空正文.md') && namePrompt.includes('尚未解析.pdf'));
+      check('仅文件名不向模型发送语料正文或匿名占位名', !namePrompt.includes('语料正文唯一标记') && !namePrompt.includes('inline-text'));
+      const asn = await kb.tplAssignDomains({ ...payload, domains: sug.domains });
+      check('Web 分类请求映射正确通道', calls.at(-1).url === '/api/call/tpl%3AassignDomains');
+      check('分类键保留完整 corpus rel 与 rawPath', asn.ok && asn.assignments['inline:' + rel]?.confidence === 0.92 && !!asn.assignments['raw/尚未解析.pdf']);
+      check('仅文件名分类不丢空正文语料', !!asn.assignments['inline:空正文/空正文.md']);
+      check('仅文件名识别与分类均不触发原文件解析', reads.length === 0);
+      check('仅文件名分类 prompt 不带正文', !fake.requests.at(-1).body.messages[1].content.includes('语料正文唯一标记'));
+
+      const contentPayload = { settings, inlineSources: [inlineSources[0]], judgeBy: 'content' };
+      const contentResult = await kb.tplSuggestDomains(contentPayload);
+      check('仅 inlineSources 也能完成内容领域识别', contentResult.ok && fake.requests.at(-1).body.messages[1].content.includes('语料正文唯一标记'));
+      await kb.tplSuggestDomains({ ...contentPayload, texts: ['语料正文唯一标记', '独立兼容正文'] });
+      const contentPrompt = fake.requests.at(-1).body.messages[1].content;
+      check('texts 与带名来源重复正文只注入一次', contentPrompt.split('语料正文唯一标记').length === 2);
+      check('texts 中独立正文仍参与识别', contentPrompt.includes('独立兼容正文'));
+      const contentAsn = await kb.tplAssignDomains({ ...contentPayload, domains });
+      const assignPrompt = fake.requests.at(-1).body.messages[1].content;
+      check('内容分类同时传递语料名称与正文', contentAsn.ok && assignPrompt.includes('AI数据知识引擎&AI知识库.md') && assignPrompt.includes('摘录：语料正文唯一标记'));
+      await kb.tplSuggestDomains({ settings, texts: ['旧调用正文'] });
+      check('旧 texts-only 识别调用保持兼容', fake.requests.at(-1).body.messages[1].content.includes('旧调用正文'));
+
+      const oldPayload = { settings, rawPaths: ['raw/旧来源.md'], texts: ['旧内联正文'] };
+      const oldName = await kb.tplSuggestName(oldPayload);
+      const oldProfile = await kb.tplSuggestProfile(oldPayload);
+      const oldMatch = await kb.tplMatchFor(oldPayload);
+      check('旧领域名/体系/模版预匹配 IPC 仍可用', oldName.ok && oldName.name === '知识引擎' && oldProfile.ok && oldProfile.id === 'bfo-lite' && oldMatch.ok && oldMatch.matched?.id === 'equip_ops');
+      check('旧调用仍读取原文并禁用技能解析', reads.length === 3 && reads.every((r) => r.rawPath === 'raw/旧来源.md' && r.settings.skillParse === false));
+      check('旧调用保留原文与内联正文', fake.requests.slice(-3).every((r) => r.body.messages[1].content.includes('原始文件正文标记') && r.body.messages[1].content.includes('旧内联正文')));
+      check('调用者设置不被修改', settings.skillParse === true);
+
+      const beforeEmpty = fake.requests.length;
+      for (const method of ['tplSuggestDomains', 'tplAssignDomains']) {
+        const empty = await kb[method]({ settings, domains, inlineSources: [{ label: rel, text: ' ' }], judgeBy: 'content' });
+        check(method + ' 空正文返回结构化错误', empty.ok === false && empty.error.includes('来源内容为空'));
+        const noName = await kb[method]({ settings, domains, rawPaths: [' '], inlineSources: [{ label: ' ', text: 'x' }], judgeBy: 'name' });
+        check(method + ' 空文件名返回结构化错误', noName.ok === false && noName.error.includes('来源文件名为空'));
+      }
+      check('无有效来源不发起模型请求', fake.requests.length === beforeEmpty);
+      for (const frame of env.el.sent) events.onmessage({ data: JSON.stringify({ channel: frame.channel, data: frame.payload }) });
+      for (const stream of streams) {
+        check(stream.channel + ' 推理与正文事件正常分发', stream.chunks.some((x) => x.reasoning) && stream.chunks.some((x) => !x.reasoning));
+        const count = stream.chunks.length;
+        stream.off();
+        events.onmessage({ data: JSON.stringify({ channel: stream.channel, data: { text: '不应收到' } }) });
+        check(stream.channel + ' 解绑后不再接收', stream.chunks.length === count);
+      }
+    } finally {
+      files.readRawText = originalRead;
+      await fake.close();
+    }
   }
 
   summary();

@@ -244,7 +244,7 @@ class CorpusFileSource extends CorpusStream {
         const fm = r.frontmatter || {};
         list.push(makeItem({
           kind: 'corpus',
-          label: '语料·' + origin.name.replace(/\.(md|markdown)$/i, ''),
+          label: '语料·' + String(r.rel).replace(/\\/g, '/'),
           origin,
           text: String(r.text || ''),
           meta: {

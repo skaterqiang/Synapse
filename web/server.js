@@ -216,7 +216,7 @@ async function handleRequest(req, res) {
     // kb-shim.js 位于 web/ 目录
     if (rel === 'kb-shim.js') {
       const js = fs.readFileSync(path.join(__dirname, 'kb-shim.js'));
-      res.writeHead(200, { 'Content-Type': MIME['.js'] });
+      res.writeHead(200, { 'Content-Type': MIME['.js'], 'Cache-Control': 'no-store' });
       return res.end(js);
     }
     const filePath = path.join(SRC, rel);

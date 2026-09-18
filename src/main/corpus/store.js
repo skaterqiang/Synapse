@@ -6,15 +6,11 @@
 //   ③ 按语料指纹 upsert（覆盖是预期行为），而 note 的 importNote 按 source upsert 会覆盖用户编辑
 //   ④ 支持一键「提升为笔记」（promoteToNote → notes/store.js:444 importNote）
 //
-// 目录布局（§6.1）：
-//   <数据根>/corpus/index.json
-//   <数据根>/corpus/<领域>/<名称>.md
-//   <数据根>/corpus/<领域>/<名称>.assets/img-1.png
-//   <数据根>/corpus/general/未归类文档.md
-//
-// index.json 单条固定 11 字段（§6.3 / §12.1 硬契约）：
-//   { corpusId, rel, name, domain, domainLabel, profileId, parseMethod, skill, chars, generatedAt, sourceMtime }
-// 索引损坏时可从 corpus/**\/*.md 的 frontmatter 全量重建（rebuildIndex，§12.3）。
+// 目录布局：以原文档名（去扩展名）建目录，正文与图片都放在该目录内。
+//   <数据根>/corpus/<原文档名>/<原文档名>.md
+//   <数据根>/corpus/<原文档名>/<原文档名>.assets/img-1.png
+// 不维护独立索引或列表缓存；目录中的 Markdown 文件及其 frontmatter 是唯一数据源。
+// 旧的按领域存放的语料仍可扫描读取，保留原路径以兼容作业与笔记引用。
 'use strict';
 
 const fs = require('fs');
@@ -24,18 +20,10 @@ const settingsMod = require('../common/settings');
 const { num } = require('../common/config');
 const { parseFrontmatter, renderCorpusFile } = require('./item');
 
-const INDEX_NAME = 'index.json';
-const GENERAL_DIR = 'general';
 const GENERATOR = 'Synapse-Corpus/1.0';
 const IMG_EXT_RE = /\.(png|jpe?g|gif|svg|webp|bmp|avif|ico)$/i;
 /** frontmatter 只读文件头这么多字节即可（语料头很小）；解析不出围栏时回退整文件读 */
 const HEAD_BYTES = 16384;
-
-/** index.json 单条的 11 个字段（§12.1 硬契约，增删都会让测试变红） */
-const INDEX_FIELDS = [
-  'corpusId', 'rel', 'name', 'domain', 'domainLabel',
-  'profileId', 'parseMethod', 'skill', 'chars', 'generatedAt', 'sourceMtime',
-];
 
 // ============ 路径工具 ============
 
@@ -45,7 +33,9 @@ function corpusRoot() {
 
 /** 与 notes/store.js:13 safeName 同口径：Windows 非法字符换 '-'，限长 80 */
 function safeName(s, dft) {
-  return String(s == null ? '' : s).trim().replace(/[\\/:*?"<>|]/g, '-').slice(0, 80) || dft;
+  const name = String(s == null ? '' : s).trim().replace(/[\\/:*?"<>|\x00-\x1f]/g, '-')
+    .replace(/^\.+/, '').slice(0, 80).replace(/[. ]+$/, '');
+  return name && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(name) ? name : dft;
 }
 
 /** 归一化相对路径：统一正斜杠、去掉前导斜杠、拒绝越界（..） */
@@ -73,29 +63,7 @@ function assetsDirFor(rel) {
   return path.join(path.dirname(abs), path.basename(abs, '.md') + '.assets');
 }
 
-// ============ 索引读写 ============
-
-let _index = null;
-const _srcPathCache = new Map(); // `${rel}@${sourceMtime}` → 源文件 path（避免每次 list 都读盘）
-
-/** 只保留 11 个契约字段，多余键一律丢弃（防止 index.json 悄悄长胖） */
-function pickIndexFields(rec) {
-  const r = rec || {};
-  const out = {};
-  for (const k of INDEX_FIELDS) out[k] = r[k] === undefined ? null : r[k];
-  out.corpusId = String(out.corpusId || '');
-  out.rel = normRel(out.rel);
-  out.name = String(out.name || '');
-  out.domain = String(out.domain || '');
-  out.domainLabel = String(out.domainLabel || '');
-  out.profileId = String(out.profileId || '');
-  out.parseMethod = String(out.parseMethod || '');
-  out.chars = Number(out.chars) || 0;
-  out.generatedAt = String(out.generatedAt || '');
-  out.sourceMtime = Number(out.sourceMtime) || 0;
-  if (out.skill !== null && typeof out.skill !== 'object') out.skill = null;
-  return out;
-}
+// ============ 目录扫描 ============
 
 /** 只读文件头解析 frontmatter；头部截断导致解析不出围栏时回退整文件读 */
 function readHead(abs) {
@@ -115,8 +83,8 @@ function readHead(abs) {
   return parsed;
 }
 
-/** 从 corpus/**\.md 的 frontmatter 全量重建索引（索引缺失/损坏时的兜底，§12.3） */
-function rebuildIndex() {
+/** 每次从语料目录扫描文件，忽略旧索引、临时文件、附件目录和符号链接。 */
+function scanCorpusFiles() {
   const root = corpusRoot();
   const out = [];
   const walk = (dir) => {
@@ -126,9 +94,19 @@ function rebuildIndex() {
       if (e.name.startsWith('.')) continue;
       const abs = path.join(dir, e.name);
       if (e.isDirectory()) {
-        if (/\.assets$/i.test(e.name)) continue; // 图片副产物目录不是语料
+        if (/\.assets$/i.test(e.name)) {
+          // 原文档可能名为 manual.assets.pdf；一级同名语料目录不能当成图片目录跳过。
+          let hasOwnCorpus = false;
+          if (dir === root) {
+            try {
+              hasOwnCorpus = fs.readdirSync(abs, { withFileTypes: true }).some((child) => child.isFile()
+                && (child.name === e.name + '.md' || (child.name.startsWith(e.name + '-') && /\.md$/i.test(child.name))));
+            } catch (_) { /* 目录不可读时跳过 */ }
+          }
+          if (!hasOwnCorpus) continue;
+        }
         walk(abs);
-      } else if (/\.md$/i.test(e.name)) {
+      } else if (e.isFile() && /\.md$/i.test(e.name)) {
         const rec = recordFromFile(abs, path.relative(root, abs).split(path.sep).join('/'));
         if (rec) out.push(rec);
       }
@@ -139,70 +117,37 @@ function rebuildIndex() {
   return out;
 }
 
-/** 由一个 .md 文件还原索引条目（重建与写入共用同一套映射，保证形态一致） */
+/** 从语料正文与 frontmatter 生成列表条目，保持原有接口字段。 */
 function recordFromFile(abs, rel) {
   try {
-    // 重建是低频兜底路径，直接整文件读，保证 chars 精确（readHead 会截断正文）
+    // 直接读正文以得到实际字数，外部编辑后也不依赖旧的 parse.chars。
     const parsed = parseFrontmatter(fs.readFileSync(abs, 'utf8'));
     const fm = parsed.frontmatter || {};
     const body = String(parsed.body || '').replace(/^\n+/, '');
     const src = fm.source || {};
     const parse = fm.parse || {};
     const dom = fm.domain || {};
-    return pickIndexFields({
-      corpusId: fm.corpusId ? String(fm.corpusId) : '',
+    return {
+      corpusId: String(fm.corpusId || ''),
       rel,
       name: path.basename(rel),
-      domain: dom.id || '',
-      domainLabel: dom.label || (path.dirname(rel) === '.' ? GENERAL_DIR : path.dirname(rel).split('/')[0]),
-      profileId: fm.profileId || '',
-      parseMethod: parse.method || '',
+      domain: String(dom.id || ''),
+      domainLabel: String(dom.label || ''),
+      profileId: String(fm.profileId || ''),
+      parseMethod: String(parse.method || ''),
       skill: parse.skill && typeof parse.skill === 'object' ? parse.skill : null,
       chars: body.length,
-      generatedAt: fm.generatedAt || '',
+      generatedAt: String(fm.generatedAt || fs.statSync(abs).mtime.toISOString()),
       sourceMtime: Number(src.mtime) || 0,
-    });
+    };
   } catch (_) { return null; }
-}
-
-/** 载入索引（内存缓存）；文件缺失或 JSON 损坏 → 从语料文件全量重建 */
-function loadIndex() {
-  if (_index) return _index;
-  const abs = path.join(corpusRoot(), INDEX_NAME);
-  let arr = null;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(abs, 'utf8'));
-    if (Array.isArray(parsed)) arr = parsed.map(pickIndexFields).filter((r) => r.rel);
-  } catch (_) { arr = null; }
-  _index = arr || rebuildIndex();
-  _srcPathCache.clear();
-  return _index;
-}
-
-/** 落盘索引（写前统一裁到 11 字段） */
-function saveIndex(list) {
-  const arr = (Array.isArray(list) ? list : (_index || [])).map(pickIndexFields).filter((r) => r.rel);
-  _index = arr;
-  try {
-    fs.mkdirSync(corpusRoot(), { recursive: true });
-    fs.writeFileSync(path.join(corpusRoot(), INDEX_NAME), JSON.stringify(arr, null, 2), 'utf8');
-    return true;
-  } catch (_) { return false; }
-}
-
-/** 测试/切换数据根后调用：丢弃内存索引与源路径缓存 */
-function invalidateIndex() {
-  _index = null;
-  _srcPathCache.clear();
 }
 
 // ============ 陈旧判定（§6.3 staleOf） ============
 
-/** 索引条目里没有源文件 path（11 字段契约所限），需要时从语料文件头补一次并缓存 */
+/** 来源路径直接取自语料文件头，不维护独立缓存。 */
 function sourcePathOf(rec) {
   const r = rec || {};
-  const key = `${r.rel}@${r.sourceMtime}`;
-  if (_srcPathCache.has(key)) return _srcPathCache.get(key);
   let p = '';
   try {
     const abs = absOfRel(r.rel);
@@ -211,14 +156,13 @@ function sourcePathOf(rec) {
       p = String((fm.source && fm.source.path) || '');
     }
   } catch (_) { /* 读不到就当不陈旧 */ }
-  _srcPathCache.set(key, p);
   return p;
 }
 
 /**
  * 源文件 mtime 变了 → true。判据口径复用 raws.js:59 isIngestedFresh：
  * 记录里没有 mtime、或源不是本地文件（url:/note:/inline:）→ 一律 false（无从判断即不报陈旧）。
- * @param {Object} rec 索引条目（sourceMtime/rel）或 frontmatter（source.{path,mtime}）
+ * @param {Object} rec 扫描条目（sourceMtime/rel）或 frontmatter（source.{path,mtime}）
  */
 function staleOf(rec, settings) {
   const r = rec || {};
@@ -241,6 +185,32 @@ function staleOf(rec, settings) {
   } catch (_) { return false; } // 源已删除：不算「待更新」，删除由原始文件页负责提示
 }
 
+/**
+ * 语料复用查找（§4.2 CorpusReuseDecorator 的数据源，可选、默认关）。
+ * 按**来源路径**命中一条已有语料，且源文件 mtime 未变（未过期）→ 返回其正文，供上层跳过整条解析链（零 LLM）。
+ * 命中多条（同来源被不同技能产出）时取 generatedAt 最新的一条；过期则返回 null（让位给解析链重抽）。
+ * 非本地来源（note:/url:/inline:/corpus:）一律不复用。
+ * @param {Object} origin CorpusItem.origin（用 .path 匹配）
+ * @param {Object} [settings]
+ * @returns {{ok:true, rel:string, text:string, record:Object}|null}
+ */
+function findReusableCorpus(origin, settings) {
+  const o = origin || {};
+  const p = String(o.path || '');
+  if (!p || /^(note|inline|url|corpus):/.test(p)) return null;
+  const s = settings || settingsMod.getSettings() || {};
+  let best = null;
+  for (const rec of scanCorpusFiles()) {
+    if (sourcePathOf(rec) !== p) continue;
+    if (!best || Date.parse(rec.generatedAt || 0) > Date.parse(best.generatedAt || 0)) best = rec;
+  }
+  if (!best) return null;
+  if (staleOf(best, s)) return null; // 源文件已变更 → 不复用
+  const r = readCorpus(best.rel);
+  if (!r || !r.ok || !String(r.text || '').trim()) return null;
+  return { ok: true, rel: best.rel, text: r.text, record: best };
+}
+
 // ============ 列表 / 读取 ============
 
 /**
@@ -255,7 +225,7 @@ function listCorpus(settings, filter) {
   const s = settings || settingsMod.getSettings() || {};
   const q = String(f.q || '').trim().toLowerCase();
   const domain = String(f.domain || '').trim();
-  let items = loadIndex().slice();
+  let items = scanCorpusFiles().slice();
   if (domain) items = items.filter((r) => r.domain === domain || r.domainLabel === domain);
   if (q) {
     items = items.filter((r) => String(r.name || '').toLowerCase().includes(q)
@@ -295,7 +265,8 @@ function readCorpus(rel) {
 
 /** 由 origin.name 派生语料文件名（去扩展名；URL 编码名交给 files.titleFromFileName 还原） */
 function baseNameOf(origin, corpusId) {
-  const raw = String((origin || {}).name || '').replace(/\.(md|markdown)$/i, '');
+  const o = origin || {};
+  const raw = path.posix.basename(String(o.name || o.path || '').replace(/\\/g, '/'));
   let title = raw;
   try { title = require('../raws/files').titleFromFileName(raw) || raw; } catch (_) { /* 保持原值 */ }
   return safeName(title, String(corpusId || '').slice(0, 8) || 'corpus');
@@ -334,14 +305,14 @@ function attachAssets(absMd, text, assets) {
  * protectRel：刚写入的那一篇永不参与淘汰——否则同一毫秒内的并列时间戳会让「新写的先被删」。
  */
 function evictIfNeeded(settings, protectRel) {
-  const index = loadIndex();
+  const records = scanCorpusFiles();
   const max = num(settings, 'corpusMaxFiles', 2000, 100, 20000);
-  if (index.length <= max) return 0;
-  const sorted = index
+  if (records.length <= max) return 0;
+  const sorted = records
     .filter((r) => r.rel !== protectRel)
     .sort((a, b) => (Date.parse(a.generatedAt || 0) - Date.parse(b.generatedAt || 0))
       || (String(a.rel) < String(b.rel) ? -1 : 1));
-  const over = index.length - max;
+  const over = records.length - max;
   const drop = sorted.slice(0, over);
   for (const r of drop) removeCorpus(r.rel);
   return drop.length;
@@ -364,21 +335,24 @@ function writeCorpus(item, ctx) {
   const text0 = String(it.text == null ? '' : it.text);
   if (!text0.trim()) return { ok: false, error: '语料正文为空，跳过落盘' };
 
-  const index = loadIndex();
-  const prev = index.find((r) => r.corpusId === corpusId) || null;
+  const records = scanCorpusFiles();
+  const prev = records.find((r) => r.corpusId === corpusId) || null;
 
-  // ---- 目标 rel：优先沿用旧记录（upsert），否则 <领域>/<名称>.md ----
+  // ---- 目标 rel：保留已有引用路径；新语料按原文档名建目录，领域只记在 frontmatter ----
   const dom = (meta.domain && typeof meta.domain === 'object') ? meta.domain : null;
   const domainLabel = String((dom && dom.label) || c.domainLabel || meta.domainLabel || '');
-  const dirName = safeName(domainLabel, GENERAL_DIR);
   const baseName = baseNameOf(origin, corpusId);
+  const dirName = baseName;
   let rel;
   if (prev && prev.rel) {
     rel = prev.rel;
   } else {
     rel = `${dirName}/${baseName}.md`;
-    if (index.some((r) => r.rel === rel) || fs.existsSync(absOfRel(rel))) {
-      rel = `${dirName}/${baseName}-${corpusId.slice(0, 6)}.md`; // 撞名（不同来源同名文件）→ 加指纹后缀
+    if (fs.existsSync(absOfRel(rel))) {
+      const suffix = safeName(corpusId.slice(0, 6), 'corpus');
+      rel = `${dirName}/${baseName}-${suffix}.md`;
+      let n = 2;
+      while (fs.existsSync(absOfRel(rel))) rel = `${dirName}/${baseName}-${suffix}-${n++}.md`;
     }
   }
   const abs = absOfRel(rel);
@@ -421,7 +395,7 @@ function writeCorpus(item, ctx) {
       truncated: !!meta.truncated,
       chars: text.length,
     },
-    domain: dom ? { id: dom.id || '', label: dom.label || '', confidence: Number(dom.confidence) || 0 } : null,
+    domain: dom || domainLabel ? { id: (dom && dom.id) || '', label: domainLabel, confidence: Number(dom && dom.confidence) || 0 } : null,
     profileId: meta.profileId || c.profileId || '',
     graph: graph ? {
       extractedAt: new Date().toISOString(),
@@ -441,24 +415,6 @@ function writeCorpus(item, ctx) {
     return { ok: false, error: '语料落盘失败：' + (err && err.message ? err.message : String(err)) };
   }
 
-  // ---- 更新索引 ----
-  const rec = pickIndexFields({
-    corpusId,
-    rel,
-    name: path.basename(rel),
-    domain: (dom && dom.id) || '',
-    domainLabel: (dom && dom.label) || domainLabel || (dirName === GENERAL_DIR ? '' : dirName),
-    profileId: fm.profileId,
-    parseMethod: fm.parse.method,
-    skill: fm.parse.skill,
-    chars: text.length,
-    generatedAt: fm.generatedAt,
-    sourceMtime: Number(origin.mtime) || 0,
-  });
-  const next = index.filter((r) => r.rel !== rel && r.corpusId !== corpusId);
-  next.unshift(rec);
-  saveIndex(next);
-  _srcPathCache.delete(`${rel}@${rec.sourceMtime}`);
   const evicted = evictIfNeeded(settings, rel);
 
   return { ok: true, rel, corpusId, created: !prev, version, assets: attached.moved, evicted };
@@ -482,16 +438,13 @@ function removeCorpus(rels) {
     const ad = path.join(path.dirname(abs), path.basename(abs, '.md') + '.assets');
     try {
       if (fs.existsSync(ad)) fs.rmSync(ad, { recursive: true, force: true });
-    } catch (_) { /* 图片目录删不掉不影响索引更新 */ }
-    for (const k of [..._srcPathCache.keys()]) if (k.startsWith(r + '@')) _srcPathCache.delete(k);
+    } catch (_) { /* 图片目录删不掉不影响其余语料 */ }
   }
-  const set = new Set(list);
-  saveIndex(loadIndex().filter((x) => !set.has(x.rel)));
   pruneEmptyDirs();
   return { ok: true, removed };
 }
 
-/** 删完文件后清掉空的领域目录（保留 corpus/ 根与 index.json） */
+/** 删完文件后只清理空目录，保留 corpus/ 根及其他文件。 */
 function pruneEmptyDirs() {
   const root = corpusRoot();
   let entries = [];
@@ -536,16 +489,11 @@ module.exports = {
   assetsDirFor,
   listCorpus,
   readCorpus,
+  findReusableCorpus,
   writeCorpus,
   removeCorpus,
   promoteToNote,
-  loadIndex,
-  saveIndex,
-  rebuildIndex,
-  invalidateIndex,
+  scanCorpusFiles,
   staleOf,
-  INDEX_FIELDS,
-  INDEX_NAME,
-  GENERAL_DIR,
   GENERATOR,
 };

@@ -209,7 +209,9 @@ function cancel(id) {
   }
   let ctrl = jobCancel.get(id);
   if (!ctrl) { ctrl = new AbortController(); jobCancel.set(id, ctrl); }
-  ctrl.abort();
+  // abort() 会同步触发在途 fetch/流的 abort 监听，个别监听器可能抛错；
+  // 停止操作本身不应因下游异常而失败，更不能让异常逃进 IPC/HTTP 层打崩 Web 服务
+  try { ctrl.abort(); } catch (err) { console.error('[jobs] cancel abort 异常（已忽略）:', err && err.message); }
   return { ok: true };
 }
 
@@ -317,6 +319,12 @@ const GRAPH_REPAIR_STAGES = [
   { key: 'plan', name: '复核修复规划' },
   { key: 'apply', name: '施加修复动作' },
   { key: 'verify', name: '重推理验证' },
+];
+// 语料抽取作业（设计 §7.5）：只抽取、不入图、不写笔记——扫描来源 → 解析为 Markdown → 写入语料库
+const EXTRACT_CORPUS_STAGES = [
+  { key: 'scan', name: '扫描来源' },
+  { key: 'parse', name: '抽取为 Markdown' },
+  { key: 'write', name: '写入语料库' },
 ];
 
 // 护栏拦截原因 → 中文（与 reason/guard.js 的 checkEdge verdict.reason 对齐）
@@ -491,17 +499,20 @@ const JOB_RUNNERS = {
       p.rawPaths = job.rawPaths;
       job.payload = p;
     }
-    const { settings, rawPaths, inlineSources, typeHints, domainId, domainLabel, ontologyProfile } = p;
-    // 守卫：卡片声明了原始文件范围但 payload/raw_paths 均无（历史数据异常）→ 明确失败，绝不静默扩大到全部笔记
-    if (!rawPaths && !inlineSources && job.source && job.source.kind === '原始文件') {
-      throw new Error('提取范围信息丢失（应用重启所致），请从「原始文件」页重新选择范围提取');
+    const { settings, rawPaths, inlineSources, typeHints, domainId, domainLabel, ontologyProfile, corpusRels } = p;
+    // 守卫：卡片声明了原始文件/语料库范围但 payload/raw_paths 均无（历史数据异常）→ 明确失败，绝不静默扩大到全部笔记
+    if (!rawPaths && !inlineSources && !corpusRels && job.source && (job.source.kind === '原始文件' || job.source.kind === '语料库')) {
+      throw new Error('提取范围信息丢失（应用重启所致），请从「原始文件」/「语料库」页重新选择范围提取');
     }
-    setStage(job, 'collect', 'running', inlineSources && inlineSources.length ? `读取 ${inlineSources.length} 个笔记来源…` : (rawPaths && rawPaths.length ? `读取 ${rawPaths.length} 个原始来源…` : '读取全部笔记…'));
+    setStage(job, 'collect', 'running', corpusRels && corpusRels.length
+      ? `读取 ${corpusRels.length} 篇 Markdown 语料（不重新解析原始文件）…`
+      : (inlineSources && inlineSources.length ? `读取 ${inlineSources.length} 个笔记来源…` : (rawPaths && rawPaths.length ? `读取 ${rawPaths.length} 个原始来源…` : '读取全部笔记…')));
     // 单任务重跑：payload 携带 _retryTaskNo，extractGraph 仅执行该批次
     const taskFilter = typeof p._retryTaskNo === 'number' && p._retryTaskNo >= 1 ? p._retryTaskNo : undefined;
     const res = await graph.extractGraph(settings, {
       rawPaths,
       inlineSources,
+      corpusRels,
       typeHints,
       domainId,
       domainLabel,
@@ -646,6 +657,89 @@ const JOB_RUNNERS = {
     emitJobs();
     return res;
   },
+  // 语料抽取作业（设计 §7.5）：走 CORPUS_RECIPE 流水线，只解析落盘为 corpus/**/*.md，不入图、不写笔记。
+  // 产物是可人工审阅的 Markdown 中间件，审阅后可单独提交 graph 作业（此时 Source 用 CorpusFileSource，零解析开销）。
+  async 'extract-corpus'(job) {
+    const p = job.payload || {};
+    // payload 不入库：重启/重试后从持久化的 raw_paths 列恢复抽取范围
+    if (!(Array.isArray(p.rawPaths) && p.rawPaths.length) && Array.isArray(job.rawPaths) && job.rawPaths.length) {
+      p.rawPaths = job.rawPaths; job.payload = p;
+    }
+    const { settings, rawPaths = [], force } = p;
+    if (!rawPaths.length) throw new Error('没有可抽取的原始来源');
+    const signal = (jobCancel.get(job.id) || {}).signal || null;
+    // 子任务（P13：以来源为单位）：标签取 rawPath 去掉 raw/ 前缀，与 extract-note 同口径
+    const tracker = makeTaskTracker(job, () => { persistJobs(); emitJobs(); });
+    tracker.init(rawPaths.map((pp) => String(pp).replace(/^raw\//, '')));
+    // origin.path → 任务下标（RawFileSource 产出的 item.origin.path 与 rawPath 同形）
+    const taskByPath = new Map(rawPaths.map((pp, i) => [String(pp), i]));
+    const single = typeof p._retryTaskNo === 'number' && p._retryTaskNo >= 1 ? p._retryTaskNo : null;
+    let runPaths = rawPaths;
+    if (single !== null) {
+      for (let i = 0; i < (job.tasks || []).length; i++) {
+        if (i !== single - 1) { job.tasks[i].status = 'done'; job.tasks[i].output = (job.tasks[i].output || '') + '\n[跳过] 本次为单任务重跑'; }
+      }
+      runPaths = rawPaths.filter((pp) => taskByPath.get(String(pp)) === single - 1);
+    }
+    setStage(job, 'scan', 'success', `共 ${runPaths.length} 个来源待抽取为语料${force ? '（强制重新解析）' : ''}`);
+    setStage(job, 'parse', 'running', '解析来源为 Markdown…');
+
+    const { drive, makeContext } = require('../corpus/drive');
+    const { buildPipeline } = require('../corpus/build');
+    const { CORPUS_RECIPE } = require('../corpus/recipes');
+    let done = 0;
+    const ctx = makeContext({
+      settings, signal, rawPaths: runPaths, forceMineru: !!force,
+      payload: p, skillName: p.skillName || '',
+      onLog: (line, replace) => jobLog(job, line, replace),
+      onStage: (key, status, detail) => { if (key === 'parse' || key === 'write') setStage(job, key, 'running', detail); },
+      onItem: (item) => {
+        done++;
+        setStage(job, 'parse', 'running', `已抽取 ${item.label}（${done}/${runPaths.length}）`);
+        const idx = taskByPath.get(String((item.origin && item.origin.path) || ''));
+        if (idx != null) {
+          const rel = (item.meta && item.meta.corpusFile) || '';
+          tracker.setOutput(idx, rel ? `已写入语料库 → ${rel}` : '已解析（未落盘）');
+          tracker.setDone(idx);
+        }
+      },
+      shared: {},
+    });
+    const res = await drive(buildPipeline(CORPUS_RECIPE, ctx), ctx);
+    if (signal && signal.aborted) throw mkAbortErr();
+
+    // 对账：未到达 onItem 的任务 = 被过滤（白名单）或解析失败
+    const errByPath = new Map();
+    for (const e of (ctx.errors || [])) errByPath.set(String(e.label || ''), String(e.error || ''));
+    const stats = (res && res.stats) || {};
+    let failedCount = 0;
+    for (let i = 0; i < (job.tasks || []).length; i++) {
+      const t = job.tasks[i];
+      if (t.status === 'done' || t.status === 'failed') continue;
+      if (single !== null && i !== single - 1) continue;   // 单任务重跑：非目标已标跳过
+      const rp = String(runPaths[i] != null ? runPaths[i] : rawPaths[i] || '');
+      const name = rp.replace(/^raw\//, '').split(/[\\/]/).pop();
+      const err = errByPath.get(name) || errByPath.get(rp);
+      if (err) { t.status = 'failed'; t.output = (t.output || '') + `\n[失败] ${err}`; failedCount++; }
+      else { t.status = 'done'; t.output = (t.output || '') + '\n已跳过（无可用解析器或内容为空）'; }
+    }
+    persistJobs(); emitJobs();
+
+    const written = Number(stats.corpusWritten) || 0;
+    const created = Number(stats.corpusCreated) || 0;
+    const updated = Number(stats.corpusUpdated) || 0;
+    const skipped = Number(stats.corpusSkipped) || 0;
+    const failed = Number(stats.corpusFailed) || failedCount;
+    if (!written && (failed || skipped === runPaths.length)) {
+      throw new Error(`全部 ${runPaths.length} 个来源抽取失败或无可解析内容${(ctx.errors && ctx.errors[0]) ? '：' + ctx.errors[0].error : ''}`);
+    }
+    setStage(job, 'parse', 'success', `已解析 ${written + skipped} 个来源（跳过 ${skipped} 个空内容/不支持格式${failed ? `，失败 ${failed} 个` : ''}）`);
+    setStage(job, 'write', 'success', `已写入 ${written} 篇语料${created ? `（新建 ${created}` : ''}${created && updated ? '、' : ''}${updated ? `更新 ${updated}` : ''}${(created || updated) ? '）' : ''} → corpus/`);
+    const failedTasks = failedCount || (ctx.errors && ctx.errors.length)
+      ? (ctx.errors || []).map((e, i) => ({ taskNo: i + 1, label: e.label, error: e.error }))
+      : undefined;
+    return { written, created, updated, skipped, failed, rels: (ctx.shared && ctx.shared.corpusRels) || [], failedTasks, llmCalls: Number(stats.llmCalls) || 0, warnings: (res && res.warnings) || [] };
+  },
 };
 
 // ---------- 对外操作 ----------
@@ -784,6 +878,10 @@ function submit({ type, payload }) {
     } else if (payload.rawPaths && payload.rawPaths.length) {
       scopeLabel = rawPathsLabel(payload);
       source = { kind: '原始文件', label: payload.rawPaths.join('、'), items: payload.rawPaths };
+    } else if (payload.corpusRels && payload.corpusRels.length) {
+      // 语料库入图（§7.5 CorpusFileSource）：从已落盘 .md 语料再抽取，不重跑解析
+      scopeLabel = `语料·${payload.corpusRels.length} 篇`;
+      source = { kind: '语料库', label: payload.corpusRels.join('、'), items: payload.corpusRels };
     } else {
       // 集合类：全部笔记作为来源（每个笔记一个子任务）
       scopeLabel = '全部笔记';
@@ -814,6 +912,16 @@ function submit({ type, payload }) {
     const job = submitJob('graph-repair', title.slice(0, 60), GRAPH_REPAIR_STAGES, payload);
     // 动作清单随 source 持久化（payload 不入库）：重启后重试仍能恢复同一批动作
     job.source = { kind: '冲突修复', label: `${actions.length} 个修复动作`, items: actions.map((a) => a.actionZh || a.kind), actions };
+    persistJobs();
+    return { ok: true, id: job.id };
+  }
+  if (type === 'extract-corpus') {
+    // 语料抽取作业（设计 §7.5）：从原始文件抽取为 Markdown 语料，不入图、不写笔记
+    const rawPaths = Array.isArray(payload && payload.rawPaths) ? payload.rawPaths.filter(Boolean) : [];
+    if (!rawPaths.length) return { ok: false, error: '没有可抽取的原始来源' };
+    const title = rawPaths.length === 1 ? `抽取语料·${String(rawPaths[0]).replace(/^raw\//, '')}` : `抽取语料·${rawPaths.length} 个来源`;
+    const job = submitJob('extract-corpus', title.slice(0, 60), EXTRACT_CORPUS_STAGES, { ...payload, rawPaths });
+    job.source = { kind: '原始文件', label: rawPaths.join('、'), items: rawPaths };
     persistJobs();
     return { ok: true, id: job.id };
   }
@@ -877,6 +985,15 @@ function retry({ id, settings }) {
     if (!acts.length) return { ok: false, error: '修复动作清单丢失（应用重启所致），请在「知识图谱 → 推理」页重新规划修复' };
     return { ok: true, id: requeueJob(src, GRAPH_REPAIR_STAGES, { ...base, settings, actions: acts }).id };
   }
+  if (src.type === 'extract-corpus') {
+    // 恢复抽取范围（与 extract-note 同回退链：payload.rawPaths → raw_paths 列 → source.items）
+    const rawPaths = Array.isArray(base.rawPaths) && base.rawPaths.length
+      ? base.rawPaths
+      : (Array.isArray(src.rawPaths) && src.rawPaths.length ? src.rawPaths
+      : (src.source && Array.isArray(src.source.items) ? src.source.items : []));
+    if (!rawPaths.length) return { ok: false, error: '来源信息丢失，无法重试，请从原始文件页重新抽取' };
+    return { ok: true, id: requeueJob(src, EXTRACT_CORPUS_STAGES, { ...base, settings, rawPaths }).id };
+  }
   return { ok: false, error: '未知作业类型：' + src.type };
 }
 
@@ -885,7 +1002,7 @@ function retry({ id, settings }) {
 function retryTask({ id, taskNo, settings }) {
   const src = jobs.find((j) => j.id === id);
   if (!src) return { ok: false, error: '作业不存在' };
-  if (src.type !== 'graph' && src.type !== 'graph-repair') return { ok: false, error: '仅知识图谱/冲突修复作业支持单任务重跑' };
+  if (src.type !== 'graph' && src.type !== 'graph-repair' && src.type !== 'extract-corpus') return { ok: false, error: '仅知识图谱/冲突修复/语料抽取作业支持单任务重跑' };
   if (src.status === 'running' || src.status === 'queued') return { ok: false, error: '作业进行中，无法重跑单个任务' };
   if (!Array.isArray(src.tasks) || !src.tasks.length) return { ok: false, error: '该作业没有任务列表' };
   const task = src.tasks.find((t) => t.no === taskNo);
@@ -934,7 +1051,9 @@ function retryTask({ id, taskNo, settings }) {
   task.status = 'pending';
   task.output = (task.output || '') + '\n[重跑] 等待重新执行…';
   // 重置阶段为 pending，重新走一遍流程（但仅目标批次真正执行）
-  src.stages = GRAPH_STAGES.map((s) => ({ key: s.key, name: s.name, status: 'pending', detail: '' }));
+  // graph 与 extract-corpus 共用这段重跑逻辑（都按 rawPaths 恢复范围），仅阶段定义不同
+  const stageDefs = src.type === 'extract-corpus' ? EXTRACT_CORPUS_STAGES : GRAPH_STAGES;
+  src.stages = stageDefs.map((s) => ({ key: s.key, name: s.name, status: 'pending', detail: '' }));
   src.payload = gpayload;
   jobQueue.push(src.id);
   persistJobs();

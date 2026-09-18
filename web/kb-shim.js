@@ -19,6 +19,9 @@
     'ai:assist-chunk': [],
     'tpl:match-chunk': [],
     'tpl:suggest-profile-chunk': [],
+    'tpl:suggest-name-chunk': [],
+    'tpl:suggest-domains-chunk': [],
+    'tpl:assign-domains-chunk': [],
   };
 
   const es = new EventSource('/api/events');
@@ -69,6 +72,9 @@
     onTplGenChunk: on('tpl:gen-chunk'),
     onTplMatchChunk: on('tpl:match-chunk'),
     onTplSuggestProfileChunk: on('tpl:suggest-profile-chunk'),
+    onTplSuggestNameChunk: on('tpl:suggest-name-chunk'),
+    onTplSuggestDomainsChunk: on('tpl:suggest-domains-chunk'),
+    onTplAssignDomainsChunk: on('tpl:assign-domains-chunk'),
     onAiRefs: on('ai:refs'),
     onAiAssistChunk: on('ai:assist-chunk'),
     aiAssistStop: () => call('note:aiAssistStop'),
@@ -84,6 +90,8 @@
     tplMatchFor: (payload) => call('tpl:matchFor', payload),
     tplSuggestName: (payload) => call('tpl:suggestName', payload),
     tplSuggestProfile: (payload) => call('tpl:suggestProfile', payload),
+    tplSuggestDomains: (payload) => call('tpl:suggestDomains', payload),
+    tplAssignDomains: (payload) => call('tpl:assignDomains', payload),
     promptsDefs: () => call('prompts:defs'),
 
     // 原始文件管理（目录选择在浏览器不可用，返回 canceled 由前端提示）
@@ -122,6 +130,16 @@
     rawAddFiles: (payload) => call('raw:addFiles', payload),
     rawAddDir: (payload) => call('raw:addDir', payload),
     browseDir: () => Promise.resolve({ ok: false, error: '网页模式不支持浏览本地目录' }),
+
+    // 语料库（设计 §11.3，与 preload.js 同名同步；均为 invoke 类，call() 自动转发，无需登记 subs）
+    corpusList: (payload) => call('corpus:list', payload),
+    corpusRead: (payload) => call('corpus:read', payload),
+    corpusRemove: (payload) => call('corpus:remove', payload),
+    corpusPromote: (payload) => call('corpus:promote', payload),
+    // 网页模式下“在文件管理器中打开”会在**服务端**弹目录（§16.9），故给友好 stub而非转发
+    corpusOpenDir: () => Promise.resolve({ ok: false, error: '网页模式不支持打开本地目录，请在桌面端使用' }),
+    corpusPipelinePreview: (payload) => call('corpus:pipelinePreview', payload),
+    skillExtractTest: (payload) => call('skill:extractTest', payload),
 
     // 作业管理
     jobsList: () => call('jobs:list'),

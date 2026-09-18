@@ -6,6 +6,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 const { bootEnv, mkCheck, startFakeLlm, sseText, writeFile } = require('./helpers/harness');
 
 const { check, section, summary } = mkCheck('作业管理模块');
@@ -25,7 +26,14 @@ const json = (obj) => ({ status: 200, headers: { 'Content-Type': 'text/event-str
 
   // 窗口注入：捕获 jobs:update / jobs:log 推送
   const pushed = [];
-  jobs.init(() => ({ isDestroyed: () => false, webContents: { send: (ch, payload) => pushed.push({ ch, payload }) } }));
+  const corpusCollectDetails = [];
+  jobs.init(() => ({ isDestroyed: () => false, webContents: { send: (ch, payload) => {
+    pushed.push({ ch, payload });
+    if (ch === 'jobs:update') payload.filter((j) => j.source && j.source.kind === '语料库').forEach((j) => {
+      const st = j.stages.find((s) => s.key === 'collect');
+      if (st) corpusCollectDetails.push(st.detail);
+    });
+  } } }));
 
   // ---------- 1. 任务模型 ----------
   section('jobs/tasks.js — 子任务模型');
@@ -180,6 +188,7 @@ const json = (obj) => ({ status: 200, headers: { 'Content-Type': 'text/event-str
   await tick(1500);
   check('全部批次失败时作业失败', gj4.status === 'failed' && /全部 1 个来源抽取失败/.test(gj4.error), gj4.error);
   check('失败子任务标 failed 并带原因', gj4.tasks[0].status === 'failed' && /\[失败\]/.test(gj4.tasks[0].output), gj4.tasks[0].output);
+  check('全部失败时阶段归属为 AI 本体抽取', gj4.stages.find((s) => s.key === 'extract').status === 'failed' && gj4.stages.find((s) => s.key === 'reason').status === 'pending', JSON.stringify(gj4.stages.map((s) => `${s.key}:${s.status}`)));
   bad.close();
 
   // 部分失败 → warning + failedTasks
@@ -229,7 +238,7 @@ const json = (obj) => ({ status: 200, headers: { 'Content-Type': 'text/event-str
   section('jobs.retry / retryTask — 范围恢复回退链');
   check('重试不存在的作业', jobs.retry({ id: 'nope', settings }).error === '作业不存在');
   check('重试非失败作业被拒', jobs.retry({ id: gj1.id, settings }).error === '只能重试失败的作业');
-  check('单任务重跑：非图谱作业被拒', jobs.retryTask({ id: j4.id, taskNo: 1, settings }).error === '仅知识图谱/冲突修复作业支持单任务重跑');
+  check('单任务重跑：非图谱/语料作业被拒', jobs.retryTask({ id: j4.id, taskNo: 1, settings }).error === '仅知识图谱/冲突修复/语料抽取作业支持单任务重跑');
   const hang3 = await startFakeLlm(() => ({ hang: true }));
   const busy = jobs.submit({ type: 'graph', payload: { settings: { ...settings, ...hang3.settings(), llmRequestTimeout: 600 }, rawPaths: ['raw/充电桩扩容方案.md'], autoDomain: false } });
   await tick(300);
@@ -287,7 +296,107 @@ const json = (obj) => ({ status: 200, headers: { 'Content-Type': 'text/event-str
   check('单任务重跑后作业回到成功', gj5.status === 'success' || gj5.status === 'warning', gj5.status + ' / ' + gj5.error);
   check('重跑产物入图', graph.getGraph().nodes.some((x) => /^单任务重跑节点/.test(x.name)));
   one.close();
+
+  section('语料图谱任务：Markdown 输入与原文溯源独立留档');
+  const corpusStore = require('../src/main/corpus/store');
+  const { makeItem } = require('../src/main/corpus/item');
+  const { makeContext } = require('../src/main/corpus/drive');
+  const cs = { ...gsettings, pipeline: true, skillExtract: false, graphConcurrency: 1 };
+  const originals = ['甲', '乙'].map((folder) => makeItem({
+    kind: 'raw',
+    origin: { type: 'local', path: 'local:' + path.join(dir, folder, 'AI数据&知识库.xlsx'), name: 'AI数据&知识库.xlsx', ext: '.xlsx', size: 100, mtime: 123 },
+    text: '# 已解析语料\n\n充电桩与变压器存在容量匹配关系。MARKDOWN_ONLY_' + folder,
+    meta: { parseMethod: 'builtin' },
+  }));
+  const cw = originals.map((it) => corpusStore.writeCorpus(it, makeContext({ settings: cs })));
+  check('语料夹具写入成功，原始 Excel 无需存在', cw.every((x) => x.ok)
+    && originals.every((it) => !fs.existsSync(it.origin.path.slice(6))));
+  // 首个来源缺失，验证任务按收集后的实际条目关联，而非按 source.items 序号猜测。
+  const corpusRels = ['缺失/不存在.md', ...cw.map((x) => x.rel)];
+  const requestStart = fake.requests.length;
+  const cg = jobs.submit({ type: 'graph', payload: { settings: cs, corpusRels, autoDomain: false, autoReason: false, ontologyProfile: 'bfo-lite' } });
+  const cj = jobs.list().find((j) => j.id === cg.id);
+  const waitJob = async (job) => {
+    const deadline = Date.now() + 10000;
+    while (job.status === 'queued' || job.status === 'running') {
+      if (Date.now() > deadline) throw new Error('等待测试作业超时：' + job.id);
+      await tick();
+    }
+  };
+  await waitJob(cj);
+  check('语料图谱作业成功（不依赖原文解析）', cj.status === 'success', cj.error);
+  check('来源卡片仍留档语料范围', cj.source.kind === '语料库' && cj.source.items.join('|') === corpusRels.join('|'));
+  check('任务以 Markdown 路径命名且编号不变', cj.tasks.length === 2
+    && cj.tasks.every((t, i) => t.no === i + 1 && t.label === '语料·' + cw[i].rel && t.status === 'done'));
+  check('每个任务记录实际语料路径，不与缺失来源错位', cj.tasks.every((t, i) => t.source.kind === 'corpus' && t.source.path === 'corpus/' + cw[i].rel));
+  check('任务独立记录 Excel 原文名和路径供溯源', cj.tasks.every((t, i) => t.source.originName === originals[i].origin.name && t.source.originPath === originals[i].origin.path));
+  check('结果来源标签统一使用 Markdown', cj.result.sourceLabels.join('|') === cw.map((x) => '语料·' + x.rel).join('|'));
+  const prompts = fake.requests.slice(requestStart).map((r) => (r.body.messages || []).map((m) => m.content).join('\n'));
+  check('模型收到实际 Markdown 来源标题和语料正文', cw.every((x, i) => prompts.some((p) => p.includes('=== 来源: 语料·' + x.rel + ' ===') && p.includes('MARKDOWN_ONLY_' + ['甲', '乙'][i]))));
+  check('模型来源标题不再混入原 Excel 名', prompts.length > 0 && prompts.every((p) => !p.includes('AI数据&知识库.xlsx')));
+  check('图谱节点来源使用语料标签', cw.every((x) => graph.getGraph().nodes.some((n) => (n.sources || []).includes('语料·' + x.rel))));
+  check('收集初始阶段明确是 Markdown 语料', corpusCollectDetails.some((d) => d === '读取 3 篇 Markdown 语料（不重新解析原始文件）…')
+    && !corpusCollectDetails.includes('读取全部笔记…'));
+  const persistedTasks = JSON.parse(env.db.all('SELECT tasks FROM jobs WHERE id = ?', [cj.id])[0].tasks);
+  check('任务标签与溯源字段完整持久化', JSON.stringify(persistedTasks) === JSON.stringify(cj.tasks));
+  check('原始文件和笔记图谱任务不附加语料溯源', gj1.tasks.every((t) => !t.source) && gj2.tasks.every((t) => !t.source));
+
+  const otherTask = JSON.stringify(cj.tasks[1]);
+  cj.status = 'warning'; cj.tasks[0].status = 'failed';
+  check('语料单任务重跑受理', jobs.retryTask({ id: cj.id, taskNo: 1, settings: cs }).ok === true);
+  await waitJob(cj);
+  check('重跑任务仍保留 Markdown 标签与溯源', cj.status === 'success' && cj.tasks[0].label === persistedTasks[0].label
+    && JSON.stringify(cj.tasks[0].source) === JSON.stringify(persistedTasks[0].source), cj.error);
+  check('非目标任务的状态、输出和溯源均保持原样', JSON.stringify(cj.tasks[1]) === otherTask);
+
+  writeFile(path.join(corpusStore.corpusRoot(), '外部/独立.md'), '# 充电桩与变压器\n无原始文档元数据。');
+  let plainTasks = [];
+  await graph.extractGraph(cs, { corpusRels: ['外部/独立.md'], autoReason: false }, null, null, (tasks) => { plainTasks = tasks; });
+  check('无 frontmatter 的语料不伪造原文溯源', plainTasks[0].label === '语料·外部/独立.md'
+    && plainTasks[0].source.originName === '' && plainTasks[0].source.originPath === '');
+  writeFile(path.join(corpusStore.corpusRoot(), '外部/空.md'), ' \n ');
+  for (const rel of ['外部/空.md', '缺失/不存在.md']) {
+    let error = '';
+    try { await graph.extractGraph(cs, { corpusRels: [rel], autoReason: false }); } catch (e) { error = e.message; }
+    check('空或缺失语料错误不误称笔记：' + rel, /语料 Markdown/.test(error) && !/笔记/.test(error), error);
+  }
   fake.close();
+
+  section('作业详情渲染：语料主名称、原文溯源与历史兼容');
+  class Element {
+    constructor(tag) { this.tagName = tag; this.children = []; this.innerHTML = ''; this.textContent = ''; this.style = {}; this.className = ''; }
+    appendChild(child) { this.children.push(child); return child; }
+    addEventListener() {}
+  }
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const ui = vm.createContext({ document: { createElement: (tag) => new Element(tag) }, escapeHtml: esc, formatDate: () => '', requestAnimationFrame: (fn) => fn(), icoSvg: () => '' });
+  vm.runInContext(fs.readFileSync(path.join(env.repoRoot, 'src/renderer/jobs.js'), 'utf8'), ui);
+  const byClass = (el, cls) => [...(el.className.split(' ').includes(cls) ? [el] : []), ...el.children.flatMap((child) => byClass(child, cls))];
+  const render = (tasks, source = cj.source, type = 'graph') => ui.buildJobDetail({ id: 'ui-corpus', type, status: 'success', source, tasks, stages: [] });
+  const view = render(persistedTasks);
+  const taskRows = byClass(view, 'job-task');
+  const originRows = byClass(view, 'job-task-origin');
+  check('主任务行显示 Markdown 标签，悬停展示 corpus 路径', taskRows.every((r, i) => r.innerHTML.includes(esc(persistedTasks[i].label))
+    && r.innerHTML.includes('title="' + esc(persistedTasks[i].source.path) + '"') && !r.innerHTML.includes('.xlsx')));
+  check('原文名仅在独立溯源行展示，悬停可见原文路径', originRows.length === 2 && originRows.every((r, i) => r.textContent === '原始文档（溯源）：AI数据&知识库.xlsx' && r.title === originals[i].origin.path));
+  check('来源卡片说明 Markdown 直接抽取', byClass(view, 'job-source').some((r) => r.innerHTML.includes('不重新解析原始文件')));
+  check('每个任务的完整输出仍独立展示', byClass(view, 'task-output').length === 2 && byClass(view, 'task-output')[0].textContent === persistedTasks[0].output);
+  vm.runInContext("taskCollapsed['ui-corpus:1'] = true", ui);
+  const collapsedView = render(persistedTasks);
+  check('折叠输出不隐藏输入名称和溯源', byClass(collapsedView, 'task-output').length === 1 && byClass(collapsedView, 'job-task-origin').length === 2 && byClass(collapsedView, 'job-task').length === 2);
+  const rawView = render(gj1.tasks, gj1.source);
+  const noteView = render(gj2.tasks, gj2.source);
+  const extractionView = render(j1.tasks, { kind: '原始文件' }, 'extract-corpus');
+  check('原始文件、笔记及抽取语料作业不误标为语料输入', [rawView, noteView, extractionView].every((v) => byClass(v, 'job-task-origin').length === 0 && !byClass(v, 'job-source').some((r) => r.innerHTML.includes('不重新解析原始文件'))));
+  const oldView = render([{ no: 9, label: '语料·历史.xlsx', status: 'done', output: '' }]);
+  check('历史任务无新元数据时保留原标签、不按序号猜路径', byClass(oldView, 'job-task')[0].innerHTML.includes('语料·历史.xlsx') && byClass(oldView, 'job-task-origin').length === 0);
+  check('缺少原文元数据时不展示虚假溯源', byClass(render(plainTasks), 'job-task-origin').length === 0);
+  const dangerous = '<img src=x onerror="alert(1)">&';
+  const specialView = render([{ no: 1, label: '语料·' + dangerous + '.md', status: 'done', source: { kind: 'corpus', path: 'corpus/' + dangerous + '.md', originName: dangerous + '.xlsx', originPath: 'local:/' + dangerous + '.xlsx' } }]);
+  const specialRow = byClass(specialView, 'job-task')[0];
+  const specialOrigin = byClass(specialView, 'job-task-origin')[0];
+  check('语料名称与悬停路径按 HTML 转义', !specialRow.innerHTML.includes('<img') && specialRow.innerHTML.includes(esc(dangerous)));
+  check('原文溯源以纯文本展示特殊字符', specialOrigin.textContent === '原始文档（溯源）：' + dangerous + '.xlsx' && specialOrigin.innerHTML === '' && specialOrigin.title === 'local:/' + dangerous + '.xlsx');
 
   // ---------- 6. 删除/清空/历史 ----------
   section('jobs.remove / clear / 历史上限');

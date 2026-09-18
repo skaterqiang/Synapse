@@ -255,8 +255,12 @@ class SkillMarkdownDecorator extends ParseLayer {
     const settings = (ctx && ctx.settings) || {};
     const parse = require('../../skills/parse');
     if (!parse.skillParseReady(settings)) return false;
-    const { selectExtractSkills } = require('../../skills/select');
-    return selectExtractSkills(settings, extOf(item)).length > 0;
+    const { selectExtractSkills, findExtractSkill } = require('../../skills/select');
+    const ext = extOf(item);
+    if (ctx && ctx.skillName) {
+      return !!findExtractSkill(settings, ctx.skillName, ext);
+    }
+    return selectExtractSkills(settings, ext).length > 0;
   }
 
   async apply(item, ctx) {
@@ -265,8 +269,13 @@ class SkillMarkdownDecorator extends ParseLayer {
     const ext = extOf(item);
     const abs = localAbsOf(item, c);
     const parse = require('../../skills/parse');
-    const { selectExtractSkills } = require('../../skills/select');
-    const skills = selectExtractSkills(settings, ext);
+    const { selectExtractSkills, findExtractSkill } = require('../../skills/select');
+    let skills = null;
+    if (c.skillName) {
+      const forced = findExtractSkill(settings, c.skillName, ext);
+      if (forced) skills = [forced];
+    }
+    if (!skills) skills = selectExtractSkills(settings, ext);
     this.lastSkills = skills;
     if (!skills.length) return null; // 让位给下一个候选（不算失败）
 
@@ -310,8 +319,13 @@ class SkillMarkdownDecorator extends ParseLayer {
       throw new Error(`抽取技能「${skill.name}」的脚本入口不存在：${entry}`);
     }
     const instructions = parse.skillInstructions(skill) || '';
-    // 设置项以「秒」为单位（与 mineruTimeout/reasonTimeout/urlFetchTimeout 口径一致），主进程 ×1000
-    const timeoutMs = num(settings, 'extractSkillTimeoutSec', 120, 5, 600) * 1000;
+    // 超时（秒）：技能声明的 timeoutSec 优先，留 0/缺省则回退全局 extractSkillTimeoutSec；主进程 ×1000
+    const tSec = Number(skill.timeoutSec) > 0
+      ? Math.min(600, Math.max(5, Math.round(Number(skill.timeoutSec))))
+      : num(settings, 'extractSkillTimeoutSec', 120, 5, 600);
+    const timeoutMs = tSec * 1000;
+    // 产物文件名：技能声明的 output 优先（basename 防目录穿越），缺省用 SCRIPT_MD_NAME
+    const mdRel = path.basename(String(skill.output || '').trim() || SCRIPT_MD_NAME);
 
     const code = [
       "const fs = require('fs'), path = require('path');",
@@ -324,7 +338,7 @@ class SkillMarkdownDecorator extends ParseLayer {
       `    instructions: ${JSON.stringify(instructions)},`,
       '    outputDir: outDir,',
       '  });',
-      '  const mdRel = ' + JSON.stringify(SCRIPT_MD_NAME) + ';',
+      '  const mdRel = ' + JSON.stringify(mdRel) + ';',
       "  fs.writeFileSync(path.join(outDir, mdRel), String((out && out.markdown) || ''), 'utf8');",
       '  const assets = ((out && out.assets) || []).map((a) => String(a));',
       '  process.stdout.write(JSON.stringify({ ok: true, mdRel, assets }));',
@@ -346,7 +360,7 @@ class SkillMarkdownDecorator extends ParseLayer {
       throw new Error(`脚本抽取技能「${skill.name}」执行失败：${String(detail).trim().slice(-400)}`);
     }
 
-    const mdAbs = path.join(String(res.outputDir || ''), String(res.mdRel || SCRIPT_MD_NAME));
+    const mdAbs = path.join(String(res.outputDir || ''), String(res.mdRel || mdRel));
     let markdown = '';
     try {
       markdown = fs.readFileSync(mdAbs, 'utf8');
@@ -414,6 +428,75 @@ class BuiltinParseDecorator extends ParseLayer {
     // 内置解析出空串是合法情形（如空 PDF，files.js:691），照实透传，由上层决定要不要跳过
     out.meta.parseMethod = 'builtin';
     return out;
+  }
+}
+
+// ============ CorpusReuseDecorator（可选，§4.2 / O4，默认不在配方中） ============
+
+/**
+ * 语料复用：若该来源已有**未过期**的语料文件，直接读回 text，跳过整条解析链（零 LLM 成本）。
+ *
+ * 位置（O4）：在 CacheDecorator **内层**、FallbackDecorator **外层**，即链序 cache > corpusReuse > fallback。
+ * 短路机制与 CacheDecorator 同构——都靠内层 FallbackDecorator 的 preParse 钩子「在解析之前插手」：
+ *   · 本层构造时把自己的 tryReuse 装到 inner(Fallback) 的 preParse 上；
+ *   · 外层 Cache 构造时调本层 setPreParse(tryHit)，本层不覆盖 Fallback 的钩子，而是**链式转交**；
+ *   · 于是每条 item 的 preParse 顺序为：先试语料复用，命中即返回（不再查缓存）；未命中再走缓存钩子；都未命中则交给 Fallback 解析。
+ * 这正是 §4.4「语料复用比解析缓存更上游」的可执行表达。语料命中来自 readCorpus 的纯文本，不带 parse 副作用，
+ * 故 Fallback 命中短路（parse.js:481）不会触发 postParse，不会把复用文本回写解析缓存。
+ */
+class CorpusReuseDecorator extends CorpusDecorator {
+  constructor(inner, opts = {}) {
+    super(inner);
+    this.opts = opts || {};
+    this.hits = 0;
+    this.misses = 0;
+    this._downPre = null;   // 外层（Cache）注册的钩子，语料未命中时链式转交
+    this._downPost = null;
+    this.attached = false;
+    if (inner && typeof inner.setPreParse === 'function') {
+      inner.setPreParse((item, ctx) => this.tryReuse(item, ctx));
+      if (typeof inner.setPostParse === 'function') {
+        inner.setPostParse((item, ctx) => { if (this._downPost) return this._downPost(item, ctx); });
+      }
+      this.attached = true;
+    }
+  }
+
+  get caps() { return this.inner.caps; }
+
+  // 供外层 CacheDecorator 注册（Cache 把本层当作「支持钩子的内层」）
+  setPreParse(fn) { this._downPre = typeof fn === 'function' ? fn : null; return this; }
+  setPostParse(fn) { this._downPost = typeof fn === 'function' ? fn : null; return this; }
+
+  /** 命中 → 返回带 text 的 item；未命中 → 转交外层钩子（无则返回 null，交给 Fallback 解析） */
+  tryReuse(item, ctx) {
+    const c = ctx || {};
+    const store = require('../store');
+    let hit = null;
+    try { hit = store.findReusableCorpus(item.origin, c.settings || {}); } catch (_) { hit = null; }
+    if (hit) {
+      this.hits++;
+      const out = { ...item, text: String(hit.text) };
+      delete out.bytes;
+      out.meta = { ...(item.meta || {}) };
+      out.meta.parseMethod = 'corpus';
+      out.meta.reusedCorpus = hit.rel;
+      addProvenance(out, { layer: this.layer, at: Date.now(), ms: 0, hit: true, rel: hit.rel });
+      return out;
+    }
+    this.misses++;
+    return this._downPre ? this._downPre(item, c) : null;
+  }
+
+  async finish(ctx) {
+    const warnings = [];
+    if (!this.attached) warnings.push('语料复用层未能挂到解析链上（内层不支持 preParse 钩子），本次不复用语料');
+    return {
+      ok: true,
+      count: 0,
+      stats: { corpusReuseHits: this.hits, corpusReuseMisses: this.misses },
+      warnings,
+    };
   }
 }
 
@@ -563,6 +646,7 @@ module.exports = {
   MineruDecorator,
   SkillMarkdownDecorator,
   BuiltinParseDecorator,
+  CorpusReuseDecorator,
   FallbackDecorator,
   BUILTIN_EXTS,
   SCRIPT_MD_NAME,

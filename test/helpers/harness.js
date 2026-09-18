@@ -152,6 +152,12 @@ function mkCheck(label = '测试') {
 async function startFakeLlm(handler) {
   const requests = [];
   const server = http.createServer((req, res) => {
+    // Ollama 健康探测：避免 ensureOllamaServer 的 ping 污染请求记录与响应逻辑
+    if (req.url === '/api/version' || req.url === '/v1/api/version') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ version: 'fake-ollama' }));
+      return;
+    }
     let raw = '';
     req.on('data', (c) => { raw += c; });
     req.on('end', async () => {

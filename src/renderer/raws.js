@@ -149,7 +149,7 @@ function domainCardState(card, state, statusText) {
 // AI 判定领域并提交：进度展示 → 填充可编辑下拉 → 用户点「确认提取」才提交作业；「取消」放弃本次提取
 // texts 为字符串数组（领域预匹配用）；inlineSources 为 {label,text} 数组（笔记图谱的作业来源）
 // 多领域拆分提取：识别全部内聚领域 → 逐文件分类（多归属+置信度）→ 逐领域准备模版/体系 → 清单确认 → 每领域独立作业
-async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSources = [] }) {
+async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSources = [], corpusMode = false }) {
   const n = rawPaths.length || inlineSources.length || texts.length;
   $('domain-modal-title').textContent = '提取知识图谱';
   // 显示当前使用的模型与服务商，便于用户确认判定所用的 AI 配置
@@ -244,6 +244,29 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
   const unbindAssign = (window.kb.onTplAssignDomainsChunk ? window.kb.onTplAssignDomainsChunk(feedThink) : null);
   const unbindThink = () => { if (unbindMatch) unbindMatch(); if (unbindProfile) unbindProfile(); if (unbindName) unbindName(); if (unbindGen) unbindGen(); if (unbindSugDom) unbindSugDom(); if (unbindAssign) unbindAssign(); collapseThink(); };
 
+  // 按最终领域与体系生成提交清单：先过滤勾选项，再合并来源；不改动可编辑的原分组。
+  const buildSubmissionGroups = () => {
+    const merged = new Map();
+    for (const g of groups) {
+      if (!g.checked) continue;
+      const refs = (g.fileRefs || []).filter((f) => !g.fileChecked || g.fileChecked[f.rawPath] !== false);
+      const keys = (g.inlineKeys || []).filter((k) => !g.fileChecked || g.fileChecked['inline:' + k] !== false);
+      if (!refs.length && !keys.length) continue;
+      const profileId = g.profileId || (g.tpl && g.tpl.ontologyProfile) || (state.settings && state.settings.ontologyProfile) || 'bfo-lite';
+      const key = JSON.stringify([g.domainId, profileId]);
+      if (!merged.has(key)) merged.set(key, {
+        domainId: g.domainId, tpl: g.tpl, profileId,
+        fileRefs: new Map(), inlineKeys: new Set(),
+      });
+      const target = merged.get(key);
+      for (const f of refs) if (!target.fileRefs.has(f.rawPath)) target.fileRefs.set(f.rawPath, f);
+      for (const k of keys) target.inlineKeys.add(k);
+    }
+    return [...merged.values()].map((g) => ({
+      ...g, fileRefs: [...g.fileRefs.values()], inlineKeys: [...g.inlineKeys],
+    }));
+  };
+
   // 提交单个分组的作业（携带该组勾选文件子集；autoDomain=false，领域/体系已定，作业内不再判定）
   const submitGroup = async (g) => {
     const extras = graphDomainExtras({ id: g.domainId, name: g.tpl ? g.tpl.name : '通用', tpl: g.tpl });
@@ -257,7 +280,9 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     const checkedRefs = (g.fileRefs || []).filter((f) => !g.fileChecked || g.fileChecked[f.rawPath] !== false);
     if (!checkedRefs.length && !checkedInline.length) { toast(`「${g.tpl ? g.tpl.name : '通用'}」未勾选任何文件`, 2500); return false; }
     if (checkedInline.length) {
-      payload.inlineSources = inlineSources.filter((s) => checkedInline.includes(String(s.label || '')));
+      // 语料模式：inlineSources 的 label 即 corpus rel，直接以 corpusRels 提交（后端走 CorpusFileSource 跳过解析）
+      if (corpusMode) payload.corpusRels = checkedInline;
+      else payload.inlineSources = checkedInline.map((k) => inlineSources.find((s) => String(s.label || '') === k)).filter(Boolean);
     } else {
       payload.rawPaths = checkedRefs.map((f) => f.rawPath);
     }
@@ -266,10 +291,10 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     return true;
   };
 
-  // 批量提交：循环勾选的分组，每组一个 graph 作业
+  // 批量提交：相同领域与体系共用一个 graph 作业，来源在各作业内去重。
   const doSubmitAll = async () => {
-    const targets = groups.filter((g) => g.checked && ((g.fileRefs && g.fileRefs.length) || (g.inlineKeys && g.inlineKeys.length)));
-    if (!targets.length) { toast('请至少勾选一个领域'); return false; }
+    const targets = buildSubmissionGroups();
+    if (!targets.length) { toast('请至少勾选一个领域及其文件'); return false; }
     let ok = 0;
     for (const g of targets) { if (await submitGroup(g)) ok++; }
     return ok > 0;
@@ -285,7 +310,11 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     confirm.className = 'domain-confirm';
     const cTitle = document.createElement('div');
     cTitle.className = 'domain-confirm-title';
-    cTitle.textContent = '✔ 请确认提取配置（将为每个勾选领域各提交一个作业）';
+    const updateSubmissionSummary = () => {
+      const count = buildSubmissionGroups().length;
+      cTitle.textContent = `✔ 请确认提取配置（将提交 ${count} 个作业）`;
+      confirmBtn.disabled = count === 0;
+    };
     confirm.appendChild(cTitle);
     // 统计每个文件出现在几个组（多归属提示用）
     const fileGroupCount = {};
@@ -324,7 +353,7 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
       updateCount();
       const rm = document.createElement('button');
       rm.type = 'button'; rm.className = 'dgroup-rm'; rm.textContent = '✕'; rm.title = '移除该组';
-      rm.addEventListener('click', () => { g.checked = false; card.style.display = 'none'; });
+      rm.addEventListener('click', () => { g.checked = false; card.style.display = 'none'; updateSubmissionSummary(); });
       head.append(cb, dName, cnt, rm);
       card.appendChild(head);
       // 调整行：领域下拉 + 体系下拉
@@ -343,6 +372,7 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
         g.domainId = dSel.value;
         g.tpl = state.templates.find((t) => t.id === dSel.value) || null;
         syncName();
+        updateSubmissionSummary();
       });
       const pSel = document.createElement('select');
       pSel.className = 'domain-pick dgroup-profile';
@@ -353,7 +383,7 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
         pSel.appendChild(o);
       }
       pSel.value = g.profileId;
-      pSel.addEventListener('change', () => { g.profileId = pSel.value; syncName(); });
+      pSel.addEventListener('change', () => { g.profileId = pSel.value; syncName(); updateSubmissionSummary(); });
       adj.append(dSel, pSel);
       card.appendChild(adj);
       // 二级：该领域要抽取的文件列表（换行 + 缩进），每个文件带勾选框
@@ -379,6 +409,7 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
             cb.checked = anyOn; g.checked = anyOn;
             cb.indeterminate = anyOn && !allOn;
             card.classList.toggle('off', !anyOn);
+            updateSubmissionSummary();
           });
           fileCbs.push(fcb);
           const confTxt = (typeof fi.conf === 'number') ? fi.conf.toFixed(2) : '';
@@ -410,6 +441,7 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
         if (det) det.querySelectorAll('.dgroup-file').forEach((el) => el.classList.toggle('off', !cb.checked));
         updateCount();
         card.classList.toggle('off', !cb.checked);
+        updateSubmissionSummary();
       });
       if (!g.checked) card.classList.add('off');
       confirm.appendChild(card);
@@ -418,21 +450,34 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     // §6.7：提取完成后自动推理开关（默认开）。推理关闭（设置里关掉或模块不可用）时整行置灰。
     const reasonRow = document.createElement('label');
     reasonRow.className = 'checkbox-row reason-entry domain-reason-row';
-    reasonRow.style.marginTop = '8px';
     const rcb = document.createElement('input');
     rcb.type = 'checkbox'; rcb.id = 'extract-auto-reason'; rcb.checked = reasonAvailable();
     const rtxt = document.createElement('span');
-    rtxt.innerHTML = '提取完成后自动运行 OWL 2 RL 推理（推荐，约 1-2s）<i class="radio-hint">提取后自动做一次本地推理物化，把推理边一并写入图谱</i>';
+    rtxt.className = 'domain-reason-content';
+    const reasonTitle = document.createElement('span');
+    reasonTitle.className = 'domain-reason-title';
+    reasonTitle.textContent = '提取完成后自动运行 OWL 2 RL 推理';
+    const reasonBadge = document.createElement('span');
+    reasonBadge.className = 'domain-reason-badge';
+    reasonBadge.textContent = '推荐';
+    reasonTitle.appendChild(reasonBadge);
+    const reasonHint = document.createElement('span');
+    reasonHint.className = 'domain-reason-hint';
+    reasonHint.textContent = '在本地补充推理关系，并将推理结果一并写入图谱。';
+    rtxt.append(reasonTitle, reasonHint);
     reasonRow.append(rcb, rtxt);
     confirm.appendChild(reasonRow);
-    $('domain-modal-sub').textContent = `来源：${label || '当前选择'}${n ? `（${n} 个）` : ''}。勾选要提取的领域，点「确认提取」将为每个领域各提交一个作业。`;
+    $('domain-modal-sub').textContent = `来源：${label || '当前选择'}${n ? `（${n} 个）` : ''}。相同领域与体系会合并为一个作业，重复文件仅抽取一次。`;
     $('domain-progress-hint').textContent = '可下拉更改领域与体系；点「确认提取」开始，或「取消」放弃本次提取';
+    updateSubmissionSummary();
     confirmBtn.hidden = false;
   };
 
   // 确认提取：批量提交勾选分组，随后关闭弹窗
   confirmBtn.onclick = async () => {
-    if (decided || cancelled) return; decided = true;
+    if (decided || cancelled) return;
+    if (!buildSubmissionGroups().length) { toast('请至少勾选一个领域及其文件'); return; }
+    decided = true;
     confirmBtn.disabled = true;
     const c9 = domainCard('④', '已确认，批量提交提取作业', 'done');
     domainCardState(c9, 'done', '提交中');
@@ -468,7 +513,7 @@ async function autoDomainAndExtract({ label, rawPaths = [], texts = [], inlineSo
     const c1 = domainCard('①', `识别来源包含的领域（${judgeByLabel}）`, 'running');
     domainCardState(c1, 'running', '判定中');
     mkThink(c1);
-    const sug = await window.kb.tplSuggestDomains({ settings: state.settings, rawPaths, texts, judgeBy });
+    const sug = await window.kb.tplSuggestDomains({ settings: state.settings, rawPaths, texts, inlineSources, judgeBy });
     if (cancelled) return false;
     if (!sug.ok || !Array.isArray(sug.domains) || !sug.domains.length) {
       throw new Error(sug.error || '未能识别领域');
@@ -1192,8 +1237,12 @@ async function loadRaws() {
   state.rawTruncated = (!Array.isArray(res) && res && res.truncated) || [];
   state.rawMaxDirFiles = (!Array.isArray(res) && res && res.maxDirFiles) || 500;
   $('count-raws').textContent = state.raws.length || '';
+  const tabCount = $('count-raws-tab');
+  if (tabCount) tabCount.textContent = state.raws.length || '';
   $('raw-stats').textContent = state.raws.length ? `共 ${state.raws.length} 个原始来源` : '';
   renderRawList();
+  // 同步子页签（原始文件 / 语料库）选中态与计数；corpus.js 未加载时自动跳过
+  if (typeof applyCorpusTab === 'function') applyCorpusTab();
   if (typeof refreshSetupChecklist === 'function') refreshSetupChecklist();
 }
 
@@ -1287,6 +1336,9 @@ function renderRawList() {
       openCtxMenu(e.clientX, e.clientY, [
         { label: '提取笔记', action: () => extractRawNote(r.path) },
         { label: '提取知识图谱', action: () => graphRaw(r.path) },
+        ...(state.settings && state.settings.pipeline === true
+          ? [{ label: '抽取为语料', action: () => extractRawCorpus(r.path) }]
+          : []),
         { sep: true },
         { label: isUrl ? '查看（浏览器打开）' : (isMd ? '查看（应用内预览）' : '查看（本机打开）'), action: () => viewAction(r.path) },
         ...(isUrl ? [{ label: '改名', action: () => renameRawUrl(r) }] : []),
@@ -1551,6 +1603,62 @@ async function extractRawNotes(paths, label) {
   if (!res.ok) { toast('提交提取笔记作业失败：' + (res.error || '未知错误'), 4000); return; }
   toast(`已提交「${label}」提取笔记作业（${paths.length} 个来源）`);
   showJobsView();
+}
+
+// 从路径取扩展名（渲染层未暴露 node path）
+function extOfPath(p) {
+  const base = String(p || '').split(/[\\/]/).pop() || '';
+  const i = base.lastIndexOf('.');
+  return i > 0 ? base.slice(i) : '';
+}
+
+// ---------- 语料抽取技能选择 ----------
+// 当存在已启用的抽取技能时，让用户选择「自动匹配」或具体技能；取消返回 null。
+// ext 可传单个扩展名（如 '.xlsx'）或任意字符串（批量时传 '*' 表示展示全部技能）。
+async function pickExtractSkill(ext) {
+  const skills = ((state.settings && state.settings.skills) || [])
+    .filter((k) => k && k.enabled && String(k.kind || 'instructions') === 'extract');
+  if (!skills.length) return '';
+  const extNorm = String(ext || '').toLowerCase().replace(/^\./, '');
+  const options = [{ value: '', label: '自动匹配（按扩展名与优先级）', selected: true }];
+  for (const k of skills) {
+    const acc = Array.isArray(k.accepts) && k.accepts.length ? k.accepts.join('/') : '全部';
+    const matched = !extNorm || extNorm === '*' || (Array.isArray(k.accepts) && k.accepts.length
+      ? k.accepts.map((a) => a.toLowerCase().replace(/^\./, '')).includes(extNorm)
+      : true);
+    const hint = matched ? '' : '（不匹配当前扩展名）';
+    const modeHint = String(k.mode || 'llm') === 'script' ? ' [脚本]' : '';
+    options.push({ value: k.name, label: `${k.name} · ${acc}${modeHint}${hint}` });
+  }
+  return await askSelect('选择语料抽取技能', options, { width: '420px' });
+}
+
+// ---------- 语料抽取（§16.6）：提交 extract-corpus 作业，一次提交多来源（子任务数==来源数，P13）----------
+async function extractRawCorpus(relPath) {
+  const skillName = await pickExtractSkill(extOfPath(relPath));
+  if (skillName === null) return;
+  const res = await window.kb.jobsSubmit({ type: 'extract-corpus', payload: { settings: state.settings, rawPaths: [relPath], skillName } });
+  if (!res.ok) { toast('提交语料抽取作业失败：' + (res.error || '未知错误'), 4000); return; }
+  toast('语料抽取作业已提交');
+  showJobsView();
+}
+
+async function extractRawCorpusBatch(paths, label) {
+  paths = Array.isArray(paths) ? paths : [];
+  if (!paths.length) { toast('该目录下暂无可抽取的来源', 2500); return; }
+  const skillName = await pickExtractSkill('*');
+  if (skillName === null) return;
+  if (!confirm(`将「${label}」下 ${paths.length} 个来源提交为语料抽取作业，继续吗？\n（已存在且未过期的语料会按设置处理）`)) return;
+  const res = await window.kb.jobsSubmit({ type: 'extract-corpus', payload: { settings: state.settings, rawPaths: paths, skillName } });
+  if (!res.ok) { toast('提交语料抽取作业失败：' + (res.error || '未知错误'), 4000); return; }
+  toast(`已提交「${label}」语料抽取作业（${paths.length} 个来源）`);
+  showJobsView();
+}
+
+// 「抽取为语料」工具栏按钮（corpus.js 委托）：把当前全部原始来源提交为一次作业
+async function extractRawCorpusAll() {
+  const paths = (state.raws || []).map((r) => r && r.path).filter(Boolean);
+  await extractRawCorpusBatch(paths, '全部原始来源');
 }
 
 // 仅从该原始来源抽取知识图谱（AI 自主判定领域与体系）

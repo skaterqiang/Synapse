@@ -7,9 +7,24 @@ function buildTasks(labels) {
   return (labels || []).map((label, i) => ({ no: i + 1, label, status: 'pending', output: '' }));
 }
 
-// 绑定到某个 job 的任务跟踪器；persist 用于落库+推送
+// 绑定到某个 job 的任务跟踪器；persist 用于落库+推送。
+// 对 persist 做 tick 级合并：密集状态变更（如逐条修复动作 setRunning/setOutput/setDone）
+// 会在同一事件循环 tick 里多次触发，合并为一次落库+广播，避免同步循环中堆内存与 I/O 爆炸。
 function makeTaskTracker(job, persist) {
-  const push = () => { if (persist) persist(); };
+  let pending = false;
+  let hasFinal = false;
+  const push = () => {
+    if (!persist) return;
+    if (pending) { hasFinal = true; return; }
+    pending = true;
+    setImmediate(() => {
+      pending = false;
+      const need = hasFinal;
+      hasFinal = false;
+      try { persist(); } catch (_) {}
+      if (need) push();
+    });
+  };
   return {
     // 初始化任务列表
     init(labels) { job.tasks = buildTasks(labels); push(); return job.tasks; },

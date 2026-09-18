@@ -4,7 +4,7 @@
  * renderClassHierarchy(container, ontology, opts)
  *   container 容器元素（内部渲染为一棵可展开的树）
  *   ontology  { classes:[{key,label,desc,parent,custom,instances}] }
- *   opts      { onSelect(cls), onHover(cls|null), selectedKey }
+ *   opts      { onSelect(cls), onHover(cls|null), selectedKey, collapsed, title, subtitle, emptyText, hiddenKeys, getDotColor, getMeta }
  *
  * 与 Protégé 对应关系：
  *   - 左侧树 = Protégé 的 Class hierarchy 面板（owl:Thing 为根的缩进树，节点带圆点图标）
@@ -39,10 +39,30 @@
 
   function renderClassHierarchy(container, ontology, opts) {
     opts = opts || {};
-    const classes = (ontology && ontology.classes) || [];
+    const sourceClasses = (ontology && ontology.classes) || [];
+    // 适配层可按上下文补充颜色、元信息；默认直接使用本体类自身字段，保持原调用方行为不变。
+    const hiddenKeys = new Set(opts.hiddenKeys || []);
+    const classes = sourceClasses.filter((source) => !hiddenKeys.has(source.key)).map((source) => {
+      const item = { ...source };
+      if (typeof opts.getDotColor === 'function') {
+        const color = opts.getDotColor(source);
+        if (color !== undefined) item.dotColor = color;
+      }
+      if (typeof opts.getMeta === 'function') {
+        const meta = opts.getMeta(source);
+        if (meta !== undefined) item.meta = meta;
+      }
+      return item;
+    });
     const collapsed = opts.collapsed || (opts.collapsed = {}); // key -> true（外部传入以持久化折叠态）
+    const title = opts.title || 'Class hierarchy';
+    const subtitle = opts.subtitle === undefined ? 'Asserted' : opts.subtitle;
+    const subtitleHtml = subtitle ? `<span class="och-head-sub">${esc(subtitle)}</span>` : '';
+    const headHtml = `<div class="och-head"><span class="och-head-title">${esc(title)}</span>${subtitleHtml}</div>`;
     if (!classes.length) {
-      container.innerHTML = '<div class="och-empty">该体系暂无类定义</div>';
+      // 仅显式定制标题的调用方保留面板抬头；本体定义页的默认空态维持原样。
+      const header = opts.title !== undefined || opts.subtitle !== undefined ? headHtml : '';
+      container.innerHTML = `${header}<div class="och-empty">${esc(opts.emptyText || '该体系暂无类定义')}</div>`;
       return;
     }
     const { roots, childrenOf } = buildTree(classes);
@@ -54,7 +74,8 @@
       const caret = hasKids
         ? `<span class="och-caret${isCollapsed ? ' is-collapsed' : ''}" data-caret="${esc(c.key)}" title="${isCollapsed ? '展开' : '收起'}"></span>`
         : '<span class="och-caret och-caret-leaf"></span>';
-      const dot = `<span class="och-dot${c.custom ? ' is-custom' : ''}"></span>`;
+      const dotStyle = c.dotColor ? ` style="background:${esc(c.dotColor)}"` : '';
+      const dot = `<span class="och-dot${c.custom ? ' is-custom' : ''}"${dotStyle}></span>`;
       const cnt = c.instances ? `<span class="och-cnt">${c.instances}</span>` : '';
       const sel = opts.selectedKey === c.key ? ' is-selected' : '';
       let html =
@@ -69,8 +90,7 @@
     }
 
     container.innerHTML =
-      '<div class="och-head"><span class="och-head-title">Class hierarchy</span><span class="och-head-sub">Asserted</span></div>' +
-      '<div class="och-tree">' + roots.map((r) => nodeHtml(r, 0)).join('') + '</div>';
+      headHtml + '<div class="och-tree">' + roots.map((r) => nodeHtml(r, 0)).join('') + '</div>';
 
     const tree = container.querySelector('.och-tree');
     // 事件委托：展开/收起 + 选中 + 悬停

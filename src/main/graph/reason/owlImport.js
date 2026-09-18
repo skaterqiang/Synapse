@@ -54,6 +54,7 @@ try {
 }
 
 const { detectProfile, explainProfile } = require('./profile');
+const { RELATION_ALIASES } = require('../../common/constants');
 
 /** protege-js 导入路径是否可用。 */
 function protegeAvailable() { return !!PJ; }
@@ -422,6 +423,19 @@ function ontologyToProfile(ontology, opts = {}) {
       desc: String(ann.desc || '').slice(0, 300),
       datatype: isDatatype,
     });
+  }
+
+  // 给导入的谓词补中文别名：优先用 OWL 自身的中文 label，再匹配全局别名表。
+  for (const p of predicates) {
+    if (!p || !p.key) continue;
+    const set = new Set(Array.isArray(p.aliases) ? p.aliases : []);
+    if (p.label && /[\u4e00-\u9fa5]/.test(p.label) && p.label !== p.key) {
+      set.add(p.label);
+    }
+    for (const a of (RELATION_ALIASES[p.key] || [])) {
+      if (a && a !== p.key) set.add(a);
+    }
+    if (set.size) p.aliases = [...set];
   }
 
   // --- 4) 公理（只保留 Synapse 支持的 12 种） ----------------------------
