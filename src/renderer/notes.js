@@ -361,7 +361,7 @@ function renderSearchResults() {
   };
   if (notes.length) { secHead(icoSvg('notes', 13), '笔记', notes.length); notes.forEach((n) => row(icoSvg('notes', 13), n.title || '无标题笔记', '', () => selectNote(n.id))); }
   if (raws.length) { secHead(icoSvg('folder-open', 13), '原始文件', raws.length); raws.forEach((r) => row(icoSvg('folder-open', 13), r.name, r.path, () => showRawView())); }
-  if (graphs.length) { secHead(icoSvg('kg', 13), '知识图谱', graphs.length); graphs.forEach((n) => row(icoSvg('kg', 13), n.name, n.type, () => { state.kg.tab = 'entities'; state.kg.entitySel = n.id; showGraphView(); })); }
+  if (graphs.length) { secHead(icoSvg('kg', 13), '知识图谱', graphs.length); graphs.forEach((n) => row(icoSvg('kg', 13), n.name, n.type, () => { focusGraphEntity(n.id); })); }
 }
 
 // ================= 渲染：编辑器 =================

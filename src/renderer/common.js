@@ -20,7 +20,7 @@ const state = {
   noteListHidden: false,              // 笔记列表栏是否被用户收起
   aiSources: { notes: false, graph: false, raws: false }, // AI 问答数据源
   aiGraphProfile: 'all', // 知识图谱源的体系范围：'all'=全部体系，或具体体系 id（多体系共存时按体系隔离召回）
-  kg: { tab: 'overview', onto: null, ontoTab: 'classes', entitySel: null, focus: null }, // 知识图谱模块子视图状态；focus = 邻居视图中心节点
+  kg: { tab: 'graph', onto: null, ontoTab: 'classes', focus: null }, // 知识图谱模块子视图状态；focus = 邻居视图中心节点
   reasonAvailable: true,              // 推理能力是否可用（模块加载成功且开关未关）；§6.11 置灰判据
   reasonStatus: null,                 // graph:reasonStatus 的原始返回（available/enabled/reason/timeoutSec/coverage）
   templates: [],                      // 领域模版列表

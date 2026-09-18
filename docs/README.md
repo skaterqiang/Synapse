@@ -17,7 +17,7 @@
 | [3. AI 问答](03-AI问答.md) | 多数据源问答、会话管理、收藏回答、思考过程、澄清问题、技能与 MCP |
 | [4. 原始文件管理](04-原始文件管理.md) | 添加本机文件/目录、引用式管理、提取笔记 |
 | [6. 领域模版](06-领域模版.md) | 模版结构、本体体系绑定、领域类/谓词、AI 生成与图谱抽取约束 |
-| [7. 知识图谱](07-知识图谱.md) | 多本体体系（BFO-Lite / BFO 2020 / ISO 15926 / OWL 导入）、本体结构树、按体系分级筛选图谱、实体浏览、KG 问答、OWL 2 RL 推理、冲突自动修复（一键修复 / 撤销） |
+| [7. 知识图谱](07-知识图谱.md) | 多本体体系（BFO-Lite / BFO 2020 / ISO 15926 / OWL 导入）、本体结构树、按体系分级筛选图谱、KG 问答、OWL 2 RL 推理、冲突自动修复（一键修复 / 撤销） |
 | [8. 作业管理](08-作业管理.md) | 作业队列、阶段状态、子任务、警告状态、失败任务重跑与并发 |
 | [9. 提示词管理](09-提示词管理.md) | 7 类系统提示词的查看与自定义 |
 | [10. 设置](10-设置.md) | 模型配置、存储、作业、文档解析、**语料流水线**、问答、编辑器、MCP、技能 |
@@ -86,8 +86,6 @@ npx electron scripts/capture-docs.js     # 逐视图截图并覆盖 docs/images/
 | 领域模版管理 | [domain-templates.png](images/domain-templates.png) |
 | 原始文件管理 | [raw-files.png](images/raw-files.png) |
 | 整体图谱 | [knowledge-graph.png](images/knowledge-graph.png) |
-| 图谱概览 | [graph-overview.png](images/graph-overview.png) |
-| 实体浏览 | [graph-entities.png](images/graph-entities.png) |
 | 本体定义 | [graph-ontology.png](images/graph-ontology.png) |
 | KG 问答 | [graph-ask.png](images/graph-ask.png) |
 | 作业管理 | [jobs-manager.png](images/jobs-manager.png) |

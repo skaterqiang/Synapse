@@ -1177,11 +1177,6 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .kg-card-icon { font-size: 20px; }
 .kg-card b { display: block; font-size: 18px; }
 .kg-card span { font-size: 12px; color: var(--text-sub); }
-.kg-sec h4 { margin: 4px 0 8px; }
-.kg-bar-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 6px 0; }
-.kg-bar-name { width: 52px; color: var(--text-sub); }
-.kg-bar { flex: 1; height: 8px; background: var(--sidebar-bg); border-radius: 4px; overflow: hidden; }
-.kg-bar i { display: block; height: 100%; }
 .kg-filterbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 /* 卡片式过滤条：白底圆角条把「类/领域/最多节点排序」圈成一组，与下方图例卡片对齐 */
 .kg-filterbar.as-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; row-gap: 8px; box-shadow: var(--shadow-sm); }
@@ -1195,37 +1190,6 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .kg-filterbar label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-sub); }
 /* 整体图谱的状态说明独占下一行，避免高密度提示挤压过滤控件。 */
 .kg-filterbar #graph-stats { flex: 1 1 100%; min-width: 0; padding-top: 2px; }
-/* 实体浏览类型颜色图例 */
-.kg-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--text-sub); }
-.kg-legend .lg-item { display: inline-flex; align-items: center; gap: 5px; }
-.kg-entities { flex: 1; min-height: 0; display: flex; gap: 14px; }
-.kg-elist { flex: 1; min-width: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); padding: 8px; }
-.kg-ecount { font-size: 12px; color: var(--text-sub); padding: 4px 8px; }
-.kg-eitem { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius); cursor: pointer; border: 1px solid transparent; }
-.kg-eitem:hover { background: var(--sidebar-bg); }
-.kg-eitem.active { background: rgba(16, 185, 129, 0.1); border-color: var(--primary); }
-.kg-eitem .lg-dot { flex: none; }
-.kg-eitem-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.kg-eitem-main b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
-.kg-eitem-main code {
-  font-size: 11px; color: var(--primary); background: rgba(16, 185, 129, 0.08);
-  border-radius: 4px; padding: 1px 6px; width: fit-content; max-width: 100%;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.kg-eitem .mini-tag { flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kg-edetail { width: 340px; min-width: 280px; flex: none; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); padding: 14px; }
-/* 窄窗口：详情面板堆叠到列表下方，避免列表被挤 */
-@media (max-width: 1100px) {
-  .kg-entities { flex-direction: column; overflow-y: auto; }
-  .kg-elist { flex: 1; min-width: 0; }
-/* 仅当详情面板展开时限制列表高度，关闭时列表占满整 */
-  .kg-entities:has(.kg-edetail:not([hidden])) .kg-elist { flex: none; max-height: 45%; }
-  .kg-edetail { width: auto; min-width: 0; flex: none; }
-}
-.kg-kv { display: flex; gap: 10px; align-items: center; font-size: 13px; padding: 6px 10px; background: var(--sidebar-bg); border-radius: var(--radius-sm); margin: 6px 0; }
-.kg-kv span { color: var(--text-sub); width: 52px; }
-.kg-kv code { color: var(--primary); }
-.kg-edetail .btn { margin-top: 12px; }
 .kg-tabs { display: inline-flex; gap: 4px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; width: fit-content; }
 .kg-tabs button { border: none; background: transparent; cursor: pointer; padding: 6px 12px; border-radius: var(--radius); font-size: 13px; color: var(--text-sub); }
 .kg-tabs button.active { background: rgba(16, 185, 129, 0.12); color: var(--primary); font-weight: 600; }
@@ -2742,7 +2706,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   padding: 14px 16px; overflow-y: auto; font-size: 13px;
 }
 .graph-detail h4 { margin: 0 0 6px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
-/* gd-* 详情元素：整体图谱节点详情与实体浏览详情面板共用 */
+/* gd-* 详情元素：整体图谱节点详情 */
 .gd-type { font-size: 11px; padding: 1px 8px; border-radius: var(--radius); color: #fff; }
 .gd-desc { color: var(--text-sub); margin: 6px 0 10px; line-height: 1.6; }
 .gd-sec { font-size: 12px; color: var(--text-sub); margin: 10px 0 4px; }
@@ -2753,7 +2717,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .kg-edetail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .kg-edetail-head h4 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0; min-width: 0; }
 .kg-edetail-head .icon-btn { flex: none; }
-/* 来源行：可点击打开原文（Wiki/笔记/原始文件），整体图谱与实体浏览详情共用 */
+/* 来源行：可点击打开原文（Wiki/笔记/原始文件） */
 .gd-src { font-size: 11px; color: var(--text-sub); margin-top: 2px; word-break: break-all; }
 .gd-src.openable {
   display: flex; align-items: flex-start; gap: 6px; padding: 4px 8px; margin-top: 2px;
@@ -2938,15 +2902,6 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .graph-tooltip .tt-rel { font-family:monospace; background:rgba(139,92,246,.08); padding:1px 5px; border-radius:4px; font-size:11px; }
 .graph-tooltip .tt-inferred { color:#8b5cf6; font-weight:600; }
 .graph-tooltip .tt-foot { color:var(--text-sub); font-size:11px; margin-top:4px; }
-/* §6.5 影响面区块 */
-.kg-impact-list { display:flex; flex-direction:column; gap:2px; max-height:220px; overflow-y:auto; }
-.kg-impact-row { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:6px; font-size:12px; cursor:pointer; }
-.kg-impact-row:hover { background:rgba(0,0,0,.04); }
-.kg-impact-depth { flex:none; width:20px; height:20px; border-radius:50%; background:rgba(139,92,246,.12); color:#8b5cf6; font-size:10px; font-weight:600; display:flex; align-items:center; justify-content:center; }
-.kg-impact-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.kg-impact-via { flex:none; font-size:11px; color:var(--text-sub); }
-.kg-impact-inf { flex:none; color:#8b5cf6; font-size:11px; }
-.kg-impact-hint { padding:8px; color:var(--text-sub); font-size:12px; }
 /* §6.8/§6.6 推理事实标记 */
 .kg-fact-inferred { color:#8b5cf6; border-left:2px solid rgba(139,92,246,.4); padding-left:6px; }
 .kg-fact-inferred::before { content:"⚡"; margin-right:4px; }

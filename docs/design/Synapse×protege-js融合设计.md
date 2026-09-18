@@ -2,7 +2,7 @@
 
 > 分支：`Top_Level_Ontology`（延续）｜ 状态：**v1.2.2（一~三期已落地 + 冲突自动修复 + 修复作业化 + 逆谓词强制感知 + 校验全量计数；四/五期未启动）** ｜ 日期：2026-09-14（v0 草案 2026-09-11）
 >
-> **v1.1 增量**（本文中标 `v1.1` 的段落）：① 写侧互斥预检（护栏第 5 种 reason `disjoint-type-forcing`，把 `cax-dw` 消灭在写库前）；② **通道 D 冲突自动修复**（`reason/repair.js` + 规划/施加/撤销三接口 + 预览弹窗 UI，见 §12.2.8）；③ LLM 语义仲裁（`settings.graphRepairLlm`，默认关）。用户文档见 `docs/07-知识图谱.md` §7.6.9。
+> **v1.1 增量**（本文中标 `v1.1` 的段落）：① 写侧互斥预检（护栏第 5 种 reason `disjoint-type-forcing`，把 `cax-dw` 消灭在写库前）；② **通道 D 冲突自动修复**（`reason/repair.js` + 规划/施加/撤销三接口 + 预览弹窗 UI，见 §12.2.8）；③ LLM 语义仲裁（`settings.graphRepairLlm`，默认关）。用户文档见 `docs/07-知识图谱.md` §7.5.8。
 >
 > **v1.2 增量**：修复改为以 `graph-repair` 作业执行（逐动作子任务，见 §12.2.8）。**v1.2.1 增量**：`guard.forcingProbes` 逆谓词强制感知（修复「徽标有冲突却规划不出动作」的盲区，见 §12.2.8 末段）。**v1.2.2 增量**：通道 C 校验返回全量计数 `totalViolations` / `totalDisjointConflicts`，修复「摘要条/报告计数被明细上限截断而少报」；越界边与不相交归属合并为**一张问题汇总表**（含所属体系/知识图谱归因列 + 两个筛选），每行可点击「修复」走行级规划 `graph:planRepairsForIssues`（见 §12.2.3）。
 >

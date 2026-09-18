@@ -1601,7 +1601,7 @@ function renderArtifacts(msgEl, artifacts) {
   });
 }
 // 统一引用展示：笔记 + 图谱实体 + 原始文件 + 外部来源（竖排 bullet 列表）
-// 点击各自跳转对应主展示框架：笔记编辑器 / 知识图谱实体浏览 / 原始文件
+// 点击各自跳转对应主展示框：笔记编辑器 / 知识图谱整体图谱 / 原始文件
 function renderCitations(msgEl, cit) {
   const notes = (cit && cit.notes) || [];
   const hits = (cit && cit.hits) || [];
@@ -1649,7 +1649,7 @@ function renderCitations(msgEl, cit) {
     });
     addRow(a);
   });
-  // 图谱知识源 → 知识图谱·实体浏览（定位到该实体）
+  // 图谱知识源 → 知识图谱 · 整体图谱（邻居视图定位到该实体）
   hits.forEach((name) => {
     const a = document.createElement('a');
     a.className = 'ai-ref-chip';
@@ -1683,22 +1683,20 @@ function renderCitations(msgEl, cit) {
   });
   msgEl.appendChild(box);
 }
-// 打开知识图谱主框架并定位到指定实体（名称或 id 均可）
+// 打开知识图谱主框并定位到指定实体（名称或 id 均可）：以该实体为中心进入邻居视图
 function openGraphEntity(nameOrId) {
-  if (typeof showGraphView !== 'function') return;
+  if (typeof focusGraphEntity !== 'function') return;
   const nodes = (state.graph && state.graph.nodes) || [];
   const hit = nodes.find((n) => n.id === nameOrId) || nodes.find((n) => n.name === nameOrId);
+  if (hit) { focusGraphEntity(hit.id); return; }
+  // 图谱数据尚未加载：先打开图谱页，加载完成后再按名称定位
   state.kg = state.kg || {};
-  state.kg.tab = 'entities';
-  if (hit) state.kg.entitySel = hit.id;
+  state.kg.tab = 'graph';
   showGraphView();
-  // 图谱数据异步加载，加载后再定位一次（首次打开时 nodes 可能为空）
-  if (!hit) {
-    setTimeout(() => {
-      const later = ((state.graph && state.graph.nodes) || []).find((n) => n.id === nameOrId || n.name === nameOrId);
-      if (later) { state.kg.entitySel = later.id; if (typeof renderKgEntities === 'function') renderKgEntities(); }
-    }, 600);
-  }
+  setTimeout(() => {
+    const later = ((state.graph && state.graph.nodes) || []).find((n) => n.id === nameOrId || n.name === nameOrId);
+    if (later) focusGraphEntity(later.id);
+  }, 600);
 }
 // ---------- 来源悬浮引用卡（标题/摘要/域名 + 复制链接，参考产品 Sources 悬停卡） ----------
 let srcPop = null; let srcPopTimer = null;

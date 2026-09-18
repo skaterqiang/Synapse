@@ -72,7 +72,7 @@ function showGraphView() {
   renderEditor();
   renderSidebar();
   loadGraph();
-  switchKgTab(state.kg.tab || 'overview');
+  switchKgTab(state.kg.tab || 'graph');
   // 布局落定后再校正一次居中，消除打开后的偏移
   requestAnimationFrame(() => recenterGraph());
 }
@@ -100,28 +100,15 @@ async function loadGraph() {
   if (curPid && (!state.kg.onto || state.kg.onto.profileId !== curPid)) {
     try { state.kg.onto = await window.kb.graphOntology(curPid); } catch (_) { /* 保留旧缓存 */ }
   }
-  renderGraphTypeFilters();
   renderGraphDomainFilter();
   renderGraphStats();
-  if (!$('graph-view').hidden) renderKgTab();
-}
-
-// 类型下拉（整体图谱 + 实体浏览）与实体浏览图例：随本体定义重建，保留当前选中项
-function renderGraphTypeFilters() {
-  const types = graphTypes();
-    const fill = (id, allLabel) => { 
-    const sel = $(id);
-    if (!sel) return;
-    const cur = sel.value;
-    sel.innerHTML = `<option value="">${allLabel}</option>` + types.map((t) => `<option value="${escapeHtml(t.key)}">${escapeHtml(t.name)}</option>`).join('');
-    sel.value = types.some((t) => t.key === cur) ? cur : '';
-  };
-  fill('kg-g-type', '全部');
-  fill('kg-f-type', '全部一级分类');
-  const legend = $('kg-legend');
-  if (legend) {
-    legend.innerHTML = types.map((t) =>
-      `<span class="lg-item"><i class="lg-dot" style="background:${t.color}"></i>${escapeHtml(t.name)}</span>`).join('');
+  if (!$('graph-view').hidden) {
+    renderKgTab();
+    // 引用/笔记跳转会预设 focus：层级树在数据加载完成后才建好，故在此补一次选中居中
+    if (state.kg.focus) {
+      const sel = graphHierarchyEntityNode(state.kg.focus);
+      if (sel) selectGraphNode(sel, { center: true });
+    }
   }
 }
 
@@ -676,209 +663,22 @@ function switchKgTab(tab) {
 
 function renderKgTab() {
   const tab = state.kg.tab;
-  if (tab === 'overview') renderKgOverview();
-  else if (tab === 'entities') renderKgEntities();
-  else if (tab === 'graph') startGraphSim();
+  if (tab === 'graph') startGraphSim();
   else if (tab === 'ontology') renderKgOntology();
   else if (tab === 'reason') renderKgReasonTab($('kg-reason-body'), state.kg.onto && state.kg.onto.profileId);
 }
 
+// 打开整体图谱并定位到指定实体：以 focus 进入邻居视图并选中居中（聊天引用/笔记关联图谱跳转用）
+function focusGraphEntity(id) {
+  state.kg.focus = id;
+  state.kg.tab = 'graph';
+  showGraphView();
+  const sel = graphHierarchyEntityNode(id);
+  if (sel) selectGraphNode(sel, { center: true });
+}
+
 function kgCard(icon, num, label, sub) {
   return `<div class="kg-card"><span class="kg-card-icon">${icoSvg(icon, 16)}</span><div><b>${num}</b><span>${label}</span>${sub ? `<em class="kg-card-sub">${escapeHtml(sub)}</em>` : ''}</div></div>`;
-}
-
-function renderKgOverview() {
-  const g = state.graph;
-  const onto = (g.nodes.length && state.kg.onto) || null;
-  const preds = onto ? onto.stats.predicateCount : 8;
-  $('kg-overview-cards').innerHTML =
-    kgCard('entities', onto ? onto.stats.classCount : 5, '实体类') +
-    kgCard('mcp', preds, '谓词') +
-    kgCard('kg', g.nodes.length, '实例总数') +
-    kgCard('mcp', g.edges.length, '关系总数') +
-    kgCard('history', g.updatedAt ? formatDate(g.updatedAt) : '—', '更新时间');
-  const countBy = {};
-  g.nodes.forEach((n) => { countBy[n.type] = (countBy[n.type] || 0) + 1; });
-  const rows = graphTypes().map((t) => {
-    const c = countBy[t.key] || 0;
-    const pct = g.nodes.length ? Math.round((c / g.nodes.length) * 100) : 0;
-    return `<div class="kg-bar-row"><span class="lg-dot" style="background:${t.color}"></span><span class="kg-bar-name">${escapeHtml(t.name)}</span><div class="kg-bar"><i style="width:${pct}%;background:${t.color}"></i></div><span>${c}</span></div>`;
-  }).join('');
-  $('kg-overview-types').innerHTML = `<h4>类型分布</h4>${rows || '<p class="modal-tip">暂无数据，先运行「抽取本体层」。</p>'}`;
-}
-
-function kgEntitySources(n) { return (n.sources || []).map((s) => (s.startsWith('Wiki') ? 'wiki' : 'notes')); }
-
-function renderKgEntities() {
-  const q = ($('kg-f-q').value || '').trim().toLowerCase();
-  const type = $('kg-f-type').value;
-  const src = $('kg-f-src').value;
-  let list = state.graph.nodes.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh'));
-  if (type) list = list.filter((n) => n.type === type);
-  if (src) list = list.filter((n) => kgEntitySources(n).includes(src));
-  if (q) list = list.filter((n) => n.name.toLowerCase().includes(q) || (n.desc || '').toLowerCase().includes(q));
-  const el = $('kg-elist');
-  el.innerHTML = `<div class="kg-ecount">共 ${list.length} 条</div>` + list.map((n) => {
-    const srcs = n.sources || [];
-    const srcLabel = srcs[0] ? escapeHtml(srcs[0]) + (srcs.length > 1 ? ` +${srcs.length - 1}` : '') : '—';
-    return `
-    <div class="kg-eitem${state.kg.entitySel === n.id ? ' active' : ''}" data-id="${n.id}" title="${escapeHtml(n.name)}">
-      <i class="lg-dot" style="background:${graphTypeColor(n.type)}"></i>
-      <div class="kg-eitem-main"><b>${escapeHtml(n.name)}</b>${n.id !== n.name ? `<code>${escapeHtml(n.id)}</code>` : ''}</div>
-      <span class="mini-tag" title="${escapeHtml(srcs.join('\n'))}">${srcLabel}</span>
-    </div>`;
-  }).join('');
-  el.querySelectorAll('.kg-eitem').forEach((item) => {
-    item.addEventListener('click', () => { state.kg.entitySel = item.dataset.id; renderKgEntities(); renderKgEntityDetail(item.dataset.id); });
-  });
-  if (state.kg.entitySel && !list.some((n) => n.id === state.kg.entitySel)) state.kg.entitySel = null;
-  const detail = $('kg-edetail');
-  if (state.kg.entitySel) {
-    detail.hidden = false;
-    renderKgEntityDetail(state.kg.entitySel);
-  } else {
-    // 未选中实体时隐藏详情面板，让列表占满整宽
-    detail.hidden = true;
-    detail.innerHTML = '';
-  }
-}
-
-function renderKgEntityDetail(id) {
-  const n = state.graph.nodes.find((x) => x.id === id);
-  const box = $('kg-edetail');
-  if (!n) { box.innerHTML = ''; return; }
-  const byId = new Map(state.graph.nodes.map((x) => [x.id, x]));
-  // 带原始下标：删除走后端 deleteEdgeWithCascade(edgeIdx)（§5.3）
-  const out = state.graph.edges.map((e, idx) => ({ e, idx })).filter((x) => x.e && x.e.from === id);
-  const inn = state.graph.edges.map((e, idx) => ({ e, idx })).filter((x) => x.e && x.e.to === id);
-  const edgeRow = ({ e, idx }) => {
-    const other = e.from === id ? byId.get(e.to) : byId.get(e.from);
-    const otherId = other ? other.id : '';
-    const inf = e.inferred ? '<span class="kg-fact-inferred" title="该关系由 OWL 2 RL 推理得出">⚡推理</span>' : '';
-    return `<div class="gd-rel" data-other="${escapeHtml(otherId)}" title="点击查看「${escapeHtml(other ? other.name : '')}」">${inf}${escapeHtml((byId.get(e.from) || {}).name || e.from)} <span class="rel-tag">→ ${escapeHtml(e.rel)} →</span> ${escapeHtml((byId.get(e.to) || {}).name || e.to)}<button class="icon-btn danger gd-rel-del" data-del="${idx}" title="删除该关系（连带级联清理派生推理边）">${icoSvg('close', 11)}</button></div>`;
-  };
-  const infOut = out.filter((x) => x.e.inferred).length;
-  const infIn = inn.filter((x) => x.e.inferred).length;
-  box.innerHTML = `
-    <div class="kg-edetail-head"><h4><span class="gd-type" style="background:${graphTypeColor(n.type)}">${escapeHtml(graphTypeName(n.type))}</span>${escapeHtml(n.name)}</h4><span class="kg-edetail-acts"><button class="icon-btn danger" id="btn-kg-edetail-del" title="删除该实体及其全部关系">${icoSvg('close', 12)}</button><button class="icon-btn" id="btn-kg-edetail-close" title="关闭详情">${icoSvg('close', 12)}</button></span></div>
-    <div class="kg-kv"><span>id</span><code>${escapeHtml(n.id)}</code></div>
-    <div class="gd-desc">${escapeHtml(n.desc || '')}</div>
-    <div class="gd-sec">来源（${(n.sources || []).length}）· 点击打开原文</div>
-    <div data-sec-sources></div>
-    <div class="gd-sec">出边（${out.length}${infOut ? ` · ${infOut} 条推理` : ''}）</div>${out.map(edgeRow).join('') || '<div class="gd-desc">（无）</div>'}
-    <div class="gd-sec">入边（${inn.length}${infIn ? ` · ${infIn} 条推理` : ''}）</div>${inn.map(edgeRow).join('') || '<div class="gd-desc">（无）</div>'}
-    <div class="gd-sec" data-sec-impact-head>影响面（沿传递谓词下游）</div>
-    <div class="kg-impact-list" data-sec-impact><div class="gd-desc">计算中…</div></div>
-    <button class="btn btn-primary" id="btn-kg-neighbor">${icoSvg('kg', 13)}看邻居图 →</button>`;
-  renderGdSources(box, n);
-  renderKgImpact(box, id);
-  const neighborBtn = $('btn-kg-neighbor');
-  if (neighborBtn) neighborBtn.addEventListener('click', () => {
-    state.kg.focus = id; // 邻居视图：画布只看该节点的邻居
-    graphSim.selected = id;
-    switchKgTab('graph');
-    const selected = graphHierarchyEntityNode(id);
-    if (selected) selectGraphNode(selected, { center: true });
-  });
-  const detailCloseBtn = $('btn-kg-edetail-close');
-  if (detailCloseBtn) detailCloseBtn.addEventListener('click', () => {
-    state.kg.entitySel = null;
-    renderKgEntities();
-  });
-  const detailDelBtn = $('btn-kg-edetail-del');
-  if (detailDelBtn) detailDelBtn.addEventListener('click', () => deleteGraphNodeAt(id));
-  // 关系行点击跳转到对端实体；删除按钮单独处理（阻止冒泡）
-  box.querySelectorAll('.gd-rel[data-other]').forEach((row) => {
-    row.addEventListener('click', (ev) => {
-      if (ev.target.closest('.gd-rel-del')) return;
-      if (!row.dataset.other) return;
-      state.kg.entitySel = row.dataset.other;
-      renderKgEntities();
-    });
-  });
-  box.querySelectorAll('.gd-rel-del').forEach((btn) => {
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      deleteGraphEdgeAt(Number(btn.dataset.del));
-    });
-  });
-}
-
-// ---------- 影响面区块（融合设计 §6.5）----------
-// 走 IPC graph:impactClosure → reason/impact.js 沿传递谓词做闭包，
-// 让用户在实体详情里直接看到「变压器 → 低压配电柜 → 充电桩群 → 20 个车位」这条影响链。
-//
-// 后端返回两种形态，必须都处理（实测）：
-//   usable:true  → 9 字段（含 seed / inferredCount），nodes 为闭包结果
-//   usable:false → 8 字段（无 seed / inferredCount，多一个 hint），体系未声明传递谓词
-//   ok:false     → { error }，推理模块不可用或节点不存在
-// 另外 summary 的措辞对 upstream/both 方向仍写「下游节点」，故此处自建方向感知的摘要。
-// 影响面请求序号：用户快速切换实体时，只认最后一次请求的结果
-let kgImpactSeq = 0;
-async function renderKgImpact(box, id) {
-  const list = box.querySelector('[data-sec-impact]');
-  const head = box.querySelector('[data-sec-impact-head]');
-  if (!list) return;
-  if (!window.kb.graphImpactClosure) {
-    list.innerHTML = '<div class="gd-desc">（当前环境不支持影响面计算）</div>';
-    return;
-  }
-  const seq = ++kgImpactSeq;
-  let r = null;
-  try {
-    r = await window.kb.graphImpactClosure(id, { direction: 'downstream', maxDepth: 4, maxNodes: 60 });
-  } catch (err) {
-    if (seq !== kgImpactSeq) return;
-    list.innerHTML = `<div class="gd-desc">影响面计算失败：${escapeHtml(String((err && err.message) || err))}</div>`;
-    return;
-  }
-  if (seq !== kgImpactSeq) return;   // 已切到别的实体，丢弃过期结果
-  if (!r || r.ok === false) {
-    const why = (r && r.error) || '未知原因';
-    if (head) head.textContent = '影响面（沿传递谓词下游）';
-    list.innerHTML = `<div class="gd-desc">（不可用：${escapeHtml(why)}）</div>`;
-    return;
-  }
-  if (r.usable === false) {
-    // 体系没有传递/互逆谓词 → 无法闭包，如实说明而不是显示「无下游影响」
-    if (head) head.textContent = '影响面';
-    list.innerHTML = `<div class="gd-desc">${escapeHtml(r.hint || '该体系未声明传递谓词，无法做影响面闭包')}</div>`
-      + `<div class="kg-impact-hint">体系：${escapeHtml(r.profileName || r.profileId || '')}</div>`;
-    return;
-  }
-  const items = Array.isArray(r.nodes) ? r.nodes : [];
-  const infN = Number(r.inferredCount) || 0;
-  const maxD = items.reduce((m, x) => Math.max(m, Number(x.depth) || 0), 0);
-  if (head) {
-    head.innerHTML = `影响面（沿传递谓词下游）<span class="mini-tag">${items.length} 个节点</span>`
-      + (infN ? `<span class="mini-tag kg-fact-inferred">⚡${infN} 条经推理</span>` : '')
-      + (maxD ? `<span class="mini-tag">最深 L${maxD}</span>` : '');
-  }
-  if (!items.length) {
-    list.innerHTML = '<div class="gd-desc">（无下游影响）</div>';
-    return;
-  }
-  list.innerHTML = items.map((it) => {
-    const nm = it.name || graphNodeLabel(it.id);
-    const via = it.via ? `经 ${escapeHtml(it.via)}` : '';
-    const inf = it.inferred ? '<span class="kg-impact-inf" title="该节点仅通过推理边可达">⚡</span>' : '';
-    const pathLen = Array.isArray(it.path) ? it.path.length : 0;
-    const tip = pathLen ? `推理深度 L${it.depth} · 路径 ${pathLen} 跳 · 点击下钻` : `推理深度 L${it.depth} · 点击下钻`;
-    return `<div class="kg-impact-row" data-id="${escapeHtml(it.id)}" title="${escapeHtml(tip)}">
-      <span class="kg-impact-depth">L${Number(it.depth) || 0}</span>
-      <span class="kg-impact-name">${inf}${escapeHtml(nm)}</span>
-      <span class="kg-impact-via">${via}</span>
-    </div>`;
-  }).join('');
-  // 点击行 → 逐级下钻（复用同一渲染函数）
-  list.querySelectorAll('.kg-impact-row[data-id]').forEach((row) => {
-    row.addEventListener('click', () => {
-      const tid = row.dataset.id;
-      if (!tid) return;
-      state.kg.entitySel = tid;
-      renderKgEntities();
-    });
-  });
 }
 
 async function renderKgOntology() {
@@ -2579,7 +2379,7 @@ function openGraphSourceItem(it) {
   toast('该来源对应的原文已不存在或当前环境无法打开', 3000);
 }
 
-// 来源列表渲染为可点击行（整体图谱详情 / 实体浏览详情共用）：
+// 来源列表渲染为可点击行（整体图谱节点详情）：
 // 先占位渲染，再异步解析出可打开目标，补上类型图标与失效置灰，点击即跳转对应文档
 function renderGdSources(box, node) {
   const sec = box.querySelector('[data-sec-sources]');
@@ -2686,7 +2486,7 @@ async function deleteGraphNodeAt(id) {
   const casc = Number(r.cascaded) || 0;
   toast(`已删除节点「${n.name}」及其 ${Number(r.removedEdges) || 0} 条关系`
     + (casc > 0 ? `（含 ${casc} 条派生推理边）` : ''), 3200);
-  if (state.kg.entitySel === id) state.kg.entitySel = null;
+  if (state.kg.focus === id) state.kg.focus = null;
   if (graphSim.selected === id) graphSim.selected = null;
   await refreshGraphAfterMutation();
 }
@@ -2696,12 +2496,6 @@ async function refreshGraphAfterMutation() {
   await loadGraph();
   renderGraphEmpty();
   renderSidebar();
-  if (!state.kg.entitySel) {
-    const d = $('kg-edetail');
-    if (d) { d.hidden = true; d.innerHTML = ''; }
-  } else {
-    renderKgEntities();
-  }
   if (state.kg.tab === 'graph') startGraphSim();
   else $('graph-detail').hidden = true;
 }
@@ -2846,7 +2640,7 @@ function bindGraphEvents() {
     recenterGraph();
   });
 
-  // KG 子视图与过滤（类型下拉的选项由 renderGraphTypeFilters 按本体定义填充）
+  // KG 子视图与过滤
   // 侧边栏知识图谱子菜单：点击子项打开图谱页并切换到对应子视图
   $('kg-submenu').addEventListener('click', (e) => {
     const item = e.target.closest('.nav-sub-item');
@@ -2854,9 +2648,6 @@ function bindGraphEvents() {
     showGraphView();
     switchKgTab(item.dataset.tab);
   });
-  ['kg-f-type', 'kg-f-src'].forEach((id) => $(id).addEventListener('change', renderKgEntities));
-  $('kg-f-q').addEventListener('input', renderKgEntities);
-  $('kg-f-refresh').addEventListener('click', () => { state.kg.onto = null; loadGraph(); });
   const profileFilter = $('kg-g-profile');
   if (profileFilter) profileFilter.addEventListener('change', async () => {
     profileFilter.dataset.userSelected = '1';
@@ -2864,7 +2655,6 @@ function bindGraphEvents() {
     try {
       state.kg.onto = await window.kb.graphOntology(profileFilter.value);
     } catch (_) { /* 拉取失败时保留旧本体，图例/下拉维持原状 */ }
-    renderGraphTypeFilters();
     renderGraphLegend();
     renderGraphDomainFilter();
     startGraphSim();
