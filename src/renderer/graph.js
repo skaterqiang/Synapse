@@ -737,6 +737,11 @@ async function renderKgOntology() {
   const jumpToClassCard = (cls) => {
     state.kg.ontoView = 'list';
     state.kg.ontoTab = 'classes';
+    // 实体类默认全部收起：先展开目标类的祖先链，否则卡片藏在收起子树里定位不到
+    const expanded = state.kg.ontoExpanded || (state.kg.ontoExpanded = {});
+    const byKey = new Map(((state.kg.onto || {}).classes || []).map((c) => [c.key, c]));
+    let cur = byKey.get(cls.key);
+    while (cur && cur.parent && byKey.has(cur.parent)) { expanded[cur.parent] = true; cur = byKey.get(cur.parent); }
     document.querySelectorAll('#kg-onto-tabs button').forEach((x) => x.classList.toggle('active', x.dataset.ot === 'classes'));
     renderKgOntology();
     setTimeout(() => {
@@ -832,11 +837,11 @@ async function renderKgOntology() {
       if (!childrenOf.has(parentKey)) childrenOf.set(parentKey, []);
       childrenOf.get(parentKey).push(c);
     }
-    // 子树折叠状态（按类 key）：默认全部展开，点击父节点头部箭头切换
-    const collapsed = state.kg.ontoCollapsed || (state.kg.ontoCollapsed = {});
+    // 子树折叠状态（按类 key）：默认全部收起，仅记录用户手动展开的节点，点击父节点头部箭头切换
+    const expanded = state.kg.ontoExpanded || (state.kg.ontoExpanded = {});
     const renderNode = (c) => {
       const kids = childrenOf.get(c.key) || [];
-      const isCollapsed = !!collapsed[c.key];
+      const isCollapsed = !expanded[c.key];
       const toggle = kids.length
         ? `<button class="icon-btn kg-onto-toggle${isCollapsed ? ' collapsed' : ''}" data-toggle="${escapeHtml(c.key)}" title="${isCollapsed ? '展开子类' : '收起子类'}"><svg class="ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button><span class="mini-tag kg-onto-kidcount">${kids.length} 子类</span>`
         : '';
@@ -1883,7 +1888,7 @@ async function switchOntoProfile(profileId) {
   if (!res.ok) { toast('切换失败：' + res.error, 4000); return; }
   state.kg.onto = res.ontology;
   state.kg.ontoView = 'viz'; // 切换体系后回到 OWLViz 层级图，直观看到层级
-  state.kg.ontoCollapsed = {}; // 新体系重置子树折叠状态
+  state.kg.ontoExpanded = {}; // 新体系重置子树展开状态（默认全部收起）
   state.kg.vizSel = null;    // 重置选中态/折叠，避免跨体系残留
   renderKgOntology();
 }
@@ -2963,8 +2968,8 @@ function bindGraphEvents() {
     // 父节点收起/展开子树
     const toggle = e.target.closest('button.kg-onto-toggle');
     if (toggle) {
-      const collapsed = state.kg.ontoCollapsed || (state.kg.ontoCollapsed = {});
-      collapsed[toggle.dataset.toggle] = !collapsed[toggle.dataset.toggle];
+      const expanded = state.kg.ontoExpanded || (state.kg.ontoExpanded = {});
+      expanded[toggle.dataset.toggle] = !expanded[toggle.dataset.toggle];
       renderKgOntology();
       return;
     }
