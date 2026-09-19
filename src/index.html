@@ -207,7 +207,13 @@
           <div class="graph-reason-bar as-card" id="graph-reason-bar" hidden></div>
           <div class="graph-legend as-card" id="graph-legend"></div>
           <div class="graph-body">
-            <aside class="och-pane graph-hierarchy-pane" id="graph-hierarchy" aria-label="图谱层级"></aside>
+            <aside class="och-pane graph-hierarchy-pane" aria-label="图谱层级">
+              <div class="gh-search-bar">
+                <input type="search" id="graph-hierarchy-search" placeholder="搜索实体 / 类型…" autocomplete="off" aria-label="搜索图谱实体" />
+                <span class="gh-search-count" id="graph-hierarchy-search-count" hidden></span>
+              </div>
+              <div id="graph-hierarchy" class="gh-tree-host"></div>
+            </aside>
             <canvas id="graph-canvas"></canvas>
             <aside class="graph-detail" id="graph-detail" hidden></aside>
           </div>

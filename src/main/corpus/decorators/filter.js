@@ -99,6 +99,9 @@ class FilterDecorator extends CorpusDecorator {
       c.stats.filtered = (c.stats.filtered || 0) + 1;
       const label = item.label || (item.origin && item.origin.name) || '未知来源';
       if (c.onLog) { try { c.onLog(`跳过 ${label}：${why}`); } catch (_) { /* 忽略 */ } }
+      // 上下文级跳过钩子：被过滤的条目不会到达 onItem，作业层据此把对应任务行标为失败/跳过
+      // （否则任务列表里这一行永远停在 pending，用户看不出它已经被丢弃）
+      if (typeof c.onSkip === 'function') { try { c.onSkip(item, why, c); } catch (_) { /* 忽略 */ } }
       if (typeof this.opts.onSkip === 'function') {
         try { this.opts.onSkip(item, why, c); } catch (_) { /* 回调失败不影响过滤 */ }
       }

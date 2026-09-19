@@ -267,6 +267,7 @@ async function extractGraphViaPipeline(settings, opts, onStage, onProgress, onTa
   const {
     rawPaths, inlineSources, typeHints, domainLabel, domainId,
     resolveDomain, ontologyProfile, signal, taskFilter, autoReason: autoReasonOpt, corpusRels,
+    onLog, onParseStart, onParseEnd, onSkip,
   } = opts || {};
   const { drive, makeContext } = require('../corpus/drive');
   const { buildPipeline } = require('../corpus/build');
@@ -275,17 +276,30 @@ async function extractGraphViaPipeline(settings, opts, onStage, onProgress, onTa
   const stage = (key, detail) => { if (onStage) { try { onStage(key, detail); } catch (_) { /* 忽略 */ } } };
 
   // ---- 收集相：Source → 解析（MinerU/技能/内置 + 缓存），把带 text 的 items 收进数组 ----
+  // onLog/onParseStart/onParseEnd 由作业层注入：解析日志进「解析过程」面板，
+  // 每条来源开始/结束解析时标定对应任务行（否则收集阶段任务列表全是 pending，看不出在跑哪一条）
   const collected = [];
   const collectCtx = makeContext({
     settings, signal,
     rawPaths: (Array.isArray(rawPaths) && rawPaths.length) ? rawPaths : undefined,
     inlineSources: (Array.isArray(inlineSources) && inlineSources.length) ? inlineSources : undefined,
     corpusRels: (Array.isArray(corpusRels) && corpusRels.length) ? corpusRels : undefined,
+    onLog: typeof onLog === 'function' ? onLog : undefined,
+    onParseStart: typeof onParseStart === 'function' ? onParseStart : undefined,
+    // 被过滤丢弃的条目（无可用解析器/空文本等）：作业层据此把任务行标为失败，不再停在 pending
+    onSkip: typeof onSkip === 'function' ? onSkip : undefined,
     onStage: (key, status, detail) => stage(key, detail),
-    onItem: (item) => { collected.push(item); },
+    onItem: (item) => {
+      collected.push(item);
+      if (typeof onParseEnd === 'function') { try { onParseEnd(item); } catch (_) { /* 忽略 */ } }
+    },
     shared: {},
   });
   await drive(buildPipeline(GRAPH_COLLECT_RECIPE, collectCtx), collectCtx);
+  // 解析失败/被过滤的来源不会到达 onItem：把失败原因回传给作业层，任务行不再永远停在「解析中…」
+  if (typeof onParseEnd === 'function') {
+    for (const e of (collectCtx.errors || [])) { try { onParseEnd(null, e); } catch (_) { /* 忽略 */ } }
+  }
 
   // 空来源校验（≡ 老实现 graph.js:278/286/290 的三分支报错口径）
   const items = collected.filter((it) => String(it.text || '').trim());
@@ -352,10 +366,10 @@ async function extractGraphViaPipeline(settings, opts, onStage, onProgress, onTa
 // 逐批调用模型抽取节点/边，合并去重后持久化；onStage 回调用于作业阶段进度展示
 // resolveDomain(raws)：未命中特定领域时由作业层决定最终领域（可新建/复用领域模版），
 // 返回 { domainId, domainLabel, typeHints }；graph 层不直接依赖 templates
-async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile, signal, taskFilter, autoReason: autoReasonOpt, corpusRels }, onStage, onProgress, onTasks) {
+async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile, signal, taskFilter, autoReason: autoReasonOpt, corpusRels, onLog, onParseStart, onParseEnd, onSkip }, onStage, onProgress, onTasks) {
   // G8 零行为变更开关：settings.pipeline 为真时走语料流水线（返回逐字段等价的 10 字段），否则走下方老实现
   if (settings && settings.pipeline) {
-    return extractGraphViaPipeline(settings, { rawPaths, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile, signal, taskFilter, autoReason: autoReasonOpt, corpusRels }, onStage, onProgress, onTasks);
+    return extractGraphViaPipeline(settings, { rawPaths, inlineSources, typeHints, domainLabel, domainId, resolveDomain, ontologyProfile, signal, taskFilter, autoReason: autoReasonOpt, corpusRels, onLog, onParseStart, onParseEnd, onSkip }, onStage, onProgress, onTasks);
   }
   // 作业停止信号：批次开始前检查 + 透传给 chatOnce 中断在途模型请求
   const mkAbort = () => Object.assign(new Error('用户手动停止作业'), { name: 'AbortError' });

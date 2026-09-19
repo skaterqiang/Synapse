@@ -12,6 +12,7 @@ const filesMod = require('../raws/files');
 const raws = require('../raws/raws');
 const { makeTaskTracker } = require('./tasks');
 const { num } = require('../common/config');
+const { CODE_TEXT_EXTS } = require('../common/constants');
 const settingsMod = require('../common/settings');
 
 let jobs = [];
@@ -171,6 +172,27 @@ function clearJobLogs(job) {
   if (job) jobLogs.delete(job.id);
 }
 
+// ---------- 模型流式过程输出（作业详情「过程输出」面板） ----------
+// 累积思考/正文增量，节流写 job.livePreview 并广播；job.liveStage 标明这段输出属于哪个阶段，
+// 前端据此把面板挂在对应阶段行正下方（抽取阶段之外，领域归纳/体系选择等 collect 阶段的模型调用同样可见）。
+// 返回 onDelta(delta, isReasoning) 回调，可直接传给 chatOnce / templates.* 的流式参数。
+function makeLiveStream(job, stageKey) {
+  let think = '';
+  let out = '';
+  let last = 0;
+  return (delta, isReasoning) => {
+    if (!delta) return;
+    if (isReasoning) think += delta; else out += delta;
+    const now = Date.now();
+    if (now - last < 300) return;
+    last = now;
+    job.liveStage = stageKey || 'extract';
+    job.livePreview = ((think ? `【思考】\n${think}\n\n` : '') + (out ? `【输出】\n${out}` : '')).slice(-1500);
+    persistJobs();
+    emitJobs();
+  };
+}
+
 function setStage(job, key, status, detail) {
   const idx = job.stages.findIndex((s) => s.key === key);
   if (idx === -1) return;
@@ -248,6 +270,16 @@ async function runJob(job) {
     // 只标作业状态会让卡片上看不出哪一步失败——此时把第一个待执行阶段标为失败
     const st = job.stages.find((s) => s.status === 'running') || job.stages.find((s) => s.status === 'pending');
     if (st) { st.status = 'failed'; st.detail = job.error; }
+    // 任务对账：作业失败/被停止时，仍标 running 的任务行收尾为 failed 并附中断原因，
+    // 否则卡片上永远留着转圈的 ◐，看不出作业其实已经停了
+    if (Array.isArray(job.tasks)) {
+      for (const t of job.tasks) {
+        if (t.status === 'running') {
+          t.status = 'failed';
+          t.output = (t.output ? t.output + '\n' : '') + `[中断] ${job.error}`;
+        }
+      }
+    }
   }
   jobCancel.delete(job.id);
   job.finishedAt = Date.now();
@@ -364,6 +396,8 @@ const JOB_RUNNERS = {
     // 解析方式如实标注：缓存命中时带上「缓存」字样，避免用户以为本次重新跑了 MinerU
     const parseLabel = (name, used, fromCache) => {
       const suffix = fromCache ? '（缓存命中，未重跑）' : '';
+      // 源码/配置类纯文本：内置 UTF-8 直读，不经 MinerU 也不经技能解析
+      if (CODE_TEXT_EXTS.includes(path.extname(String(name)).toLowerCase())) return `纯文本直读${suffix}`;
       if (used === 'mineru') return `MinerU 解析${suffix}`;
       if (used === 'skill') return `技能解析${suffix}`;
       return usesMineru(name) ? `内置解析（MinerU 失败回退）${suffix}` : '内置解析';
@@ -398,7 +432,9 @@ const JOB_RUNNERS = {
       // 文本型扩展（含 html）按设计固定内置解析，文案如实标注，避免误以为 MinerU 失败
       const fileMethod = forceMineru
         ? '强制 MinerU 解析（不回退）'
-        : (usesMineru(record.name) ? 'MinerU 解析' : (skillsOn ? '内置解析 + 技能解析' : '内置解析（该类型不走 MinerU）'));
+        : (usesMineru(record.name) ? 'MinerU 解析'
+          : (CODE_TEXT_EXTS.includes(path.extname(record.name).toLowerCase()) ? '纯文本直读（不经 MinerU/技能）'
+            : (skillsOn ? '内置解析 + 技能解析' : '内置解析（该类型不走 MinerU）')));
       setStage(job, 'extract', 'running', `解析 ${record.name}（${no}/${rawPaths.length}，并发 ${CONC}，${fileMethod}）`);
       try {
         const info = {}; // extractFileContent 经此交还本次 MinerU 转换暂存的图片目录与解析方式（并发安全，不用全局静态字段）
@@ -507,6 +543,33 @@ const JOB_RUNNERS = {
     setStage(job, 'collect', 'running', corpusRels && corpusRels.length
       ? `读取 ${corpusRels.length} 篇 Markdown 语料（不重新解析原始文件）…`
       : (inlineSources && inlineSources.length ? `读取 ${inlineSources.length} 个笔记来源…` : (rawPaths && rawPaths.length ? `读取 ${rawPaths.length} 个原始来源…` : '读取全部笔记…')));
+    // 任务列表前置：来源范围在提交时即已知——收集阶段先按范围铺 pending 任务行，
+    // 让用户在「收集语料」期间就能看到每个来源对应的提取任务（与 extract-corpus 的 tracker.init 同体验）；
+    // 收集完成后 extractGraph 的 onTasks 会以真实任务整体覆盖。单任务重跑保留原任务列表，此处自动跳过不冲掉历史输出
+    if (!Array.isArray(job.tasks) || !job.tasks.length) {
+      const earlyLabels = [];
+      if (rawPaths && rawPaths.length) for (const r of rawPaths) earlyLabels.push('原始·' + String(r).replace(/^raw\//, ''));
+      else if (inlineSources && inlineSources.length) for (const s of inlineSources) earlyLabels.push(String(s.label || ('笔记·' + (s.title || s.name || s.id || '内联'))));
+      else if (corpusRels && corpusRels.length) for (const r of corpusRels) earlyLabels.push('语料·' + String(r).replace(/\\/g, '/'));
+      else for (const n of notesStore.getNotes()) earlyLabels.push('笔记·' + (n.title || n.id));
+      if (earlyLabels.length) {
+        job.tasks = earlyLabels.map((label, i) => ({ no: i + 1, label, status: 'pending', output: '' }));
+        persistJobs();
+        emitJobs();
+      }
+    }
+    // 来源路径 ↔ 早期任务行下标：解析/读取开始时把对应任务标为 running（正在运行的任务要标定）
+    const earlyTaskByPath = new Map();
+    if (rawPaths && rawPaths.length && Array.isArray(job.tasks) && job.tasks.length === rawPaths.length) {
+      rawPaths.forEach((r, i) => earlyTaskByPath.set(String(r), i));
+    }
+    const markTask = (idx, patch) => {
+      const t = job.tasks && job.tasks[idx];
+      if (!t) return;
+      Object.assign(t, patch);
+      persistJobs();
+      emitJobs();
+    };
     // 单任务重跑：payload 携带 _retryTaskNo，extractGraph 仅执行该批次
     const taskFilter = typeof p._retryTaskNo === 'number' && p._retryTaskNo >= 1 ? p._retryTaskNo : undefined;
     const res = await graph.extractGraph(settings, {
@@ -520,7 +583,70 @@ const JOB_RUNNERS = {
       signal: (jobCancel.get(job.id) || {}).signal || null,
       // 领域：只有选了"自动"时才在作业内找/建领域；用户显式指定领域（含通用）时 autoDomain=false，按其选择执行
       resolveDomain: job.payload.autoDomain === false ? undefined : (raws) => resolveAutoDomain(job, raws, 'collect'),
-      readRaw: (rel) => filesMod.readRawText(settings, rel).catch(() => ''),
+      // 老实现（settings.pipeline 关闭）逐来源读取：读取前把任务标 running，解析日志/失败原因实时进「解析过程」，
+      // 不再静默吞错（此前 .catch(() => '') 让「不支持的文件格式」这类失败在 UI 上完全不可见，作业看起来卡死）
+      readRaw: async (rel) => {
+        // 让出一个微任务：pumpJobQueue 会同步启动 runJob，若不先让出，
+        // retryTask/submit 还没返回、调用方就读到被这里覆盖的任务状态（[重跑] 标记被「解析中…」冲掉）
+        await Promise.resolve();
+        const idx = earlyTaskByPath.get(String(rel));
+        const name = String(rel).replace(/^raw\//, '').split(/[\\/]/).pop();
+        if (idx != null) {
+          markTask(idx, { status: 'running', output: '解析中…' });
+          setStage(job, 'collect', 'running', `解析 ${name}（${idx + 1}/${rawPaths.length}）…`);
+        }
+        try {
+          const text = await filesMod.readRawText(settings, rel, {
+            onLog: (line, replace) => jobLog(job, `[${name}] ${line}`, replace),
+            signal: (jobCancel.get(job.id) || {}).signal || null,
+          });
+          if (idx != null) {
+            markTask(idx, {
+              status: 'pending',
+              output: String(text || '').trim() ? `已解析 ${String(text).length} 字，等待抽取` : '解析结果为空（该来源将被跳过）',
+            });
+          }
+          return text;
+        } catch (err) {
+          if (err && err.name === 'AbortError') throw err;
+          jobLog(job, `[${name}] 解析失败：${err.message}`);
+          if (idx != null) markTask(idx, { status: 'pending', output: `解析失败：${err.message}（该来源将被跳过）` });
+          return '';
+        }
+      },
+      // 流水线实现（settings.pipeline 开启）：解析日志桥接到「解析过程」面板；
+      // 解析开始/结束回调把对应早期任务行标 running / 回填解析结果（正在运行的任务要标定）
+      onLog: (line, replace) => jobLog(job, line, replace),
+      onParseStart: (item) => {
+        const idx = earlyTaskByPath.get(String((item.origin && item.origin.path) || ''));
+        if (idx == null) return;
+        markTask(idx, { status: 'running', output: '解析中…' });
+        setStage(job, 'collect', 'running', `解析 ${item.label}（${idx + 1}/${rawPaths.length}）…`);
+      },
+      onParseEnd: (item, err) => {
+        if (!item) {
+          // 解析失败/被跳过的来源：按名称回配任务行，如实标注失败原因（不再永远停在「解析中…」）
+          if (!err) return;
+          const name = String(err.label || '');
+          const idx = (job.tasks || []).findIndex((t) => name && String(t.label || '').endsWith(name.replace(/^原始·/, '')));
+          if (idx >= 0) markTask(idx, { status: 'failed', output: `解析失败：${err.error || '未知原因'}（该来源将被跳过）` });
+          return;
+        }
+        const idx = earlyTaskByPath.get(String((item.origin && item.origin.path) || ''));
+        if (idx == null) return;
+        const n = String(item.text || '').length;
+        markTask(idx, { status: 'pending', output: n ? `已解析 ${n} 字，等待抽取` : '解析结果为空（该来源将被跳过）' });
+      },
+      // 被过滤丢弃的来源（如无可用解析器的 .java/.xml）：任务行标失败并注明原因，
+      // 否则整批来源全被过滤时任务列表永远停在 pending，用户以为作业卡死
+      onSkip: (item, reason) => {
+        const path = String((item && item.origin && item.origin.path) || '');
+        const idx = earlyTaskByPath.get(path);
+        if (idx != null) {
+          markTask(idx, { status: 'failed', output: `已跳过：${reason}（该来源不参与抽取）` });
+        }
+        jobLog(job, `跳过 ${(item && item.label) || path}：${reason}`);
+      },
       taskFilter,
       // §6.7「抽取后自动推理」复选框：默认勾选，仅当用户显式取消时传 false
       autoReason: p.autoReason === false ? false : undefined,
@@ -528,7 +654,7 @@ const JOB_RUNNERS = {
       setStage(job, key, 'running', detail);
     }, (detail, preview) => {
       // 抽取阶段的思考/输出实时预览，随作业持久化
-      if (preview !== undefined) job.livePreview = preview;
+      if (preview !== undefined) { job.livePreview = preview; job.liveStage = 'extract'; }
       setStage(job, 'extract', 'running', detail);
     }, (tasks) => {
       // 任务列表（每个来源一个 task）实时持久化，供作业内展示
@@ -549,6 +675,7 @@ const JOB_RUNNERS = {
       emitJobs();
     });
     delete job.livePreview;
+    delete job.liveStage;
     // 体系徽标写入作业 source，供作业项展示
     job.source = { ...(job.source || {}), ontologyProfile: res.profileId, ontologyProfileName: res.profileName };
     persistJobs();
@@ -786,17 +913,28 @@ async function resolveAutoDomain(job, raws, stageKey) {
   };
   try {
     // 第一步：在已有领域模版中找最相似的（带相似度评分），命中阈值即复用，避免重复建模版
+    // 领域归纳/体系选择都是分钟级模型调用：把思考与输出流式接到「过程输出」面板（挂在 collect 阶段行下），
+    // 否则收集阶段只有一行静止文案，用户无法判断是在跑还是卡死
+    const live = makeLiveStream(job, stageKey);
+    const liveReset = (label) => {
+      job.livePreview = `【${label}】\n（等待模型响应…）`;
+      job.liveStage = stageKey;
+      persistJobs();
+      emitJobs();
+    };
     setStage(job, stageKey, 'running', '正在已有领域模版中匹配最相似的一个…');
+    liveReset('领域匹配');
     let pickReason = '';
     let similarity = 0;
-    let tpl = await templates.matchTemplate(p.settings, raws, { onPick: (r, s) => { pickReason = r || ''; similarity = s || 0; } });
+    let tpl = await templates.matchTemplate(p.settings, raws, { onPick: (r, s) => { pickReason = r || ''; similarity = s || 0; }, onDelta: live });
     if (tpl && tpl.id === 'general') tpl = null; // general 不算命中特定领域
     let exist = !!tpl;
     if (tpl) {
       setStage(job, stageKey, 'running', `命中领域模版「${tpl.name}」（相似度 ${similarity}%）：${pickReason || '内容主题吻合'}`);
     } else {
       setStage(job, stageKey, 'running', '已有模版均不贴合，正按来源内容归纳新领域…');
-      const sug = await templates.suggestTemplateName(p.settings, raws);
+      liveReset('归纳领域名称');
+      const sug = await templates.suggestTemplateName(p.settings, raws, live);
       // 归纳出的新名与已有模版精确重名时直接复用
       tpl = templates.listTemplates().find((t) => t.id !== 'general' && t.name === sug.name);
       exist = !!tpl;
@@ -804,7 +942,8 @@ async function resolveAutoDomain(job, raws, stageKey) {
         setStage(job, stageKey, 'running', `归纳为领域「${sug.name}」，与已有模版重名，直接复用…`);
       } else {
         setStage(job, stageKey, 'running', `归纳为领域「${sug.name}」，正在生成该领域的领域类…`);
-        const gen = await templates.generateTemplate(p.settings, { name: sug.name, desc: sug.desc });
+        liveReset(`生成领域模版「${sug.name}」`);
+        const gen = await templates.generateTemplate(p.settings, { name: sug.name, desc: sug.desc }, live);
         // 模型可能给出与已有模版重名的 id：同名不同领域时加后缀，避免覆盖别人的模版
         let id = gen.id;
         if (templates.listTemplates().some((t) => t.id === id && t.name !== sug.name)) id = `${id}_${Date.now().toString(36)}`;
@@ -831,7 +970,8 @@ async function resolveAutoDomain(job, raws, stageKey) {
       setStage(job, stageKey, 'running', `体系沿用领域模版「${tpl.name}」的绑定「${tplProfile}」（不再调用模型选择）`);
     } else {
       setStage(job, stageKey, 'running', '模版未绑定体系，正在从本体定义中选择最贴合的体系…');
-      prof = await templates.suggestOntologyProfile(p.settings, raws);
+      liveReset('选择本体体系');
+      prof = await templates.suggestOntologyProfile(p.settings, raws, live);
       tplProfile = prof.id;
       setStage(job, stageKey, 'running', `体系选「${prof.name}」（相似度 ${prof.similarity}%）：${prof.reason}`);
     }

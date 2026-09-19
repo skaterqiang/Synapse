@@ -16,6 +16,10 @@ const MINERU_SUPPORTED_EXTS = ['pdf'];
 // 图片类型集合：文件选择器可添加为引用，无内置解析器、MinerU 也不接；
 // 技能解析开启时经模型直读解析，关闭时报「不支持」并如实说明现状（用于错误提示与文档口径）
 const MINERU_IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.jp2', '.webp', '.gif', '.bmp', '.tiff']);
+// 源码/配置类纯文本扩展名：本身就是 UTF-8 文本，内置解析直接解码（与 .txt 同口径）——
+// 不路由 MinerU（严格只接 PDF），也不交技能解析（纯文本让模型重读无增益，只是逐文件空耗调用）。
+// 是否纳入笔记导入白名单仍由 noteImportExts 决定（默认不含代码类，此处只定「解析方式」）
+const CODE_TEXT_EXTS = ['.java', '.js', '.jsx', '.ts', '.tsx', '.vue', '.py', '.cs', '.c', '.h', '.cpp', '.hpp', '.cc', '.go', '.rs', '.kt', '.scala', '.php', '.rb', '.lua', '.sql', '.xml', '.yml', '.yaml', '.toml', '.ini', '.cfg', '.conf', '.properties', '.sh', '.bat', '.ps1', '.gradle'];
 // 文件选择对话框支持的扩展名（文档类 + 图片类：图片可选入引用，但解析需有解析器）
 const FILE_EXTENSIONS = [...new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx', 'md', 'markdown', 'txt', 'csv', 'html', 'htm', 'png', 'jpg', 'jpeg', 'jp2', 'webp', 'gif', 'bmp', 'tiff'])];
 // 笔记导入默认白名单：文档类（文本型 + 常规 PDF/Office，内置解析直接支持）。不含图片与代码/配置文件——
@@ -824,6 +828,7 @@ module.exports = {
   TRASH_FOLDER_ID,
   MINERU_SUPPORTED_EXTS,
   MINERU_IMAGE_EXTS,
+  CODE_TEXT_EXTS,
   FILE_EXTENSIONS,
   DEFAULT_NOTE_IMPORT_EXTS,
   RAW_REFS_KEY,

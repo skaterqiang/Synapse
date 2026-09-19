@@ -28,7 +28,7 @@ function appendMineruFallbackLog(absPath, reason) {
 }
 
 // MINERU_SUPPORTED_EXTS / FILE_EXTENSIONS / DEFAULT_NOTE_IMPORT_EXTS 等常量统一定义于 common/constants.js
-const { MINERU_SUPPORTED_EXTS, MINERU_IMAGE_EXTS, FILE_EXTENSIONS, DEFAULT_NOTE_IMPORT_EXTS, MINERU_TIMEOUT_SEC, PLUGINS_DIR, MINERU_PLUGIN_DIR, MINERU_INSTALL_TIMEOUT_MS, MINERU_DEFAULT_VLM_MODEL, MINERU_DEFAULT_OLLAMA_URL, MINERU_ASCII_ALIAS_CANDIDATES, MINERU_EXTRA_PACKAGES } = require('../common/constants');
+const { MINERU_SUPPORTED_EXTS, MINERU_IMAGE_EXTS, CODE_TEXT_EXTS, FILE_EXTENSIONS, DEFAULT_NOTE_IMPORT_EXTS, MINERU_TIMEOUT_SEC, PLUGINS_DIR, MINERU_PLUGIN_DIR, MINERU_INSTALL_TIMEOUT_MS, MINERU_DEFAULT_VLM_MODEL, MINERU_DEFAULT_OLLAMA_URL, MINERU_ASCII_ALIAS_CANDIDATES, MINERU_EXTRA_PACKAGES } = require('../common/constants');
 
 // 解析配置为扩展名集合：容许逗号/空格/分号/换行分隔，容许带不带前导点、大小写不敏感；
 // 未配置或配成空则回退默认白名单（避免误操作把导入能力整个关死）
@@ -624,7 +624,8 @@ async function extractFileContentRaw(absPath, settings, opts = {}) {
     builtinError = err.message;
   }
 
-  if (skillsOn) {
+  // 源码/配置类纯文本（CODE_TEXT_EXTS）内置直读即最终产物，不再交技能解析让模型重读
+  if (skillsOn && !CODE_TEXT_EXTS.includes(ext)) {
     // 已提取的内置文本直接带入，技能解析层不再重复跑内置解析
     const r = await skillParse.parseWithSkills(absPath, settings, { ...skillOpts, builtinText: builtinError ? undefined : builtinText });
     if (r.ok) {
@@ -712,6 +713,8 @@ async function parseBuiltin(ext, buffer) {
       return parts.join('\n\n');
     }
     default:
+      // 源码/配置类纯文本：UTF-8 原样解码（与 .txt 同口径），不路由 MinerU 也不交技能解析
+      if (CODE_TEXT_EXTS.includes(ext)) return buffer.toString('utf-8');
       throw new Error('不支持的文件格式：' + (ext || '无扩展名'));
   }
 }
@@ -754,6 +757,8 @@ function readExtractCache(absPath, settings) {
       if (j.method === 'skill') {
         if (settings.skillParse === false) return null;
         if (mineruOn && isMineruRoutable(extNow)) return null;
+        // 纯文本型已改内置直读：历史技能产物视为过期，重提一次即换成直读文本
+        if (CODE_TEXT_EXTS.includes(extNow)) return null;
         return { ...out, method: 'skill' };
       }
       if (j.method === 'fallback') {
@@ -1197,7 +1202,8 @@ async function fetchUrlTitleRich(url, timeoutSec, credentials) {
 }
 
 // 读取 raw 来源文本：md/文本直接读；office/pdf 等按需提取；local: 为本机引用；url: 为链接（读取时拉取）
-async function readRawText(settings, relPath) {
+// opts.onLog / opts.signal：透传给 extractFileContent（作业里实时展示 MinerU/技能解析日志、支持停止中断）
+async function readRawText(settings, relPath, opts = {}) {
   if (String(relPath).startsWith('url:')) {
     return fetchUrlMarkdown(String(relPath).slice('url:'.length), num(settings, 'urlFetchTimeout', 30, 1, 600));
   }
@@ -1205,11 +1211,11 @@ async function readRawText(settings, relPath) {
     ? String(relPath).slice('local:'.length)
     : path.join(rawsRoot(settings), String(relPath).replace(/^\//, ''));
   const ext = path.extname(abs).toLowerCase();
-  if (['.md', '.markdown', '.txt', '.csv', '.json', '.log'].includes(ext)) {
+  if (['.md', '.markdown', '.txt', '.csv', '.json', '.log'].includes(ext) || CODE_TEXT_EXTS.includes(ext)) {
     return fs.existsSync(abs) ? fs.readFileSync(abs, 'utf-8') : '';
   }
   // 富文本走带缓存包装层：MinerU 产物落盘复用，问答扫描不再每次整篇重转（MinerU 配置下单 PDF 可达分钟级）
-  return extractFileContent(abs, settings);
+  return extractFileContent(abs, settings, opts);
 }
 // 检索友好的轻量读取：纯文本读头部；富文本优先磁盘缓存，未命中才整篇提取并落缓存。
 // 与 readRawText 的区别：不返回全文（检索只需头部打分），避免大文档整篇进内存

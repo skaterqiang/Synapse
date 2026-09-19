@@ -268,6 +268,7 @@ function buildJobDetail(job) {
     box.innerHTML = `<div class="job-source-head"><span class="job-source-kind">任务</span><span class="job-source-label">已处理 ${doneN}/${job.tasks.length}${failedN ? `，${failedN} 个失败` : ''}</span></div>`;
     const list = document.createElement('div');
     list.className = 'job-task-list';
+    let runningWrap = null;
     job.tasks.forEach((t) => {
       const key = job.id + ':' + t.no;
       const collapsed = !!taskCollapsed[key];
@@ -318,9 +319,21 @@ function buildJobDetail(job) {
         requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });
       }
       list.appendChild(wrap);
+      if (t.status === 'running') runningWrap = wrap;
     });
     box.appendChild(list);
     detail.appendChild(box);
+    // 任务列表限高滚动（23 条来源时当前在跑的那条可能在视口外）：自动滚到正在运行的任务行
+    if (runningWrap && (job.status === 'running' || job.status === 'queued')) {
+      requestAnimationFrame(() => {
+        const el = runningWrap;
+        const boxTop = list.scrollTop;
+        const boxBottom = boxTop + list.clientHeight;
+        if (el.offsetTop < boxTop || el.offsetTop + el.offsetHeight > boxBottom) {
+          list.scrollTop = Math.max(0, el.offsetTop - list.clientHeight / 2 + el.offsetHeight / 2);
+        }
+      });
+    }
   }
 
   // 实时解析过程（MinerU 子进程输出）：主进程逐行推送、会话内缓存；执行中自动滚到尾部。
@@ -329,7 +342,7 @@ function buildJobDetail(job) {
   if (Array.isArray(logs) && logs.length) {
     const lg = document.createElement('div');
     lg.className = 'job-source job-parselog';
-    lg.innerHTML = `<div class="job-source-head"><span class="job-source-kind">解析过程</span><span class="job-source-label">MinerU 子进程实时输出</span></div>`;
+    lg.innerHTML = `<div class="job-source-head"><span class="job-source-kind">解析过程</span><span class="job-source-label">解析实时日志（MinerU 子进程 / 技能解析；纯文本型直读无日志）</span></div>`;
     const pre = document.createElement('pre');
     pre.className = 'job-live parse-log';
     pre.textContent = logs.join('\n');
@@ -342,17 +355,22 @@ function buildJobDetail(job) {
 
   const stages = document.createElement('div');
   stages.className = 'job-stages';
-  // 模型流式过程输出面板（主进程节流推送 job.livePreview）：挂到「AI 本体抽取」阶段行正下方，
-  // 让过程输出与产生它的阶段对应；此前悬在详情末尾（合并存图之后），用户看不出是哪一步的输出
+  // 模型流式过程输出面板（主进程节流推送 job.livePreview）：挂到产生它的阶段行正下方
+  // （job.liveStage 标明归属：抽取阶段=AI 本体抽取；collect 阶段=领域归纳/体系选择的模型调用）。
+  // 此前固定挂「AI 本体抽取」下，收集期间的领域归纳输出没地方显示，用户以为作业卡死
   const showLive = !!job.livePreview && (job.status === 'running' || job.status === 'failed' || job.status === 'warning');
+  const liveStageKey = job.liveStage || 'extract';
   let liveWrap = null;
   if (showLive) {
     liveWrap = document.createElement('div');
     liveWrap.className = 'job-stage-live';
     const head = document.createElement('div');
     head.className = 'job-stage-live-head';
+    const headText = liveStageKey === 'extract'
+      ? '过程输出 · 模型思考与生成实时流（保留尾部，自动滚到最新）'
+      : '过程输出 · 领域归纳/体系选择的模型实时流（保留尾部，自动滚到最新）';
     head.innerHTML = (job.status === 'running' ? '<span class="mini-spinner"></span>' : '') +
-      '<span>过程输出 · 模型思考与生成实时流（保留尾部，自动滚到最新）</span>';
+      `<span>${headText}</span>`;
     const pre = document.createElement('pre');
     pre.className = 'job-live';
     pre.textContent = String(job.livePreview);
@@ -370,8 +388,8 @@ function buildJobDetail(job) {
     const ico = stStatus === 'success' ? '✓' : stStatus === 'failed' ? '✕' : stStatus === 'running' ? '<span class="mini-spinner"></span>' : '○';
     row.innerHTML = `<span class="stage-ico">${ico}</span><span class="stage-name">${escapeHtml(st.name)}</span><span class="stage-detail">${escapeHtml(st.detail || '')}</span>`;
     stages.appendChild(row);
-    // 过程输出紧随抽取阶段行；无 extract 阶段的作业类型（防御）回退挂到阶段列表末尾
-    if (liveWrap && st.key === 'extract') { stages.appendChild(liveWrap); liveWrap = null; }
+    // 过程输出紧随其归属阶段行；该阶段不存在时（防御）回退挂到阶段列表末尾
+    if (liveWrap && st.key === liveStageKey) { stages.appendChild(liveWrap); liveWrap = null; }
   }
   if (liveWrap) stages.appendChild(liveWrap);
   detail.appendChild(stages);

@@ -207,7 +207,7 @@ function renderGraphEmpty() {
     body.appendChild(em);
   }
   // 空态只覆盖画布区域，保留左侧图谱层级根节点可浏览。
-  const hierarchy = $('graph-hierarchy');
+  const hierarchy = document.querySelector('.graph-hierarchy-pane');
   const detail = $('graph-detail');
   em.style.left = hierarchy ? `${hierarchy.offsetWidth}px` : '0';
   em.style.right = detail && !detail.hidden ? `${detail.offsetWidth}px` : '0';
@@ -573,13 +573,40 @@ function renderGraphHierarchy(nodes) {
   if (selectedNode) tree.selectedKey = tree.hierarchy.entityToKey.get(String(selectedNode.id)) || null;
   else if (tree.selectedKey && !tree.hierarchy.parentByKey.has(tree.selectedKey)) tree.selectedKey = null;
   if (tree.selectedKey) expandGraphHierarchyAncestors(tree, tree.selectedKey);
-  window.renderClassHierarchy(pane, { classes: tree.hierarchy.classes }, {
+  // 搜索框过滤：命中实体叶子保留其祖先链；命中类型保留其下全部实体；过滤视图用独立折叠态（强制展开），不污染正常浏览的折叠态
+  const query = (state.kg.hierQuery || '').trim().toLowerCase();
+  let viewClasses = tree.hierarchy.classes;
+  let viewCollapsed = tree.collapsed;
+  let hitCount = 0;
+  if (query) {
+    const byKey = new Map(viewClasses.map((c) => [c.key, c]));
+    const keep = new Set();
+    const keepAncestors = (start) => {
+      let k = start;
+      while (k && byKey.has(k) && !keep.has(k)) { keep.add(k); k = byKey.get(k).parent || ''; }
+    };
+    for (const c of viewClasses) {
+      const kind = (c.meta || {}).kind;
+      if (kind !== 'entity' && kind !== 'type') continue;
+      if (!`${c.label || ''} ${c.desc || ''}`.toLowerCase().includes(query)) continue;
+      if (kind === 'entity') { keep.add(c.key); keepAncestors(c.parent); hitCount += 1; }
+      else {
+        keep.add(c.key); keepAncestors(c.parent);
+        for (const d of viewClasses) if ((d.meta || {}).kind === 'entity' && d.parent === c.key) { keep.add(d.key); hitCount += 1; }
+      }
+    }
+    viewClasses = viewClasses.filter((c) => keep.has(c.key));
+    viewCollapsed = {}; // 命中子树强制展开，搜索结果直接可见
+  }
+  const hitEl = $('graph-hierarchy-search-count');
+  if (hitEl) { hitEl.hidden = !query; hitEl.textContent = query ? `${hitCount} 个命中` : ''; }
+  window.renderClassHierarchy(pane, { classes: viewClasses }, {
     title: '图谱层级',
     subtitle: '当前筛选',
-    emptyText: '当前筛选范围暂无实体',
+    emptyText: query ? '未搜索到匹配的实体或类型' : '当前筛选范围暂无实体',
     // 虚拟根仅用于计数与类型筛选联动；视觉上直接从第一层类型开始，贴合图谱列表浏览习惯。
     hiddenKeys: [tree.hierarchy.rootKey],
-    collapsed: tree.collapsed,
+    collapsed: viewCollapsed,
     selectedKey: tree.selectedKey,
     onSelect: selectGraphHierarchyItem,
     onHover: hoverGraphHierarchyItem,
@@ -2741,6 +2768,20 @@ function bindGraphEvents() {
     startGraphSim();
     recenterGraph();
   });
+  // 图谱层级搜索框：按实体/类型关键字过滤树；输入框在树组件容器外，重渲不丢焦点；Esc 清空
+  const hierSearch = $('graph-hierarchy-search');
+  if (hierSearch) {
+    hierSearch.addEventListener('input', () => {
+      state.kg.hierQuery = hierSearch.value;
+      renderGraphHierarchy();
+    });
+    hierSearch.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || !hierSearch.value) return;
+      hierSearch.value = '';
+      state.kg.hierQuery = '';
+      renderGraphHierarchy();
+    });
+  }
 
   // KG 子视图与过滤
   // 侧边栏知识图谱子菜单：点击子项打开图谱页并切换到对应子视图

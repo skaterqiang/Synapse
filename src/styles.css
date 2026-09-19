@@ -2429,7 +2429,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .skill-acc-chip.active { background: var(--primary-light); color: var(--primary); border-color: var(--primary); font-weight: 600; }
 .job-source-item { font-size: 11px; color: var(--text-sub); background: rgba(0, 0, 0, 0.05); border-radius: var(--radius-sm); padding: 1px 6px; }
 /* 作业内任务列表（每个来源一 task） */
-.job-task-list { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; max-height: 220px; overflow-y: auto; }
+.job-task-list { position: relative; display: flex; flex-direction: column; gap: 3px; margin-top: 6px; max-height: 220px; overflow-y: auto; }
 .job-task-wrap { display: flex; flex-direction: column; gap: 3px; }
 .job-task-origin { margin-left: 22px; font-size: 11px; color: var(--text-sub); overflow-wrap: anywhere; }
 .task-output { max-height: 140px; margin-left: 22px; font-size: 11px; }
@@ -2437,6 +2437,17 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .job-task.has-out { cursor: pointer; }
 .job-task .task-chev { flex: none; width: 10px; font-size: 10px; color: var(--text-sub); }
 .job-task.done { color: var(--text); }
+/* 正在运行的任务行：整行高亮 + 左侧色条，23 条 pending 里一眼定位当前在跑哪条 */
+.job-task.running {
+  color: var(--text);
+  background: rgba(16, 185, 129, 0.09);
+  border-left: 2px solid var(--primary);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px 1px 2px;
+  margin-left: -4px;
+}
+.job-task.running .job-task-label { font-weight: 600; }
+.job-task.running .job-task-no { background: rgba(16, 185, 129, 0.16); color: var(--primary); }
 .job-task .task-ico { flex: none; width: 14px; text-align: center; font-size: 11px; }
 .job-task-no { flex: none; min-width: 16px; text-align: center; font-size: 10.5px; color: var(--text-sub); background: rgba(0, 0, 0, 0.06); border-radius: var(--radius); padding: 0 4px; }
 .job-task .task-ico.done { color: #389e0d; }
@@ -2888,6 +2899,12 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .och-kids{margin-left:0}
 /* 整体图谱复用 Class hierarchy 的视觉与滚动行为，仅调整其可用宽度。 */
 .graph-hierarchy-pane.och-pane{flex:0 0 260px;min-width:220px;max-width:320px}
+/* 图谱层级搜索条：实体/类型关键字过滤 + 命中计数；输入框在树组件容器外，重渲不丢焦点 */
+.gh-search-bar{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--border);background:var(--panel)}
+.gh-search-bar input{flex:1;min-width:0;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;padding:4px 8px;outline:none}
+.gh-search-bar input:focus{border-color:var(--primary)}
+.gh-search-count{flex:none;font-size:10px;color:var(--text-muted)}
+.gh-tree-host{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 @media (max-width:980px){
   .graph-hierarchy-pane.och-pane{flex-basis:200px;min-width:172px;max-width:220px}
   .graph-detail{width:240px;padding:12px}

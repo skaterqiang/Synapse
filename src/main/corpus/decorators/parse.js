@@ -23,13 +23,14 @@ const { mergeResults } = require('../stream');
 const { addProvenance, addWarning, extOfItem } = require('../item');
 const { mkAbortErr, isAbort } = require('../drive');
 const { num } = require('../../common/config');
-const { MINERU_IMAGE_EXTS } = require('../../common/constants');
+const { MINERU_IMAGE_EXTS, CODE_TEXT_EXTS } = require('../../common/constants');
 const { absOf } = require('../sources');
 
 // 内置解析器覆盖的扩展名（与 files.js:699 parseBuiltin 的 switch 一一对应）
 const BUILTIN_EXTS = new Set([
   '.md', '.markdown', '.txt', '.csv', '.json', '.log',
   '.html', '.htm', '.pdf', '.docx', '.xlsx', '.xls', '.pptx',
+  ...CODE_TEXT_EXTS,
 ]);
 
 // 脚本抽取技能的正文交接文件名（§5.3 / 不变量 P12）
@@ -257,6 +258,8 @@ class SkillMarkdownDecorator extends ParseLayer {
     if (!parse.skillParseReady(settings)) return false;
     const { selectExtractSkills, findExtractSkill } = require('../../skills/select');
     const ext = extOf(item);
+    // 源码/配置类纯文本由内置解析 UTF-8 直读，技能解析不参与（显式指定技能时尊重用户意图）
+    if (CODE_TEXT_EXTS.includes(ext) && !(ctx && ctx.skillName)) return false;
     if (ctx && ctx.skillName) {
       return !!findExtractSkill(settings, ctx.skillName, ext);
     }
@@ -563,6 +566,8 @@ class FallbackDecorator extends CorpusDecorator {
         }
       }
       try {
+        // 解析开始钩子（作业层标定「正在解析哪条来源」；失败静默忽略，不影响解析）
+        if (typeof c.onParseStart === 'function') { try { c.onParseStart(item, c); } catch (_) { /* 忽略 */ } }
         const out = await this.parseOne(item, c);
         this.count++;
         this.tally(out);
