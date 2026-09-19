@@ -99,6 +99,11 @@ class ExtractDecorator extends CorpusDecorator {
 
     // 子任务定位（P13：任务粒度=来源；chunk 的 parentId 映射回来源任务）
     const task = this.taskOf(item, c);
+    // 分块来源（chunk.js：meta.chunk={index,total}）任务粒度仍是**来源**：
+    // 中间块完成时保持 running 并汇报块进度，只有最后一块完成才标 ✓，
+    // 否则会出现「第 1 块抽完先亮 ✓、第 2 块开始又翻回 ◐」的闪烁（用户视角=任务消失又出现）
+    const ch = (item.meta && item.meta.chunk) || null;
+    const isLastChunk = !ch || (ch.index + 1 >= ch.total);
     const t0 = Date.now();
     try {
       const graph = await this.runBatch(item, c, task);
@@ -106,14 +111,21 @@ class ExtractDecorator extends CorpusDecorator {
       this.extracted++;
       c.stats.llmCalls = (c.stats.llmCalls || 0) + (this.twoStage ? 2 : 1);
       this.llmCalls += (this.twoStage ? 2 : 1);
-      if (task) this.markTaskDone(c, task, item);
+      if (task) {
+        if (isLastChunk) this.markTaskDone(c, task, item);
+        else { task.output = `第 ${ch.index + 1}/${ch.total} 块抽取完成，等待下一块…`; this.emitTasks(c); }
+      }
     } catch (err) {
       if (isAbort(err)) throw err;                                  // P11：中止必须上抛
       item.graph = { nodes: [], edges: [], error: err.message };
       this.failed++;
       if (!Array.isArray(c.errors)) c.errors = [];
       c.errors.push({ label: item.label, error: err.message });      // P10：单条失败不中断
-      if (task) this.markTaskFailed(c, task, err);
+      if (task) {
+        // 中间块失败不立即判死来源：后续块仍会继续抽，最后一块失败才标 ✗（失败原因逐块累积在 output）
+        if (isLastChunk) this.markTaskFailed(c, task, err);
+        else { task.output = (task.output || '') + `\n[第 ${ch.index + 1}/${ch.total} 块失败] ${err.message}`; this.emitTasks(c); }
+      }
     }
     addProvenance(item, {
       layer: this.layer, at: Date.now(), ms: Date.now() - t0,
