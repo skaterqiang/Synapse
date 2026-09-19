@@ -342,6 +342,23 @@ function buildJobDetail(job) {
 
   const stages = document.createElement('div');
   stages.className = 'job-stages';
+  // 模型流式过程输出面板（主进程节流推送 job.livePreview）：挂到「AI 本体抽取」阶段行正下方，
+  // 让过程输出与产生它的阶段对应；此前悬在详情末尾（合并存图之后），用户看不出是哪一步的输出
+  const showLive = !!job.livePreview && (job.status === 'running' || job.status === 'failed' || job.status === 'warning');
+  let liveWrap = null;
+  if (showLive) {
+    liveWrap = document.createElement('div');
+    liveWrap.className = 'job-stage-live';
+    const head = document.createElement('div');
+    head.className = 'job-stage-live-head';
+    head.innerHTML = (job.status === 'running' ? '<span class="mini-spinner"></span>' : '') +
+      '<span>过程输出 · 模型思考与生成实时流（保留尾部，自动滚到最新）</span>';
+    const pre = document.createElement('pre');
+    pre.className = 'job-live';
+    pre.textContent = String(job.livePreview);
+    liveWrap.append(head, pre);
+    requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });
+  }
   for (const st of job.stages || []) {
     const row = document.createElement('div');
     // 作业已终态时，残留的 running 阶段不再转圈：失败作业记为失败，成功作业记为成功
@@ -353,17 +370,11 @@ function buildJobDetail(job) {
     const ico = stStatus === 'success' ? '✓' : stStatus === 'failed' ? '✕' : stStatus === 'running' ? '<span class="mini-spinner"></span>' : '○';
     row.innerHTML = `<span class="stage-ico">${ico}</span><span class="stage-name">${escapeHtml(st.name)}</span><span class="stage-detail">${escapeHtml(st.detail || '')}</span>`;
     stages.appendChild(row);
+    // 过程输出紧随抽取阶段行；无 extract 阶段的作业类型（防御）回退挂到阶段列表末尾
+    if (liveWrap && st.key === 'extract') { stages.appendChild(liveWrap); liveWrap = null; }
   }
+  if (liveWrap) stages.appendChild(liveWrap);
   detail.appendChild(stages);
-
-  // 模型流式输出实时预览（仅执行中/失败时展示，自动滚到尾部）
-  if (job.livePreview && (job.status === 'running' || job.status === 'failed' || job.status === 'warning')) {
-    const live = document.createElement('pre');
-    live.className = 'job-live';
-    live.textContent = job.livePreview;
-    detail.appendChild(live);
-    requestAnimationFrame(() => { live.scrollTop = live.scrollHeight; });
-  }
 
   if (job.status === 'failed' && job.error) {
     const err = document.createElement('div');

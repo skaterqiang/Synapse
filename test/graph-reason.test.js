@@ -821,8 +821,10 @@ SubClassOf(:A ObjectComplementOf(:B))
   // 显式传入的 id 原样使用（不补 owl: 前缀）；只有自动生成时才加 owl: 前缀。
   check('显式 id 原样使用，不补 owl: 前缀', rNamed.profile.id === 'custom-id', rNamed.profile.id);
   check('已带 owl: 前缀的显式 id 不会重复加前缀', (await owlImport.importOwlExtended(fTtl, { previewOnly: true, id: 'owl:already' })).profile.id === 'owl:already');
-  check('owlImport 导出 20 个成员', Object.keys(owlImport).length === 20, J(Object.keys(owlImport)));
+  check('owlImport 导出 22 个成员', Object.keys(owlImport).length === 22, J(Object.keys(owlImport)));
   check('localName/iriOf/literalOf/isNamed/iriToKey 工具可用', owlImport.localName('http://ex.org/o#Thing') === 'Thing' && typeof owlImport.iriToKey === 'function');
+  check('导出 collectExternalRefs（体系化导入依赖推断复用）', typeof owlImport.collectExternalRefs === 'function');
+  check('导出 MAX_CONSTRAINTS 常量', typeof owlImport.MAX_CONSTRAINTS === 'number' && owlImport.MAX_CONSTRAINTS > 0, J(owlImport.MAX_CONSTRAINTS));
 
   // ======================================================================
   section('§4.5/§9 风险 4 importOwlExtended：错误路径');

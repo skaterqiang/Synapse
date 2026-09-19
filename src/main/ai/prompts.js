@@ -50,6 +50,18 @@ const PROFILE_PROMPTS = {
     graphExtractPrompt: '你是知识图谱本体抽取引擎（ISO 15926 工业体系，4D 时空观，两阶段抽取）。第一步把节点粗分类到顶级类：可能个体 possible_individual（物理对象/活动/事件/时间段）与抽象对象 abstract_object（类/数/关系对象）二选一；第二步再细分（如全生命周期个体/组合个体/个体的类）。设备、仪器、部件归为物理对象（组合个体用 composedOf 表达部件组合）；检测、运维、试验归为活动或事件；标准、规格、类别归为个体的类。关系使用 Part 7 谓词（classifiedBy/hasSuperclass/hasClassMember/temporalPartOf/spatialPartOf/composedOf/startsBefore/endsBefore/existsAt/involvedIn/connectedTo/containedIn/representsIn/relatedTo）。节点名用规范简短名词，关系须有明确文本依据。只输出 JSON；思考与输出均使用中文。',
     graphEntityPrompt: '你是实体抽取引擎（ISO 15926 工业体系）。从问题中抽取可能在知识图谱中存在的实体名（节点名），多为物理对象（设备/仪器/部件）、活动（检测/运维/试验）或个体的类（标准/规格），使用规范简短名词并去重。只输出 JSON；思考与输出均使用中文。',
   },
+  ogms: {
+    graphExtractPrompt: '你是知识图谱本体抽取引擎（OGMS 医学体系，中英对照，两阶段抽取）。第一步把节点粗分类到顶级分支：倾向 disposition（疾病/易感）、物质实体 material_entity（障碍/损伤/肿瘤/物理体征）、过程 process（症状/身体过程/病程/医疗过程）、性质 quality（体征/表型/综合征）、信息内容 information_content_entity（临床数据项/发现/诊断/预后）；第二步再在指定子树内细分（如病程分急性/慢性/迁延，医疗过程分就诊/住院/治疗/检测/诊断过程）。疾病（disease，倾向）与障碍（disorder，物质实体）严格区分；主观症状 symptom 属过程，客观体征/表型属性质或物质实体；诊断与发现是数据项不得挂物质分支。关系使用 RO/BFO 医学谓词（part_of/has_part/participates_in/has_participant/located_in/derives_from/has_disposition/realizes/occurs_in/precedes/inheres_in/bearer_of/related_to）；疾病挂靠用 has_disposition，病程实现疾病用 realizes。节点名用规范简短名词（中英文皆可），关系须有明确文本依据。只输出 JSON；思考与输出均使用中文。',
+    graphEntityPrompt: '你是实体抽取引擎（OGMS 医学体系）。从问题中抽取可能在知识图谱中存在的实体名（节点名），多为疾病/障碍（糖尿病/肿瘤/损伤）、症状/体征（发热/疼痛/杂音）、检查/诊断（血常规/CT/病理诊断）、治疗/操作（化疗/住院/手术）、医疗过程（随访/体检），使用规范简短名词并去重。只输出 JSON；思考与输出均使用中文。',
+  },
+  legal: {
+    graphExtractPrompt: '你是知识图谱本体抽取引擎（法律体系 LKIF，中英对照，两阶段抽取）。第一步把节点粗分类到顶级分支：规范 Norm（应然层：许可/义务/禁止/权利/权力/豁免）、法律渊源 Legal_Source（制定法/法规/合同/法典/判例/条约/习惯法）、表述 Expression（法律表述/定性表述）、行为 Action（实然层：公法行为/立法行为/法律言语行为/转让/委托/交易）、主体 Agent（人/自然人/组织/法人/公共机构/公司）、角色 Role（法律角色/职业法律角色）；第二步再在指定子树内细分。严格区分规范（Norm，应然）与行为（Action，实然），二者不可混挂；许可/义务/禁止三类规范互斥，权利（可主张的地位）与权力（变更法律关系的能力）区分。关系使用 LKIF 法律谓词（qualifies 定性/counts_as 算作/allows 允许/disallows 禁止/commands 命令/holds 成立/imposed_on 施加于/plays 扮演/actor 行为主体/participant 参与者/declares 声明/part_of/composed_of/after/normatively_comparable/related_to）；规范允许/禁止/命令行为用 allows/disallows/commands，义务施加于主体用 imposed_on，主体扮演角色用 plays，法律定性用 qualifies/counts_as。节点名用规范简短名词（中英文皆可），关系须有明确文本依据。只输出 JSON；思考与输出均使用中文。',
+    graphEntityPrompt: '你是实体抽取引擎（法律体系 LKIF）。从问题中抽取可能在知识图谱中存在的实体名（节点名），多为规范（许可/义务/禁止/权利/权力）、法律渊源（制定法/法规/合同/判例/条约）、行为（立法/转让/委托/交易）、主体（自然人/法人/公司/公共机构）、法律角色（法官/律师/当事人），使用规范简短名词并去重。只输出 JSON；思考与输出均使用中文。',
+  },
+  automotive: {
+    graphExtractPrompt: '你是知识图谱本体抽取引擎（汽车制造体系 IOF，中英对照，两阶段抽取）。第一步把节点粗分类到顶级分支：物质实体 MaterialEntity（产品/装配体/物料组件/原材料/消耗品/装备/工程系统/主体）、过程 Process（制造过程/装配过程/测量过程/物料搬运/物料状态）、信息内容 InformationContentEntity（计划/行动/设计/需求/目标规范、测量信息、值表达式）、性质 Quality（过程特性/缺陷）、可实现实体 RealizableEntity（能力/设计功能）；第二步再在指定子树内细分（如汽车产品分整车/车身/动力总成/底盘/发动机/动力电池/零部件，制造过程分四大工艺冲压/焊装/涂装/总装，质量检验归测量过程）。严格区分产品/物料（物质实体）与制造过程（过程），二者不可混挂；整车/车身/总成为装配体（Assembly），零部件为物料组件（MaterialComponent），发动机/动力电池为物料制品。关系使用 IOF Core 制造谓词（hasInput 有输入/hasOutput 有输出/hasSpecifiedOutput 有规定输出/hasComponentPart 有零部件/componentPartOf 零部件属于/isMadeOf 由...制成/hasMaterialState 有物料状态/hasProcessCharacteristic 有过程特性/hasQuality 有性质/hasCapability 有能力/hasFunction 有功能/classifiedBy 被分类/describes 描述/prescribes 规定/satisfiesRequirement 满足需求/before 先于/after 后于/related_to）；过程输入输出用 hasInput/hasOutput，装配体含零件用 hasComponentPart，规范规定过程用 prescribes，产品满足要求用 satisfiesRequirement。节点名用规范简短名词（中英文皆可），关系须有明确文本依据。只输出 JSON；思考与输出均使用中文。',
+    graphEntityPrompt: '你是实体抽取引擎（汽车制造体系 IOF）。从问题中抽取可能在知识图谱中存在的实体名（节点名），多为汽车产品（整车/车身/动力总成/底盘/发动机/动力电池/零部件）、四大工艺（冲压/焊装/涂装/总装）、产线装备（冲压机/焊机器人/涂装线）、物料（钢板/原材料/消耗品）、质量（缺陷/检测/过程特性）、工艺文件（工艺规范/设计规范/需求），使用规范简短名词并去重。只输出 JSON；思考与输出均使用中文。',
+  },
 };
 
 // 设置覆盖优先，否则内置默认

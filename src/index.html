@@ -217,6 +217,7 @@
           <div class="onto-profile-bar">
             <div class="kg-tabs onto-profile-tabs" id="onto-profile-tabs" title="仅浏览/编辑该体系；抽取与问答时由 AI 自动选择合适体系"></div>
             <div class="onto-profile-acts">
+              <button class="btn btn-ghost" id="btn-onto-import-bundle" title="体系化导入：选主本体（如 OGMS / LKIF）→自动推断并获取依赖（OBO 内联引用的 BFO/RO，或沿 owl:imports 逐层展开的模块）→合并为单一体系，一次得到「有类有谓词」的完整体系"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>体系化导入</button>
               <button class="btn btn-ghost" id="btn-onto-import-owl" title="导入 OWL 2 本体文件（.owl/.rdf/.ttl）；导入后成为独立体系 tab，抽取与问答时由 AI 自动选用"><svg class="ico" width="13" height="13"><use href="#i-add"/></svg>导入 OWL</button>
               <button class="btn btn-ghost danger" id="btn-onto-remove-owl" hidden title="删除当前 OWL 体系">删除体系</button>
             </div>

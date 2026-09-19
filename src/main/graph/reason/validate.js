@@ -51,6 +51,10 @@ function scopeLabelOf(domain) {
  * @param {boolean} [opts.includeInferred=true] 是否把推理边也纳入校验
  *        （默认 true：推理边同样要受体系约束审视，但违规单列 reason 前缀不影响 byReason 口径）
  * @param {boolean} [opts.strictUnknownType=false] 透传 guard.checkEdge 的同名开关
+ * @param {(pid:string)=>object|null} [opts.resolveProfile] 体系解析器（graph.js 注入）：
+ *        全图多体系共存时，每条边按**端点 profile（所属体系）**校验而非单一选中体系——
+ *        通道 A（写前护栏）本就按抽取作业体系校验，通道 C 换体系重跑会把合法边误报为
+ *        「未知谓词」，并诱导修复动作改坏他体系边；缺省（无解析器/端点无 profile）回退选中体系
  * @returns {{ok:boolean, profileId:string, profileName:string, checked:number,
  *            violations:Array, byReason:object, byRel:object, disjointConflicts:Array,
  *            coverage:object, truncated:boolean, at:number}}
@@ -76,6 +80,20 @@ function validateGraph(graph, profile, opts = {}) {
   const byId = new Map();
   for (const n of nodes) if (n && n.id) byId.set(n.id, n);
 
+  // 边归属体系解析：端点 profile（抽取时写入，节点 id 亦带体系前缀）→ resolveProfile；
+  // 解析失败/端点无 profile 时回退本次校验基准体系（与旧版单体系全图校验等价）
+  const resolveProfile = typeof opts.resolveProfile === 'function' ? opts.resolveProfile : null;
+  const profCache = new Map();
+  const edgeProfileOf = (from, to) => {
+    const pid = (from && from.profile) || (to && to.profile) || '';
+    if (!pid || pid === profileId || !resolveProfile) return prof;
+    if (profCache.has(pid)) return profCache.get(pid) || prof;
+    let p = null;
+    try { p = resolveProfile(pid) || null; } catch (_) { p = null; }
+    profCache.set(pid, p);
+    return p || prof;
+  };
+
   // 覆盖率：与「推理」Tab 第 ④ 区块同源，让体检报告自带体系声明基数
   let coverage = null;
   try { coverage = guard.coverage(prof); } catch (_) { coverage = null; }
@@ -98,9 +116,10 @@ function validateGraph(graph, profile, opts = {}) {
     // 端点缺失（孤儿边）不归护栏管，跳过而非误报
     if (!from || !to) continue;
     checked++;
+    const eprof = edgeProfileOf(from, to);
     let verdict = null;
     try {
-      verdict = guard.checkEdge(prof, from, e.rel, to, { strictUnknownType: !!opts.strictUnknownType });
+      verdict = guard.checkEdge(eprof, from, e.rel, to, { strictUnknownType: !!opts.strictUnknownType });
     } catch (_) { verdict = null; }
     if (verdict && verdict.ok === false) {
       const dom = edgeDomainOf(from, to);
@@ -115,8 +134,8 @@ function validateGraph(graph, profile, opts = {}) {
         detail: verdict.detail || '',
         expected: verdict.expected || null,
         actual: verdict.actual || '',
-        // v1.2.2 问题汇总表归属字段：所属体系 + 发现问题的知识图谱（domain）
-        profileId, profileName,
+        // v1.2.2 问题汇总表归属字段：所属体系（边自身体系，修复规划据此解析约束）+ 知识图谱（domain）
+        profileId: eprof.id || profileId, profileName: eprof.name || profileName,
         domain: dom,
         scopeLabel: scopeLabelOf(dom),
       });
@@ -137,26 +156,28 @@ function validateGraph(graph, profile, opts = {}) {
   // 只看 rel 直连 domain/range 会漏报「逆谓词 domain 强制端点类型」的冲突，
   // 与修复规划（repair.findInducingEdges）必须保持同一口径。
   const probeCache = new Map();
-  const probesOf = (rel) => {
-    if (!probeCache.has(rel)) {
+  const probesOf = (eprof, rel) => {
+    const key = `${(eprof && eprof.id) || ''}|${rel}`;
+    if (!probeCache.has(key)) {
       let ps = [];
-      try { ps = guard.forcingProbes(prof, rel); } catch (_) { ps = []; }
-      probeCache.set(rel, ps);
+      try { ps = guard.forcingProbes(eprof, rel); } catch (_) { ps = []; }
+      probeCache.set(key, ps);
     }
-    return probeCache.get(rel);
+    return probeCache.get(key);
   };
   for (const e of edges) {
     if (!e || !e.from || !e.to) continue;
     const from = byId.get(e.from);
     const to = byId.get(e.to);
     if (!from || !to) continue;
-    const probes = probesOf(e.rel).map((p) => ({ node: p.node === 'from' ? from : to, forced: p.forced, via: p.via }));
+    const eprof = edgeProfileOf(from, to);
+    const probes = probesOf(eprof, e.rel).map((p) => ({ node: p.node === 'from' ? from : to, forced: p.forced, via: p.via }));
     for (const { node, forced, via } of probes) {
       const t = node.type || '';
       if (!t) continue;
       for (const f of forced) {
         let d = null;
-        try { d = guard.checkDisjoint(prof, t, f); } catch (_) { d = null; }
+        try { d = guard.checkDisjoint(eprof, t, f); } catch (_) { d = null; }
         if (!d || !d.conflict) continue;
         const sig = `${node.id}|${t}|${f}|${via}`;
         if (seenConflict.has(sig)) continue;
@@ -170,8 +191,8 @@ function validateGraph(graph, profile, opts = {}) {
           node: node.name || node.id,
           domain: cDom,
           scopeLabel: scopeLabelOf(cDom),
-          profileId,
-          profileName,
+          profileId: eprof.id || profileId,
+          profileName: eprof.name || profileName,
           declaredType: t,
           forcedType: f,
           via,

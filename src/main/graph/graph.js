@@ -142,6 +142,7 @@ function reason() {
       impact: require('./reason/impact'),
       bridge: require('./reason/bridge'),
       owlImport: require('./reason/owlImport'),
+      ontologyBundle: require('./reason/ontologyBundle'),
       profile: require('./reason/profile'),
       validate: require('./reason/validate'),
       repair: require('./reason/repair'),
@@ -461,8 +462,8 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
   // ---------- 写入护栏（设计文档 §4.3） ----------
   // 抽取阶段就拦掉「谓词定义域/值域越界」的连线，降级为回退谓词并留痕，
   // 而不是等推理阶段才发现图里全是语义非法边。
-  // 护栏依赖体系的 domain/range 声明；内置三体系里只有 bfo / iso15926 各 2 个谓词有，
-  // bfo-lite 一个都没有 —— 此时护栏自然不拦截（coverage 0%），属预期行为，不是失效。
+  // 护栏依赖体系的 domain/range 声明；老内置体系里只有 bfo / iso15926 各 2 个谓词有（公理形式），
+  // ogms 与 OWL 导入体系则直接挂在谓词上；bfo-lite 一个都没有 —— 此时护栏自然不拦截（coverage 0%），属预期行为，不是失效。
   const guardOn = reasonEnabled(settings);
   const guardLog = [];
   const R = guardOn ? reason() : null;
@@ -1407,7 +1408,7 @@ function listGraphScopes() {
 }
 
 // 把二级范围 id（profile|domain 或 profile|* 或 all）解析成节点过滤谓词
-// 返回 { profiles:Set|null, pred(node)=>bool }；all/空 = 不过滤
+// 直接返回 pred(node)=>bool；all/空 = 不过滤（null）
 function scopeFilter(scope) {
   if (!scope || scope === 'all') return null;
   const s = String(scope);
@@ -1806,6 +1807,64 @@ async function previewOwlImport(filePath, opts = {}) {
 }
 
 /**
+ * 体系化导入预览（bundle）：解析主本体 → 推断/获取依赖 → 合并为单一体系，只解析不落库。
+ * 让用户先看到「依赖清单（本地/已下载/缺失）+ 合并后类/谓词计数 + 中英对照覆盖」，再决定是否导入。
+ * @param {object} payload { mainPath, displayName?, download?, discover?, deps? }
+ * @param {object} [opts]  { forceLegacy, _downloadImpl, timeoutMs }
+ */
+async function previewBundleImport(payload, opts = {}) {
+  const R = reason();
+  if (!R || !R.ontologyBundle || typeof R.ontologyBundle.importBundle !== 'function') {
+    return { ok: false, error: reasonUnavailableReason() || '体系化导入模块不可用' };
+  }
+  try {
+    const res = await R.ontologyBundle.importBundle(payload, opts);
+    return { ok: true, ...res };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
+/**
+ * 体系化导入（bundle）：合并主本体与依赖为单一 owl: 体系并落库（同名覆盖），
+ * 源文件（主本体 + 已下载依赖）复制到 data/ontology/ 留存，便于重新导入。
+ * @returns {Promise<{profile,report,preview,dependencies,via}>}
+ */
+async function importBundle(payload, opts = {}) {
+  const R = reason();
+  if (!R || !R.ontologyBundle || typeof R.ontologyBundle.importBundle !== 'function') {
+    throw new Error(reasonUnavailableReason() || '体系化导入模块不可用');
+  }
+  const res = await R.ontologyBundle.importBundle(payload, opts);
+  const { profile } = res;
+  const kv = readOntologyKv();
+  kv.owlProfiles = kv.owlProfiles || [];
+  const idx = kv.owlProfiles.findIndex((p) => p.id === profile.id);
+  if (idx >= 0) kv.owlProfiles[idx] = profile; else kv.owlProfiles.push(profile);
+  persistOntologyKv(kv);
+  // 主本体源文件复制到 data/ontology/ 留存（依赖若是下载的已直接落在该目录）
+  try {
+    const path = require('path');
+    const fs = require('fs');
+    const { dataRoot } = require('../common/paths');
+    const ontoDir = path.join(dataRoot(), 'ontology');
+    if (!fs.existsSync(ontoDir)) fs.mkdirSync(ontoDir, { recursive: true });
+    const mainPath = res.mainPath;
+    if (mainPath && fs.existsSync(mainPath)) {
+      const dest = path.join(ontoDir, path.basename(mainPath));
+      if (path.resolve(dest) !== path.resolve(mainPath)) fs.copyFileSync(mainPath, dest);
+    }
+  } catch (_) { /* 留存失败不影响导入结果 */ }
+  return {
+    profile,
+    report: res.report,
+    preview: res.preview,
+    dependencies: res.dependencies,
+    via: res.via || 'protege-js',
+  };
+}
+
+/**
  * 全图校验（融合设计 §12.2.3 通道 C）：对已落库的整张图按指定体系重跑
  * 未知谓词 / domain / range 三类检查 + 节点不相交归属检查（cax-dw 的只读等价）。
  *
@@ -1814,7 +1873,10 @@ async function previewOwlImport(filePath, opts = {}) {
  * （降级探针拦截 reason/* 时本入口返回 {ok:false}，不抛错）。
  *
  * @param {string} [profileId] 缺省取当前绑定体系（readOntologyKv）
- * @param {object} [opts]      { includeInferred=true, strictUnknownType=false }
+ * @param {object} [opts]      { includeInferred=true, strictUnknownType=false, scope='' }
+ *        opts.scope：知识图谱二级范围 id（`${profile}|${domain}`，逗号多选，空/all=不限）；
+ *        校验集恒为「选定体系 ∩ 选定知识图谱」内两端点均落圈的边——
+ *        多体系共存的全图里，他体系/他范围的边不再进入本次体检（避免跨体系误报与误修）
  * @returns {{ok:boolean, profileId:string, profileName:string, checked:number,
  *            violations:Array, byReason:object, byRel:object, disjointConflicts:Array,
  *            coverage:object, truncated:boolean, at:number}}  // 11 字段硬契约
@@ -1829,9 +1891,20 @@ function validateGraph(profileId, opts = {}) {
   try { prof = resolveOntology(pid); } catch (err) {
     return { ok: false, error: String((err && err.message) || err), at: Date.now() };
   }
-  const g = getGraph();
+  const gAll = getGraph();
+  // 校验范围 = 选定体系 ∩ 选定知识图谱（opts.scope，与整体图谱页二级筛选同口径）：
+  // 仅两端点均落圈的边进入校验集；节点无 profile 的历史数据按 bfo-lite 计（与展示层一致）
+  const sf = opts && opts.scope ? scopeFilter(opts.scope) : null;
+  const nodeOk = (n) => !!n && (n.profile || 'bfo-lite') === prof.id && (!sf || sf(n));
+  const byId0 = new Map((gAll.nodes || []).map((n) => [n.id, n]));
+  const g = {
+    nodes: gAll.nodes,
+    edges: (gAll.edges || []).filter((e) => e && nodeOk(byId0.get(e.from)) && nodeOk(byId0.get(e.to))),
+  };
   try {
-    const result = R.validate.validateGraph(g, prof, opts || {});
+    // 注入体系解析器：校验集内边的端点 profile 与选中体系一致（无 profile 的历史边回退选中体系），
+    // 条目归属字段仍按边自身体系回填，修复规划据此解析约束
+    const result = R.validate.validateGraph(g, prof, Object.assign({}, opts, { resolveProfile: (pid2) => resolveOntology(pid2) }));
     // 给越界边与不相交归属冲突补「知识图谱（domain）」的展示名（模版名），
     // 与推理 Tab 冲突列表 / listGraphScopes 口径一致；reason/ 内为纯版本回退标签
     if (result && Array.isArray(result.disjointConflicts)) {
@@ -2164,6 +2237,8 @@ module.exports = { getGraph, saveGraph, clearGraph, extractGraph, contextFor, re
   // ---------- 推理层对外接口（设计文档 §4–§6） ----------
   runInference, getReasonState, clearInferredEdges, deleteEdgeWithCascade, deleteNodeWithCascade,
   impactClosureFor, predicateFeatures, reasonStatus, previewOwlImport, validateGraph,
+  // ---------- 体系化导入（bundle：主本体 + 依赖合并为单一体系）----------
+  importBundle, previewBundleImport,
   // ---------- 冲突自动修复（方案2/3） ----------
   planRepairs, planRepairsForIssues, applyRepairs, applyRepairsStepwise, undoRepair, repairUndoAvailable,
   // 内部工具（测试与调试用）

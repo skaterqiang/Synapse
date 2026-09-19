@@ -1,0 +1,603 @@
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix mu: <http://example.org/medical-undergrad#> .
+@prefix his: <http://example.org/his#> .
+
+mu:MedicalUndergradOntology a owl:Ontology ;
+  rdfs:label "医学本科核心概念本体" ;
+  rdfs:comment "覆盖系统解剖学、生理学、病理学、诊断学、内科学、外科学、妇产科学、儿科学、药理学等医学本科核心课程的概念层。用 OWL 类层级与对象属性表达术语关系,不含教材原文。与 HIS 样例的数据实体(dms_case_history / dms_drug / dms_non_drug / pms_patient 等)通过 rdfs:seeAlso 松耦合,供 AI 抽取时做临床术语归一与跨体系映射。" ;
+  rdfs:seeAlso his:ontology .
+
+
+mu:BiologicalEntity a owl:Class ;
+  rdfs:label "生物实体" ;
+  rdfs:comment "医学领域所有实体与过程的顶层根类。对齐 BFO:Entity,用于将本体内所有概念纳入统一分类。" .
+
+mu:Organism a owl:Class ;
+  rdfs:label "生物个体" ;
+  rdfs:comment "完整的人体个体,是临床诊疗活动的对象主体。" ;
+  rdfs:subClassOf mu:BiologicalEntity .
+
+mu:Patient a owl:Class ;
+  rdfs:label "患者" ;
+  rdfs:comment "接受医疗服务的生物个体。对应 HIS 中 pms_patient 表的业务语义。" ;
+  rdfs:subClassOf mu:Organism ;
+  rdfs:seeAlso his:PmsPatient .
+
+mu:HealthcareProfessional a owl:Class ;
+  rdfs:label "医务人员" ;
+  rdfs:comment "提供医疗服务的专业人员总称。对应 HIS 中 sms_staff 表的业务语义。" ;
+  rdfs:subClassOf mu:Organism ;
+  rdfs:seeAlso his:SmsStaff .
+
+mu:HealthcareRole a owl:Class ;
+  rdfs:label "医疗角色" ;
+  rdfs:comment "医务人员在诊疗活动中承担的角色,如医师、护士、药师、技师等。角色与具体人员是多对多关系。" ;
+  rdfs:subClassOf mu:BiologicalEntity .
+
+
+mu:AnatomicalStructure a owl:Class ;
+  rdfs:label "解剖结构" ;
+  rdfs:comment "人体具有形态学结构的组成部分,从系统到细胞各层次。对齐 BFO:MaterialEntity。" ;
+  rdfs:subClassOf mu:BiologicalEntity .
+
+mu:BodySystem a owl:Class ;
+  rdfs:label "身体系统" ;
+  rdfs:comment "由多个器官协同完成特定生理功能的系统,如循环系统、呼吸系统、神经系统等。本科系统解剖学按系统划分教学内容。" ;
+  rdfs:subClassOf mu:AnatomicalStructure .
+
+mu:Organ a owl:Class ;
+  rdfs:label "器官" ;
+  rdfs:comment "由多种组织构成、具有特定形态和功能的解剖单位,如心、肺、肝、肾等。" ;
+  rdfs:subClassOf mu:AnatomicalStructure .
+
+mu:Tissue a owl:Class ;
+  rdfs:label "组织" ;
+  rdfs:comment "形态和功能相似的细胞及其间质组成的结构层次,包括上皮组织、结缔组织、肌组织、神经组织四大基本组织。" ;
+  rdfs:subClassOf mu:AnatomicalStructure .
+
+mu:Cell a owl:Class ;
+  rdfs:label "细胞" ;
+  rdfs:comment "人体结构和功能的基本单位。" ;
+  rdfs:subClassOf mu:AnatomicalStructure .
+
+mu:BodyRegion a owl:Class ;
+  rdfs:label "身体区域" ;
+  rdfs:comment "按体表或体腔划分的解剖区域,如头部、颈部、胸部、腹部、盆腔、脊柱区、四肢等。用于临床定位描述。" ;
+  rdfs:subClassOf mu:AnatomicalStructure .
+
+mu:BodyCavity a owl:Class ;
+  rdfs:label "体腔" ;
+  rdfs:comment "体内存纳器官的空腔,如颅腔、胸腔、腹腔、盆腔、心包腔、胸膜腔等。" ;
+  rdfs:subClassOf mu:AnatomicalStructure .
+
+mu:BodyFluid a owl:Class ;
+  rdfs:label "体液" ;
+  rdfs:comment "体内液体的总称,包括血液、淋巴液、脑脊液、组织液、消化液、尿液等。体液检查是临床检验的重要对象。" ;
+  rdfs:subClassOf mu:AnatomicalStructure .
+
+
+mu:PhysiologicalProcess a owl:Class ;
+  rdfs:label "生理过程" ;
+  rdfs:comment "正常生命活动中发生的物质代谢、能量转换和功能调节过程。对齐 BFO:Process。本科生理学按系统讲授。" ;
+  rdfs:subClassOf mu:BiologicalEntity .
+
+mu:MetabolicProcess a owl:Class ;
+  rdfs:label "代谢过程" ;
+  rdfs:comment "体内物质的合成与分解及其伴随的能量转换,包括糖代谢、脂代谢、蛋白质代谢、水盐代谢、酸碱平衡等。" ;
+  rdfs:subClassOf mu:PhysiologicalProcess .
+
+mu:HemodynamicProcess a owl:Class ;
+  rdfs:label "血流动力学过程" ;
+  rdfs:comment "血液在心血管系统中流动的力学过程,包括心输出量、血压调节、微循环、组织灌注等。" ;
+  rdfs:subClassOf mu:PhysiologicalProcess .
+
+mu:RespiratoryProcess a owl:Class ;
+  rdfs:label "呼吸过程" ;
+  rdfs:comment "外呼吸(肺通气与肺换气)、气体运输和内呼吸(组织换气)的全过程。" ;
+  rdfs:subClassOf mu:PhysiologicalProcess .
+
+mu:NeuralProcess a owl:Class ;
+  rdfs:label "神经过程" ;
+  rdfs:comment "神经冲动的产生、传导和突触传递,以及反射弧活动和高级神经功能。" ;
+  rdfs:subClassOf mu:PhysiologicalProcess .
+
+mu:ImmuneProcess a owl:Class ;
+  rdfs:label "免疫过程" ;
+  rdfs:comment "机体识别和清除抗原性异物的防御过程,包括固有免疫和适应性免疫(体液免疫与细胞免疫)。" ;
+  rdfs:subClassOf mu:PhysiologicalProcess .
+
+mu:EndocrineProcess a owl:Class ;
+  rdfs:label "内分泌过程" ;
+  rdfs:comment "激素的合成、分泌、运输、靶器官作用及反馈调节过程。" ;
+  rdfs:subClassOf mu:PhysiologicalProcess .
+
+
+mu:PathologicalProcess a owl:Class ;
+  rdfs:label "病理过程" ;
+  rdfs:comment "疾病发生发展过程中出现的异常形态结构改变和功能障碍。本科病理学总论按基本病理过程讲授。" ;
+  rdfs:subClassOf mu:BiologicalEntity .
+
+mu:Inflammation a owl:Class ;
+  rdfs:label "炎症" ;
+  rdfs:comment "机体对致炎因子的防御性反应,基本病理变化为变质、渗出和增生。临床表现为红肿热痛和功能障碍。" ;
+  rdfs:subClassOf mu:PathologicalProcess .
+
+mu:Ischemia a owl:Class ;
+  rdfs:label "缺血" ;
+  rdfs:comment "局部组织或器官的动脉血供减少或中断,导致氧和营养物质供应不足。" ;
+  rdfs:subClassOf mu:PathologicalProcess .
+
+mu:Hypoxia a owl:Class ;
+  rdfs:label "缺氧" ;
+  rdfs:comment "组织氧供不足或氧利用障碍,分为低张性、血液性、循环性和组织性缺氧四种类型。" ;
+  rdfs:subClassOf mu:PathologicalProcess .
+
+mu:Necrosis a owl:Class ;
+  rdfs:label "坏死" ;
+  rdfs:comment "活体内局部组织、细胞的死亡,分为凝固性坏死、液化性坏死、纤维素样坏死、干酪样坏死等类型。" ;
+  rdfs:subClassOf mu:PathologicalProcess .
+
+mu:Fibrosis a owl:Class ;
+  rdfs:label "纤维化" ;
+  rdfs:comment "损伤修复过程中纤维结缔组织过度增生,导致器官硬化和功能障碍。" ;
+  rdfs:subClassOf mu:PathologicalProcess .
+
+mu:Neoplasia a owl:Class ;
+  rdfs:label "肿瘤形成" ;
+  rdfs:comment "细胞异常增殖形成新生物的过程,分为良性和恶性。恶性肿瘤具有浸润和转移能力。" ;
+  rdfs:subClassOf mu:PathologicalProcess .
+
+mu:Hemorrhage a owl:Class ;
+  rdfs:label "出血" ;
+  rdfs:comment "血液从血管或心脏逸出,分为内出血和外出血,按机制分为破裂性出血和漏出性出血。" ;
+  rdfs:subClassOf mu:PathologicalProcess .
+
+mu:Thrombosis a owl:Class ;
+  rdfs:label "血栓形成" ;
+  rdfs:comment "活体心血管内血液成分凝集形成固体质块的过程,三要素为内皮损伤、血流异常和血液高凝状态。" ;
+  rdfs:subClassOf mu:PathologicalProcess .
+
+mu:Shock a owl:Class ;
+  rdfs:label "休克" ;
+  rdfs:comment "有效循环血量急剧减少导致组织灌注不足、细胞缺氧的全身性病理过程。分为低血容量性、心源性、分布性和梗阻性休克。" ;
+  rdfs:subClassOf mu:PathologicalProcess .
+
+
+mu:ClinicalFinding a owl:Class ;
+  rdfs:label "临床发现" ;
+  rdfs:comment "通过病史采集、体格检查和辅助检查获得的异常表现的总称。对应 HIS 中 dms_case_history 表记录的诊断信息。" ;
+  rdfs:subClassOf mu:BiologicalEntity ;
+  rdfs:seeAlso his:DmsCaseHistory .
+
+mu:Symptom a owl:Class ;
+  rdfs:label "症状" ;
+  rdfs:comment "患者主观感受到的不适或异常感觉,如疼痛、头晕、恶心、呼吸困难等。症状是病史采集的核心内容。" ;
+  rdfs:subClassOf mu:ClinicalFinding .
+
+mu:Sign a owl:Class ;
+  rdfs:label "体征" ;
+  rdfs:comment "医师通过体格检查发现的客观异常表现,如心脏杂音、肺部啰音、肝脾肿大、病理反射等。" ;
+  rdfs:subClassOf mu:ClinicalFinding .
+
+mu:Syndrome a owl:Class ;
+  rdfs:label "综合征" ;
+  rdfs:comment "一组同时出现的症状和体征构成的临床症候群,提示特定的病理生理机制,如肾病综合征、代谢综合征等。" ;
+  rdfs:subClassOf mu:ClinicalFinding .
+
+mu:ChiefComplaint a owl:Class ;
+  rdfs:label "主诉" ;
+  rdfs:comment "患者就诊时最主要的症状或体征及其持续时间,是病史记录的起始项。" ;
+  rdfs:subClassOf mu:ClinicalFinding .
+
+
+mu:Disease a owl:Class ;
+  rdfs:label "疾病" ;
+  rdfs:comment "在病因作用下机体自稳调节紊乱导致的异常生命活动过程,具有特定的病因、发病机制、病理变化和临床表现。对齐 OGMS:Disease。" ;
+  rdfs:subClassOf mu:BiologicalEntity .
+
+mu:InfectiousDisease a owl:Class ;
+  rdfs:label "感染性疾病" ;
+  rdfs:comment "由病原微生物(细菌、病毒、真菌、寄生虫等)感染引起的疾病,具有传染性和流行性。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:CardiovascularDisease a owl:Class ;
+  rdfs:label "心血管疾病" ;
+  rdfs:comment "累及心脏和血管系统的疾病,包括高血压、冠心病、心力衰竭、心律失常、瓣膜病等。内科学心血管系统章节的核心内容。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:RespiratoryDisease a owl:Class ;
+  rdfs:label "呼吸系统疾病" ;
+  rdfs:comment "累及气管、支气管、肺和胸廓的疾病,包括慢性阻塞性肺疾病、肺炎、哮喘、肺结核、肺癌等。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:DigestiveDisease a owl:Class ;
+  rdfs:label "消化系统疾病" ;
+  rdfs:comment "累及食管、胃、肠、肝、胆、胰的疾病,包括胃炎、消化性溃疡、肝炎、肝硬化、胆囊炎、胰腺炎、炎症性肠病等。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:UrinaryDisease a owl:Class ;
+  rdfs:label "泌尿系统疾病" ;
+  rdfs:comment "累及肾脏、输尿管、膀胱、尿道的疾病,包括肾小球肾炎、肾病综合征、慢性肾病、尿路感染、尿路结石等。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:NeurologicalDisease a owl:Class ;
+  rdfs:label "神经系统疾病" ;
+  rdfs:comment "累及中枢和周围神经系统的疾病,包括脑卒中、癫痫、帕金森病、阿尔茨海默病、脑炎、周围神经病等。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:EndocrineDisease a owl:Class ;
+  rdfs:label "内分泌疾病" ;
+  rdfs:comment "内分泌腺体或激素分泌异常导致的疾病,包括糖尿病、甲状腺疾病、肾上腺疾病、垂体疾病、骨质疏松等。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:HematologicDisease a owl:Class ;
+  rdfs:label "血液系统疾病" ;
+  rdfs:comment "累及血液和造血组织的疾病,包括各类贫血、白血病、淋巴瘤、血小板减少性紫癜、血友病等。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:OncologicalDisease a owl:Class ;
+  rdfs:label "肿瘤性疾病" ;
+  rdfs:comment "以细胞异常增殖为特征的疾病统称,按组织来源和生物学行为分类。恶性肿瘤的治疗涉及手术、化疗、放疗、靶向和免疫治疗。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:MusculoskeletalDisease a owl:Class ;
+  rdfs:label "运动系统疾病" ;
+  rdfs:comment "累及骨、关节、肌肉、韧带、肌腱的疾病,包括骨折、骨关节炎、类风湿关节炎、椎间盘突出、骨质疏松等。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:TraumaticInjury a owl:Class ;
+  rdfs:label "创伤" ;
+  rdfs:comment "外力作用于机体导致的组织完整性破坏和功能障碍,按致伤因素分为机械性、物理性、化学性和生物性创伤。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:GeneticDisease a owl:Class ;
+  rdfs:label "遗传性疾病" ;
+  rdfs:comment "由遗传物质改变引起的疾病,包括单基因病、多基因病和染色体病。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:ObstetricComplication a owl:Class ;
+  rdfs:label "产科并发症" ;
+  rdfs:comment "妊娠期、分娩期和产褥期出现的病理状态,如妊娠高血压疾病、前置胎盘、胎盘早剥、产后出血等。妇产科学核心内容。" ;
+  rdfs:subClassOf mu:Disease .
+
+mu:PediatricDisease a owl:Class ;
+  rdfs:label "儿科疾病" ;
+  rdfs:comment "胎儿至青春期特有的疾病,包括新生儿疾病、营养性疾病、感染性疾病和遗传代谢病。儿科学核心内容。" ;
+  rdfs:subClassOf mu:Disease .
+
+
+mu:DiagnosticProcedure a owl:Class ;
+  rdfs:label "诊断操作" ;
+  rdfs:comment "用于确定或排除疾病的检查方法总称。对应 HIS 中 dms_non_drug 表的检查/检验类诊疗项目。" ;
+  rdfs:subClassOf mu:BiologicalEntity ;
+  rdfs:seeAlso his:DmsNonDrug .
+
+mu:PhysicalExamination a owl:Class ;
+  rdfs:label "体格检查" ;
+  rdfs:comment "医师运用视诊、触诊、叩诊、听诊等方法对患者进行系统检查,是诊断学的基本技能。" ;
+  rdfs:subClassOf mu:DiagnosticProcedure .
+
+mu:LaboratoryTest a owl:Class ;
+  rdfs:label "实验室检查" ;
+  rdfs:comment "通过对血液、体液、分泌物、排泄物、组织等标本的理化、生物学和免疫学检测获得诊断依据。" ;
+  rdfs:subClassOf mu:DiagnosticProcedure .
+
+mu:BloodTest a owl:Class ;
+  rdfs:label "血液检查" ;
+  rdfs:comment "包括血常规、血涂片、凝血功能、血型、交叉配血等,是最常用的实验室检查类别。" ;
+  rdfs:subClassOf mu:LaboratoryTest .
+
+mu:UrineTest a owl:Class ;
+  rdfs:label "尿液检查" ;
+  rdfs:comment "包括尿常规、尿沉渣、24小时尿蛋白定量、尿培养等,用于泌尿系统和全身性疾病的筛查。" ;
+  rdfs:subClassOf mu:LaboratoryTest .
+
+mu:BiochemistryTest a owl:Class ;
+  rdfs:label "生化检查" ;
+  rdfs:comment "检测肝功、肾功、血糖、血脂、电解质、心肌酶、血气分析等生化指标。" ;
+  rdfs:subClassOf mu:LaboratoryTest .
+
+mu:PathologyTest a owl:Class ;
+  rdfs:label "病理检查" ;
+  rdfs:comment "通过对活检组织、手术标本、脱落细胞和穿刺物的形态学观察确定疾病性质,是疾病诊断的金标准。" ;
+  rdfs:subClassOf mu:LaboratoryTest .
+
+mu:MicrobiologyTest a owl:Class ;
+  rdfs:label "微生物检查" ;
+  rdfs:comment "包括细菌培养+药敏、真菌培养、结核菌涂片/培养、病毒核酸检测和血清学检测等,指导抗感染治疗。" ;
+  rdfs:subClassOf mu:LaboratoryTest .
+
+mu:ImagingStudy a owl:Class ;
+  rdfs:label "影像检查" ;
+  rdfs:comment "利用各种成像技术显示人体内部结构和病变的检查方法。" ;
+  rdfs:subClassOf mu:DiagnosticProcedure .
+
+mu:XRayStudy a owl:Class ;
+  rdfs:label "X线检查" ;
+  rdfs:comment "利用X射线穿透性进行成像,包括透视和摄片,常用于胸部、骨骼和消化道造影。" ;
+  rdfs:subClassOf mu:ImagingStudy .
+
+mu:ComputedTomography a owl:Class ;
+  rdfs:label "计算机断层扫描" ;
+  rdfs:comment "CT检查,提供横断面图像,适用于颅脑、胸部、腹部、脊柱和创伤的精确诊断。" ;
+  rdfs:subClassOf mu:ImagingStudy .
+
+mu:MagneticResonanceImaging a owl:Class ;
+  rdfs:label "磁共振成像" ;
+  rdfs:comment "MRI检查,对软组织分辨率高,适用于中枢神经系统、关节、盆腔和肿瘤分期。" ;
+  rdfs:subClassOf mu:ImagingStudy .
+
+mu:Ultrasonography a owl:Class ;
+  rdfs:label "超声检查" ;
+  rdfs:comment "利用超声波成像,无创无辐射,广泛用于腹部、心脏(超声心动图)、血管、产科和浅表器官。" ;
+  rdfs:subClassOf mu:ImagingStudy .
+
+mu:ElectrophysiologyTest a owl:Class ;
+  rdfs:label "电生理检查" ;
+  rdfs:comment "记录生物电活动的检查,包括心电图(ECG)、脑电图(EEG)、肌电图(EMG)和诱发电位等。" ;
+  rdfs:subClassOf mu:DiagnosticProcedure .
+
+mu:EndoscopyTest a owl:Class ;
+  rdfs:label "内镜检查" ;
+  rdfs:comment "通过自然腔道或微小切口插入内镜直视检查,包括胃镜、肠镜、支气管镜、腹腔镜、膀胱镜等。" ;
+  rdfs:subClassOf mu:DiagnosticProcedure .
+
+
+mu:TherapeuticProcedure a owl:Class ;
+  rdfs:label "治疗操作" ;
+  rdfs:comment "用于缓解或消除疾病、恢复功能的所有干预措施总称。对应 HIS 中 dms_non_drug 表的治疗类诊疗项目。" ;
+  rdfs:subClassOf mu:BiologicalEntity ;
+  rdfs:seeAlso his:DmsNonDrug .
+
+mu:Pharmacotherapy a owl:Class ;
+  rdfs:label "药物治疗" ;
+  rdfs:comment "使用药物预防、治疗和诊断疾病的过程,是临床最常用的治疗手段。对应 HIS 中处方开立和发药流程。" ;
+  rdfs:subClassOf mu:TherapeuticProcedure .
+
+mu:SurgicalProcedure a owl:Class ;
+  rdfs:label "手术" ;
+  rdfs:comment "通过切开、缝合、切除、修复等操作治疗疾病的外科手段。按目的分为诊断性、根治性、姑息性和移植手术。" ;
+  rdfs:subClassOf mu:TherapeuticProcedure .
+
+mu:MinimallyInvasiveSurgery a owl:Class ;
+  rdfs:label "微创手术" ;
+  rdfs:comment "通过腔镜、介入、内镜等微小通道完成的手术,创伤小、恢复快,包括腹腔镜手术、胸腔镜手术和介入治疗。" ;
+  rdfs:subClassOf mu:SurgicalProcedure .
+
+mu:RadiationTherapy a owl:Class ;
+  rdfs:label "放射治疗" ;
+  rdfs:comment "利用电离辐射杀灭肿瘤细胞的治疗方法,分为根治性放疗、辅助性放疗和姑息性放疗。" ;
+  rdfs:subClassOf mu:TherapeuticProcedure .
+
+mu:PhysicalTherapy a owl:Class ;
+  rdfs:label "物理治疗" ;
+  rdfs:comment "利用物理因子(电、光、声、磁、热、力等)预防和治疗疾病、恢复功能的方法,属于康复医学范畴。" ;
+  rdfs:subClassOf mu:TherapeuticProcedure .
+
+mu:Dialysis a owl:Class ;
+  rdfs:label "透析治疗" ;
+  rdfs:comment "利用半透膜原理清除体内代谢废物和多余水分的替代治疗,包括血液透析和腹膜透析,用于急慢性肾衰竭。" ;
+  rdfs:subClassOf mu:TherapeuticProcedure .
+
+mu:Transfusion a owl:Class ;
+  rdfs:label "输血治疗" ;
+  rdfs:comment "将血液成分输入患者体内以纠正贫血、凝血障碍或血容量不足,包括全血输注和成分输血。" ;
+  rdfs:subClassOf mu:TherapeuticProcedure .
+
+mu:Chemotherapy a owl:Class ;
+  rdfs:label "化学治疗" ;
+  rdfs:comment "使用细胞毒药物杀灭或抑制肿瘤细胞,常与手术、放疗联合用于恶性肿瘤的综合治疗。" ;
+  rdfs:subClassOf mu:TherapeuticProcedure .
+
+
+mu:PharmacologicalSubstance a owl:Class ;
+  rdfs:label "药理物质" ;
+  rdfs:comment "具有预防、治疗、诊断疾病或调节生理功能的化学或生物物质的总称。" ;
+  rdfs:subClassOf mu:BiologicalEntity .
+
+mu:Drug a owl:Class ;
+  rdfs:label "药物" ;
+  rdfs:comment "用于预防、治疗和诊断疾病的化学物质。对应 HIS 中 dms_drug 表的药品字典条目。" ;
+  rdfs:subClassOf mu:PharmacologicalSubstance ;
+  rdfs:seeAlso his:DmsDrug .
+
+mu:Antibiotic a owl:Class ;
+  rdfs:label "抗生素" ;
+  rdfs:comment "由微生物产生或人工合成的、能抑制或杀灭其他微生物的化学物质,包括青霉素类、头孢菌素类、大环内酯类、喹诺酮类、氨基糖苷类等。" ;
+  rdfs:subClassOf mu:Drug .
+
+mu:Antihypertensive a owl:Class ;
+  rdfs:label "降压药" ;
+  rdfs:comment "用于治疗高血压的药物,包括利尿剂、ACEI/ARB、钙通道阻滞剂、β受体阻滞剂和α受体阻滞剂五大类。" ;
+  rdfs:subClassOf mu:Drug .
+
+mu:Antidiabetic a owl:Class ;
+  rdfs:label "降糖药" ;
+  rdfs:comment "用于治疗糖尿病的药物,包括胰岛素及其类似物、双胍类、磺脲类、格列奈类、α-糖苷酶抑制剂、DPP-4抑制剂、SGLT-2抑制剂和GLP-1受体激动剂。" ;
+  rdfs:subClassOf mu:Drug .
+
+mu:Analgesic a owl:Class ;
+  rdfs:label "镇痛药" ;
+  rdfs:comment "缓解或消除疼痛的药物,分为非甾体抗炎药(NSAIDs)、阿片类镇痛药和辅助镇痛药(抗抑郁药、抗惊厥药)。" ;
+  rdfs:subClassOf mu:Drug .
+
+mu:Anesthetic a owl:Class ;
+  rdfs:label "麻醉药" ;
+  rdfs:comment "使机体暂时丧失感觉或意识的药物,分为全身麻醉药(吸入性和静脉性)、局部麻醉药和麻醉辅助药。" ;
+  rdfs:subClassOf mu:Drug .
+
+mu:Hormone a owl:Class ;
+  rdfs:label "激素类药物" ;
+  rdfs:comment "以激素或激素类似物为有效成分的药物,包括糖皮质激素、甲状腺激素、胰岛素、性激素和生长激素等。" ;
+  rdfs:subClassOf mu:Drug .
+
+mu:Anticoagulant a owl:Class ;
+  rdfs:label "抗凝药" ;
+  rdfs:comment "抑制血液凝固的药物,包括肝素、华法林、新型口服抗凝药(利伐沙班、达比加群等)和抗血小板药(阿司匹林、氯吡格雷)。" ;
+  rdfs:subClassOf mu:Drug .
+
+mu:HerbalMedicine a owl:Class ;
+  rdfs:label "中草药" ;
+  rdfs:comment "以中医药理论为指导的天然药物,包括植物药、动物药和矿物药。对应 HIS 中 dms_herbal_prescription_record 的用药来源。" ;
+  rdfs:subClassOf mu:PharmacologicalSubstance ;
+  rdfs:seeAlso his:DmsHerbalPrescriptionRecord .
+
+mu:BiologicalAgent a owl:Class ;
+  rdfs:label "生物制剂" ;
+  rdfs:comment "利用生物技术制备的治疗药物,包括单克隆抗体、细胞因子、疫苗、基因治疗产品和细胞治疗产品。" ;
+  rdfs:subClassOf mu:PharmacologicalSubstance .
+
+
+mu:HealthcareOrganization a owl:Class ;
+  rdfs:label "医疗机构" ;
+  rdfs:comment "提供医疗服务的组织机构,包括综合医院、专科医院、社区卫生服务中心和诊所等。" ;
+  rdfs:subClassOf mu:BiologicalEntity .
+
+mu:ClinicalDepartment a owl:Class ;
+  rdfs:label "临床科室" ;
+  rdfs:comment "医院内部按专业划分的诊疗单元。对应 HIS 中 sms_dept 表的科室字典。" ;
+  rdfs:subClassOf mu:HealthcareOrganization ;
+  rdfs:seeAlso his:SmsDept .
+
+mu:InternalMedicineDept a owl:Class ;
+  rdfs:label "内科" ;
+  rdfs:comment "以药物治疗为主的临床科室,按系统进一步分为心血管内科、呼吸内科、消化内科、肾内科、神经内科、内分泌科、血液内科等。" ;
+  rdfs:subClassOf mu:ClinicalDepartment .
+
+mu:SurgeryDept a owl:Class ;
+  rdfs:label "外科" ;
+  rdfs:comment "以手术治疗为主的临床科室,按专业分为普通外科、骨科、神经外科、胸心外科、泌尿外科、烧伤整形科等。" ;
+  rdfs:subClassOf mu:ClinicalDepartment .
+
+mu:EmergencyDept a owl:Class ;
+  rdfs:label "急诊科" ;
+  rdfs:comment "处理急性疾病和创伤的科室,承担院前急救、急诊分诊、抢救和留观功能。" ;
+  rdfs:subClassOf mu:ClinicalDepartment .
+
+mu:PharmacyDept a owl:Class ;
+  rdfs:label "药剂科" ;
+  rdfs:comment "负责药品采购、储存、调剂、制剂和临床药学服务的科室。对应 HIS 药房医生工作站。" ;
+  rdfs:subClassOf mu:ClinicalDepartment .
+
+
+mu:hasAnatomicalPart a owl:ObjectProperty , owl:TransitiveProperty ;
+  rdfs:label "有解剖部分" ;
+  rdfs:comment "解剖结构的组成关系,具有传递性。如身体系统 hasAnatomicalPart 器官,器官 hasAnatomicalPart 组织。对齐 BFO:0000051。" ;
+  rdfs:domain mu:AnatomicalStructure ;
+  rdfs:range mu:AnatomicalStructure .
+
+mu:locatedInStructure a owl:ObjectProperty , owl:TransitiveProperty ;
+  rdfs:label "位于结构中" ;
+  rdfs:comment "实体在解剖结构中的空间定位关系,具有传递性。对齐 RO:0001025。" ;
+  rdfs:domain mu:BiologicalEntity ;
+  rdfs:range mu:AnatomicalStructure .
+
+mu:belongsToBodySystem a owl:ObjectProperty ;
+  rdfs:label "归属身体系统" ;
+  rdfs:comment "解剖结构归属于某个身体系统。如心脏归属循环系统,肺归属呼吸系统。" ;
+  rdfs:domain mu:AnatomicalStructure ;
+  rdfs:range mu:BodySystem .
+
+mu:regulatesProcess a owl:ObjectProperty ;
+  rdfs:label "调节过程" ;
+  rdfs:comment "一个生理过程对另一个生理过程的调控关系,如神经调节、体液调节和自身调节。" ;
+  rdfs:domain mu:PhysiologicalProcess ;
+  rdfs:range mu:PhysiologicalProcess .
+
+mu:causesPathologicalProcess a owl:ObjectProperty ;
+  rdfs:label "致病理性过程" ;
+  rdfs:comment "病因或前驱病理过程导致后续病理过程发生的因果关系。如缺血导致坏死,血栓形成导致缺血。" ;
+  rdfs:domain mu:BiologicalEntity ;
+  rdfs:range mu:PathologicalProcess .
+
+mu:leadsToDisease a owl:ObjectProperty ;
+  rdfs:label "导致疾病" ;
+  rdfs:comment "病理过程长期或严重发展导致特定疾病的因果关系。如纤维化导致肝硬化,动脉粥样硬化导致冠心病。" ;
+  rdfs:domain mu:PathologicalProcess ;
+  rdfs:range mu:Disease .
+
+mu:affectsStructure a owl:ObjectProperty ;
+  rdfs:label "累及结构" ;
+  rdfs:comment "疾病或病理过程累及的解剖结构。如肺炎累及肺,肝硬化累及肝。用于从疾病反查受累器官。" ;
+  rdfs:domain mu:Disease ;
+  rdfs:range mu:AnatomicalStructure .
+
+mu:hasClinicalFinding a owl:ObjectProperty ;
+  rdfs:label "有临床发现" ;
+  rdfs:comment "疾病伴有的症状、体征或综合征。用于从疾病推导出预期临床表现,支持临床决策。" ;
+  rdfs:domain mu:Disease ;
+  rdfs:range mu:ClinicalFinding .
+
+mu:hasSymptom a owl:ObjectProperty ;
+  rdfs:label "有症状" ;
+  rdfs:comment "疾病引起的患者主观不适。如心绞痛有胸痛症状,糖尿病有多饮多食多尿症状。" ;
+  rdfs:domain mu:Disease ;
+  rdfs:range mu:Symptom .
+
+mu:hasSign a owl:ObjectProperty ;
+  rdfs:label "有体征" ;
+  rdfs:comment "疾病引起的可被医师检出的客观异常。如二尖瓣狭窄有心尖区舒张期杂音体征。" ;
+  rdfs:domain mu:Disease ;
+  rdfs:range mu:Sign .
+
+mu:hasComplication a owl:ObjectProperty ;
+  rdfs:label "有并发症" ;
+  rdfs:comment "一种疾病引发另一种疾病的继发关系。如糖尿病并发肾病,高血压并发脑卒中。" ;
+  rdfs:domain mu:Disease ;
+  rdfs:range mu:Disease .
+
+mu:diagnosedByProcedure a owl:ObjectProperty ;
+  rdfs:label "经操作诊断" ;
+  rdfs:comment "疾病可通过某种诊断操作确认或排除。如冠心病经冠脉造影诊断,肺结核经痰涂片和培养诊断。" ;
+  rdfs:domain mu:Disease ;
+  rdfs:range mu:DiagnosticProcedure .
+
+mu:treatedByProcedure a owl:ObjectProperty ;
+  rdfs:label "经操作治疗" ;
+  rdfs:comment "疾病可通过某种治疗操作处理。如阑尾炎经阑尾切除术治疗,终末期肾病经透析治疗。" ;
+  rdfs:domain mu:Disease ;
+  rdfs:range mu:TherapeuticProcedure .
+
+mu:treatedByDrug a owl:ObjectProperty ;
+  rdfs:label "经药物治疗" ;
+  rdfs:comment "疾病可使用某类药物或具体药物治疗。如高血压用降压药,细菌感染用抗生素。" ;
+  rdfs:domain mu:Disease ;
+  rdfs:range mu:PharmacologicalSubstance .
+
+mu:hasIndication a owl:ObjectProperty ;
+  rdfs:label "适应症" ;
+  rdfs:comment "药物或治疗操作适用的疾病或临床状态。与 treatedByDrug 互为反向语义,从药物角度描述。" ;
+  rdfs:domain mu:PharmacologicalSubstance ;
+  rdfs:range mu:Disease .
+
+mu:hasContraindication a owl:ObjectProperty ;
+  rdfs:label "禁忌症" ;
+  rdfs:comment "药物或治疗操作不适用的疾病或生理状态。如β受体阻滞剂禁忌于支气管哮喘,华法林禁忌于活动性出血。" ;
+  rdfs:domain mu:PharmacologicalSubstance ;
+  rdfs:range mu:Disease .
+
+mu:hasAdverseEffect a owl:ObjectProperty ;
+  rdfs:label "不良反应" ;
+  rdfs:comment "药物或治疗操作可能引起的有害反应。如青霉素过敏反应,化疗骨髓抑制,NSAIDs消化道出血。" ;
+  rdfs:domain mu:PharmacologicalSubstance ;
+  rdfs:range mu:ClinicalFinding .
+
+mu:performedByRole a owl:ObjectProperty ;
+  rdfs:label "由角色执行" ;
+  rdfs:comment "诊疗操作由特定医疗角色执行。如手术由外科医师执行,给药由护士执行,处方审核由药师执行。" ;
+  rdfs:domain mu:DiagnosticProcedure ;
+  rdfs:range mu:HealthcareRole .
+
+mu:performedInDepartment a owl:ObjectProperty ;
+  rdfs:label "在科室执行" ;
+  rdfs:comment "诊疗操作在特定临床科室执行。如CT在影像科执行,血常规在检验科执行,手术在手术室执行。" ;
+  rdfs:domain mu:DiagnosticProcedure ;
+  rdfs:range mu:ClinicalDepartment .
+
+mu:mapsToHISDataEntity a owl:ObjectProperty ;
+  rdfs:label "映射HIS数据实体" ;
+  rdfs:comment "医学概念与HIS系统数据实体(表)之间的映射关系,用于跨体系语义贯通。如 Patient 映射 pms_patient,Drug 映射 dms_drug,DiagnosticProcedure 映射 dms_non_drug。" ;
+  rdfs:domain mu:BiologicalEntity ;
+  rdfs:range mu:BiologicalEntity .

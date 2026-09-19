@@ -22,11 +22,8 @@ const ENV_DEPENDENT = new Set([
 ]);
 
 // 已知在基线提交即损坏的套件（与本次改动无关，已核实 git stash 复现）：失败不阻断退出码，仅提示。
-// - charge-pile-ontology：断言读取提交的 data/ 目录里 45+12 节点的历史图谱夹具，
-//   数据随版本漂移已不再匹配（基线上甚至因 scopeFilter 未做空值守卫直接抛 TypeError）。
-const PRE_EXISTING_BROKEN = new Set([
-  'charge-pile-ontology.test.js',
-]);
+// （charge-pile-ontology 的历史快照断言已改为动态取 scope，不再受数据漂移影响，故名单清空）
+const PRE_EXISTING_BROKEN = new Set([]);
 
 function isRunnable(file) {
   if (!file.endsWith('.test.js')) return false;

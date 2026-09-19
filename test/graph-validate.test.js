@@ -200,6 +200,40 @@ const N = (key, name, type, profile = 'bfo') => ({
   check('校验后 graphMeta 不变（不写 inferredStale / lastGuard）', J(graph.getGraphMeta()) === metaBefore, J(graph.getGraphMeta()));
   check('opts 透传（includeInferred=false 时原始边仍计入）', graph.validateGraph('bfo', { includeInferred: false }).checked === 1);
 
+  // 校验范围 = 选定体系 ∩ 选定知识图谱：他体系/他范围的边不进入校验集（避免跨体系误报与误修）
+  graph.saveGraph(
+    [N('p', '过程', 'process'), N('m', '物质', 'material_entity'),
+      N('a', 'A', 'object', 'bfo-lite'), N('b', 'B', 'object', 'bfo-lite')],
+    [
+      { from: 'bfo:p', to: 'bfo:m', rel: 'inheres_in' },
+      { from: 'bfo-lite:a', to: 'bfo-lite:b', rel: '包含' },
+    ],
+  );
+  const wMixBfo = graph.validateGraph('bfo');
+  check('多体系共存：选 bfo 只校验 bfo 边（checked=1，bfo-lite 合法边不误报）', wMixBfo.ok === true && wMixBfo.checked === 1 && wMixBfo.violations.length === 1, J({ c: wMixBfo.checked, v: wMixBfo.violations.length }));
+  const wMixBl = graph.validateGraph('bfo-lite');
+  check('选 bfo-lite 只校验 bfo-lite 边（checked=1 / 零违规）', wMixBl.ok === true && wMixBl.checked === 1 && wMixBl.violations.length === 0, J({ c: wMixBl.checked, v: wMixBl.violations.length }));
+  graph.saveGraph(
+    [
+      Object.assign(N('p', '过程', 'process'), { domain: 'charge-pile' }),
+      Object.assign(N('m', '物质', 'material_entity'), { domain: 'charge-pile' }),
+      Object.assign(N('p2', '过程2', 'process'), { domain: 'other-dom' }),
+      Object.assign(N('m2', '物质2', 'material_entity'), { domain: 'other-dom' }),
+    ],
+    [
+      { from: 'bfo:p', to: 'bfo:m', rel: 'inheres_in' },
+      { from: 'bfo:p2', to: 'bfo:m2', rel: 'inheres_in' },
+    ],
+  );
+  const wScope = graph.validateGraph('bfo', { scope: 'bfo|charge-pile' });
+  check('选定知识图谱范围：仅两端点均落圈的边受检（checked=1）', wScope.ok === true && wScope.checked === 1 && wScope.violations.length === 1 && wScope.violations[0].domain === 'charge-pile', J({ c: wScope.checked, d: wScope.violations[0] && wScope.violations[0].domain }));
+  check('scope=all / 缺省 = 不限范围（checked=2）', graph.validateGraph('bfo', { scope: 'all' }).checked === 2 && graph.validateGraph('bfo').checked === 2, J(graph.validateGraph('bfo').checked));
+  // 恢复单边图：后续 IPC 通道断言沿用 checked=1 夹具
+  graph.saveGraph(
+    [N('p', '过程', 'process'), N('m', '物质', 'material_entity')],
+    [{ from: 'bfo:p', to: 'bfo:m', rel: 'inheres_in' }],
+  );
+
   // ======================================================================
   section('§12.2.3 IPC：graph:validate 通道（双调用形态）');
   // ======================================================================

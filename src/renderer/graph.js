@@ -313,12 +313,13 @@ function startGraphSim() {
       r: 7 + Math.min(12, Math.sqrt(deg[n.id] || 0) * 3.2),
     };
   });
-  // 图例计数只统当前过滤后进入画布的节点，与右侧“实体 n · 边 m”保持一致
+  // 图例计数只统当前过滤后进入画布的节点与边：必须在 graphSim.edges 赋值之后渲染，
+  // 否则边型计数（推理边/原始边）会残留上一范围的旧值，与右侧“实体 n · 边 m”口径不一致
   const counts = {};
   g.nodes.forEach((n) => { counts[n.type] = (counts[n.type] || 0) + 1; });
-  renderGraphLegend(counts);
   const ids = new Set(graphSim.nodes.map((n) => n.id));
   graphSim.edges = g.edges.filter((e) => ids.has(e.from) && ids.has(e.to));
+  renderGraphLegend(counts);
   graphSim.zoom = 1; graphSim.ox = 0; graphSim.oy = 0;
   const selectedNode = selectedId == null ? null : graphSim.nodes.find((node) => String(node.id) === selectedId);
   graphSim.selected = selectedNode ? selectedNode.id : null;
@@ -910,7 +911,7 @@ function renderReasonProfilePicker(profileId, profiles) {
     ? profiles
     : [{ id: profileId || 'bfo-lite', name: profileId || 'bfo-lite' }];
   const options = list.map((p) => `<option value="${escapeHtml(p.id)}"${p.id === profileId ? ' selected' : ''}>${escapeHtml(p.name || p.id)}</option>`).join('');
-  return `<label class="kg-reason-profile-picker"><span>当前本体体系</span><select id="kg-reason-profile" title="切换后刷新本页体检与本体诊断，不影响抽取和问答的自动体系选择">${options}</select><em>用于体检与本体诊断</em></label>`;
+  return `<label class="kg-reason-profile-picker"><span>当前本体体系</span><select id="kg-reason-profile" title="切换后刷新本页本体诊断与体检；体检只校验该体系的边，不影响抽取和问答的自动体系选择">${options}</select><em>用于本体诊断与体检（体检仅校验该体系的边）</em></label>`;
 }
 
 function renderReasonValidationMetric(v) {
@@ -937,7 +938,7 @@ function renderReasonOverview(ctx) {
   return `<section class="kg-reason-dashboard">
     <div class="kg-reason-dashboard-head">
       <div><div class="kg-reason-kicker">推理与校验</div><h3>图谱健康概览</h3><p>${renderReasonProfilePicker(profileId, profiles)}</p></div>
-      <div class="kg-reason-action-groups"><span>更新结果</span><button class="btn btn-primary" id="btn-reason-run"${unavailable ? ' disabled title="推理模块不可用"' : ' title="对全图各体系重新执行物化推理"'}>重新推理</button><button class="btn btn-ghost" id="btn-reason-validate" title="使用当前体系对整张图做只读体检，不改写数据">刷新体检</button>${counts.inferred ? '<span class="kg-reason-action-sep"></span><span>维护推理层</span><button class="btn btn-ghost danger" id="btn-reason-clear" title="只清除推理得出的边，原始图谱不受影响">清除推理边</button>' : ''}</div>
+      <div class="kg-reason-action-groups"><span>更新结果</span><button class="btn btn-primary" id="btn-reason-run"${unavailable ? ' disabled title="推理模块不可用"' : ' title="对全图各体系重新执行物化推理"'}>重新推理</button><button class="btn btn-ghost" id="btn-reason-validate" title="只读体检当前选定体系的边（全部知识图谱），不改写数据；到整体图谱页可再限定单一知识图谱">刷新体检</button>${counts.inferred ? '<span class="kg-reason-action-sep"></span><span>维护推理层</span><button class="btn btn-ghost danger" id="btn-reason-clear" title="只清除推理得出的边，原始图谱不受影响">清除推理边</button>' : ''}</div>
     </div>
     ${notices}
     <div class="kg-health-grid">
@@ -957,7 +958,7 @@ function renderReasonIssues(ctx, v) {
   if (!total) return '<div class="kg-issues-clean"><b>未发现待处理问题</b><span>推理未检出语义矛盾，体检也未发现越界边或不相交归属冲突。</span></div>';
   const conflict = ctx.conTotal ? `<article class="kg-issue-group is-danger"><div><span class="kg-issue-source">推理结果</span><b>不一致冲突 ${ctx.conTotal} 处</b><p>${ctx.det && (ctx.det.items || []).length ? '推理规则发现语义矛盾；可在明细中查看规则与涉及对象。' : '旧结果未保存明细；重新推理后可查看并定位具体冲突。'}</p></div></article>` : '';
   const checked = (violations || disjoint) ? `<article class="kg-issue-group is-warn"><div><span class="kg-issue-source">只读体检</span><b>约束问题 ${violations + disjoint} 项</b><p>${violations} 条 domain/range 或词表越界边；${disjoint} 处由约束推导出的不相交归属。</p></div></article>` : '';
-  return `<div class="kg-issues-head"><div><div class="kg-reason-kicker">需要关注</div><h3>待处理问题（${total}）</h3><p>推理冲突来自全图结果；只读体检按当前选择的体系执行，以下保留来源以便判断处理方式。</p></div><div class="kg-issue-actions"><button class="btn btn-primary" id="btn-reason-fix-all" title="先重新执行全量体检并规划修复动作；预览确认后才会改图">一键规划修复</button><button class="btn btn-ghost" data-reason-show-details>查看明细</button>${ctx.rs.repairUndoAvailable ? '<button class="btn btn-ghost" id="btn-reason-repair-undo">撤销上次修复</button>' : ''}</div></div><div class="kg-issue-groups">${conflict}${checked}</div>`;
+  return `<div class="kg-issues-head"><div><div class="kg-reason-kicker">需要关注</div><h3>待处理问题（${total}）</h3><p>推理冲突来自全图结果；只读体检仅校验当前选定体系的边（整体图谱页可再限定知识图谱范围），以下保留来源以便判断处理方式。</p></div><div class="kg-issue-actions"><button class="btn btn-primary" id="btn-reason-fix-all" title="先重新执行全量体检并规划修复动作；预览确认后才会改图">一键规划修复</button><button class="btn btn-ghost" data-reason-show-details>查看明细</button>${ctx.rs.repairUndoAvailable ? '<button class="btn btn-ghost" id="btn-reason-repair-undo">撤销上次修复</button>' : ''}</div></div><div class="kg-issue-groups">${conflict}${checked}</div>`;
 }
 
 function renderReasonDiagnostics(ctx) {
@@ -1330,7 +1331,7 @@ function renderValidateReport(v, det) {
     : '<div class="gd-desc">所有边均通过谓词白名单与 domain/range 检查，且未检出不相交归属冲突（覆盖率为 0% 的体系越界项恒通过，属预期）。</div>';
   const totalShown = nInconRows + nV + nD;
   const resultText = totalShown ? `共发现 ${totalShown} 项问题` : '未发现约束违规';
-  return `<div class="kg-validate-report-head"><span>体系「${escapeHtml(v.profileName || v.profileId)}」</span><b class="${totalShown ? 'kg-reason-warn' : 'kg-reason-ok'}">${resultText}</b><span>检查 ${Number(v.checked) || 0} 条边</span></div>
+  return `<div class="kg-validate-report-head"><span>体检体系「${escapeHtml(v.profileName || v.profileId)}」· 仅校验选定体系与知识图谱范围内的边</span><b class="${totalShown ? 'kg-reason-warn' : 'kg-reason-ok'}">${resultText}</b><span>检查 ${Number(v.checked) || 0} 条边</span></div>
     ${tableHtml}
     <div class="gd-desc">体检为只读：不改写任何边、不删除数据；修复动作需先预览并确认。校验时间 ${escapeHtml(reasonTimeText(v.at))}。</div>`;
 }
@@ -1689,6 +1690,87 @@ function showOwlPreviewModal(pv, { onConfirm, onCancel } = {}) {
   try { if (typeof window.renderOntologyTree === 'function') window.renderOntologyTree($('owl-preview-tree'), treeOnto); } catch (_) {}
 }
 
+// ---------- 体系化导入（bundle）预览弹窗 ----------
+// 展示「主本体 + 依赖清单（本地/已下载/缺失）+ 合并后计数 + 中英对照覆盖 + 样本类/谓词」，
+// 让用户在落库前看清体系化导入把哪些本体合并成了一个体系。数据源是 graphPreviewBundle →
+// previewBundleImport 的 { profile, report, preview, dependencies, via }。
+function showBundleImportModal(pv, { onConfirm, onCancel } = {}) {
+  const old = document.getElementById('bundle-preview-modal');
+  if (old) old.remove();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-mask';
+  overlay.id = 'bundle-preview-modal';
+  overlay.innerHTML = `<div class="modal owl-preview-modal">
+    <div class="modal-head"><b>体系化导入预览</b><button class="icon-btn" id="bundle-preview-x" title="取消导入">${icoSvg('close', 12)}</button></div>
+    <div class="modal-body" id="bundle-preview-body"><div class="gd-desc">解析中…</div></div>
+    <div class="modal-foot">
+      <span class="form-hint" id="bundle-preview-via"></span>
+      <button class="btn btn-ghost" id="bundle-preview-cancel">取消</button>
+      <button class="btn btn-primary" id="bundle-preview-ok">确认导入</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const close = (fn) => { overlay.remove(); if (fn) fn(); };
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(onCancel); });
+  $('bundle-preview-x').addEventListener('click', () => close(onCancel));
+  $('bundle-preview-cancel').addEventListener('click', () => close(onCancel));
+  $('bundle-preview-ok').addEventListener('click', () => close(onConfirm));
+
+  if (!pv || pv.ok === false) {
+    $('bundle-preview-body').innerHTML = `<div class="gd-desc">体系化导入解析失败：${escapeHtml((pv && pv.error) || '未知错误')}。</div>`;
+    const okBtn = $('bundle-preview-ok'); if (okBtn) okBtn.disabled = true;
+    return;
+  }
+  const prv = pv.preview || {};
+  const cnt = prv.counts || {};
+  const deps = prv.dependencies || [];
+  $('bundle-preview-via').textContent = pv.via === 'protege-js' ? 'protege-js 解析' : '内置正则解析（owl.js）';
+
+  // 依赖清单：本地/已下载 = 已并入；缺失/失败 = 未并入（给出 purl 供手动下载）
+  const depBadge = (source) => {
+    const M = { local: ['本地', 'dep-ok'], downloaded: ['已下载', 'dep-ok'], missing: ['缺失', 'dep-miss'], failed: ['下载失败', 'dep-miss'] };
+    const [txt, cls] = M[source] || [source || '?', 'dep-miss'];
+    return `<span class="bundle-dep-badge ${cls}">${escapeHtml(txt)}</span>`;
+  };
+  const depHtml = deps.length
+    ? `<div class="bundle-dep-list">${deps.map((d) =>
+        `<div class="bundle-dep-row">${depBadge(d.source)}<b>${escapeHtml(d.prefix)}</b><span class="bundle-dep-cnt">${d.via === 'owl-import' ? 'owl:imports' : `引用×${Number(d.count) || 0}`}</span>`
+        + `<code class="owl-pv-iri" title="${escapeHtml(d.purl || '')}">${escapeHtml(d.purl || '')}</code>`
+        + (d.error ? `<span class="bundle-dep-err">${escapeHtml(d.error)}</span>` : '') + `</div>`).join('')}</div>`
+    : '<div class="gd-desc">主本体既无 OBO 内联引用、也无 owl:imports 声明，将作为单文件体系导入。</div>';
+
+  const warnHtml = (prv.warnings && prv.warnings.length)
+    ? `<div class="owl-warn-list">${prv.warnings.map((w) => `<div class="owl-warn-item">⚠ ${escapeHtml(w)}</div>`).join('')}</div>`
+    : '<div class="gd-desc">未发现导入风险。</div>';
+  const noteHtml = (prv.notes && prv.notes.length)
+    ? prv.notes.map((n) => `<div class="gd-desc">· ${escapeHtml(n)}</div>`).join('') : '';
+
+  // 样本类/谓词（中英对照：key 英文 + label 中文/源文件label）
+  const sampleRow = (it) => `<div class="bundle-sample-row"><code>${escapeHtml(it.key)}</code><span>${escapeHtml(it.label || '')}</span>${it.parent ? `<em>⊑ ${escapeHtml(it.parent)}</em>` : ''}</div>`;
+  const predRow = (p) => `<div class="bundle-sample-row"><code>${escapeHtml(p.key)}</code><span>${escapeHtml(p.label || '')}</span>${(p.domain || p.range) ? `<em>${escapeHtml(p.domain || '?')} → ${escapeHtml(p.range || '?')}</em>` : ''}</div>`;
+  const sampleClassesHtml = (prv.sampleClasses && prv.sampleClasses.length)
+    ? prv.sampleClasses.map(sampleRow).join('') : '<div class="gd-desc">无</div>';
+  const samplePredsHtml = (prv.samplePredicates && prv.samplePredicates.length)
+    ? prv.samplePredicates.map(predRow).join('') : '<div class="gd-desc">无（合并后仍无谓词）</div>';
+
+  $('bundle-preview-body').innerHTML = `
+    <div class="owl-pv-row"><span>主本体</span><b title="${escapeHtml(prv.fileName || '')}">${escapeHtml(prv.fileName || '（未知）')}${prv.ontologyIri ? ` · <code class="owl-pv-iri">${escapeHtml(prv.ontologyIri)}</code>` : ''}</b></div>
+    <div class="owl-pv-row"><span>解析器</span><b>${escapeHtml(prv.parser || '')}</b></div>
+    <div class="owl-pv-sec">依赖本体（${deps.length}）</div>${depHtml}
+    <div class="owl-pv-sec">合并后统计（${Number(cnt.sources) || 1} 个本体 → 1 个体系）</div>
+    <div class="owl-pv-counts">
+      <span class="mini-tag">类 ${Number(cnt.classes) || 0}</span>
+      <span class="mini-tag">谓词 ${Number(cnt.predicates) || 0}</span>
+      <span class="mini-tag">公理 ${Number(cnt.axioms) || 0}</span>
+      <span class="mini-tag">约束 ${Number(cnt.constraints) || 0}</span>
+      <span class="mini-tag">根类 ${Number(cnt.roots) || 0}</span>
+    </div>
+    <div class="owl-pv-sec">样本类（前 ${(prv.sampleClasses || []).length}）</div>${sampleClassesHtml}
+    <div class="owl-pv-sec">样本谓词（前 ${(prv.samplePredicates || []).length}）</div>${samplePredsHtml}
+    <div class="owl-pv-sec">⚠ 警告</div>${warnHtml}
+    ${noteHtml ? `<div class="owl-pv-sec">说明</div>${noteHtml}` : ''}`;
+}
+
 
 // ---------- 本体定义页：当前体系的「本体抽取 / 实体识别」提示词 ----------
 // 覆盖键 baseKey:profileId 存 settings；留空/恢复默认回退到内置体系专属提示词
@@ -1918,7 +2000,8 @@ function recenterGraph() {
   const W = canvas.clientWidth || 800;
   const H = canvas.clientHeight || 600;
   const nodes = graphSim.nodes;
-  if (!nodes.length) return;
+  // 空集合也要重绘一次：否则切到无图谱的体系/范围时画布残留上一范围的旧画面
+  if (!nodes.length) { drawGraph(); return; }
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const n of nodes) {
     minX = Math.min(minX, n.x - n.r); maxX = Math.max(maxX, n.x + n.r);
@@ -1975,6 +2058,16 @@ function drawGraph() {
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
+  // 筛选后空集：清屏后在画布中央给出提示（全图本就为空时由 #graph-empty 覆盖层负责）
+  if (!graphSim.nodes.length) {
+    if (state.graph.nodes.length) {
+      ctx.fillStyle = 'rgba(125, 135, 155, 0.8)';
+      ctx.font = '13px system-ui, "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('当前筛选范围暂无实体：该体系/知识图谱下还没有图谱，可切换上方范围', W / 2, H / 2);
+    }
+    return;
+  }
   ctx.translate(W / 2 + graphSim.ox, H / 2 + graphSim.oy);
   ctx.scale(graphSim.zoom, graphSim.zoom);
   ctx.translate(-W / 2, -H / 2);
@@ -2558,14 +2651,17 @@ function renderGraphReasonBar() {
   }
   const validation = graphReasonSummaryState.validation;
   if (validation) {
-    const { v, profileId, inferred } = validation;
+    const { v, profileId, inferred, scope } = validation;
+    // 校验范围如实展示：体检只跑「选定体系 ∩ 选定知识图谱」内的边，摘要条标明范围避免误读为全图
+    const sc = scope ? (state.kg.graphScopes || []).find((s) => s.id === scope) : null;
+    const scopeNote = scope ? `· 知识图谱「${escapeHtml((sc && (sc.label || sc.domain)) || scope)}」` : '· 全部知识图谱';
     if (!v || v.ok === false) {
       cards.push(`<div class="graph-reason-summary is-error"><span class="kg-badge kg-badge-warn">体检失败</span><span>${escapeHtml((v && v.error) || '未知错误')}（图谱数据不受影响）</span><button class="btn btn-ghost" data-graph-summary-goto="reason">查看详情</button></div>`);
     } else {
       const counts = reasonValidationCounts(v);
       const coverage = v.coverage || {};
       const infHint = inferred && inferred.ok && !inferred.skipped ? `本轮推理 +${inferred.inferredEdges} 边 · ` : '';
-      cards.push(`<div class="graph-reason-summary is-validate"><span class="kg-badge" title="体检只读：不改写任何边、不删除数据">体检</span><span>体系「${escapeHtml(v.profileName || profileId || v.profileId || '')}」· 检查 <b>${Number(v.checked) || 0}</b> 条边</span>${counts.violations + counts.disjoint ? `<b class="kg-reason-conflict">${counts.violations} 条越界 · ${counts.disjoint} 处不相交</b>` : '<b class="kg-reason-ok">未发现约束违规</b>'}<span class="form-hint">${infHint}覆盖 ${coverage.coveragePct != null ? coverage.coveragePct + '%' : '—'}</span><button class="btn btn-ghost" data-graph-summary-goto="reason">查看详情</button></div>`);
+      cards.push(`<div class="graph-reason-summary is-validate"><span class="kg-badge" title="体检只读：不改写任何边、不删除数据">体检</span><span>体系「${escapeHtml(v.profileName || profileId || v.profileId || '')}」${scopeNote} · 检查 <b>${Number(v.checked) || 0}</b> 条边</span>${counts.violations + counts.disjoint ? `<b class="kg-reason-conflict">${counts.violations} 条越界 · ${counts.disjoint} 处不相交</b>` : '<b class="kg-reason-ok">未发现约束违规</b>'}<span class="form-hint">${infHint}覆盖 ${coverage.coveragePct != null ? coverage.coveragePct + '%' : '—'}</span><button class="btn btn-ghost" data-graph-summary-goto="reason">查看详情</button></div>`);
     }
   }
   if (!cards.length) { bar.hidden = true; return; }
@@ -2576,8 +2672,8 @@ function renderGraphReasonBar() {
   bar.querySelectorAll('[data-graph-summary-goto]').forEach((btn) => btn.addEventListener('click', () => switchKgTab('reason')));
 }
 
-function showGraphValidateBar(v, profileId, inferred) {
-  graphReasonSummaryState.validation = { v, profileId, inferred };
+function showGraphValidateBar(v, profileId, inferred, scope) {
+  graphReasonSummaryState.validation = { v, profileId, inferred, scope: scope || '' };
   renderGraphReasonBar();
 }
 
@@ -2620,17 +2716,18 @@ function bindGraphEvents() {
     startGraphSim();
     toast('图谱已重载');
   });
-  // 校验（通道 C 只读体检）：先跑一轮 OWL 2 RL 物化（推理边同样受检），再按当前所选体系的
-  // 约束（谓词白名单、domain/range）与公理（不相交等）对整张图谱体检；结果以摘要条持久展示。
+  // 校验（通道 C 只读体检）：先跑一轮 OWL 2 RL 物化（推理边同样受检），再只对本页选定的
+  // 体系 ∩ 知识图谱范围内的边按该体系约束（谓词白名单、domain/range）与公理体检；结果以摘要条持久展示。
   $('btn-graph-validate').addEventListener('click', async () => {
     const profileId = ($('kg-g-profile') || {}).value || '';
+    const scope = ($('kg-g-domain') || {}).value || '';
     const btn = $('btn-graph-validate');
     btn.disabled = true;
-    toast('校验中：先物化推理，再按体系约束与公理体检…', 2500);
+    toast('校验中：先物化推理，再仅对选定体系与知识图谱范围的边体检…', 2500);
     const inferred = await runGraphInference({ noToast: true, noBar: true });
-    const v = await runFullGraphValidate(profileId);
+    const v = await runFullGraphValidate(profileId, scope ? { scope } : {});
     btn.disabled = false;
-    showGraphValidateBar(v, profileId, inferred);
+    showGraphValidateBar(v, profileId, inferred, scope);
     startGraphSim();
     renderGraphLegend();
   });
@@ -2779,6 +2876,66 @@ function bindGraphEvents() {
       await previewThenImport({});
       btnImportOwl.disabled = false;
     } catch (e) { btnImportOwl.disabled = false; toast('OWL 导入异常：' + e.message); }
+  });
+  // 体系化导入（bundle）：选主本体 → 自动推断/下载依赖 → 合并预览 → 确认落库
+  const btnImportBundle = $('btn-onto-import-bundle');
+  const handleBundleResult = async (r) => {
+    if (r && r.canceled) return;
+    if (!r || r.ok === false) { toast('体系化导入失败：' + ((r && r.error) || '未知错误')); return; }
+    const rep = r.report || {};
+    const deps = r.dependencies || [];
+    const mergedN = deps.filter((d) => d.source === 'local' || d.source === 'downloaded').length;
+    toast(`已导入「${r.profile.name}」：${rep.classCount} 类 / ${rep.predicateCount} 谓词（合并 ${mergedN} 个依赖本体）`, 3600);
+    state.kg.onto = null; // 清缓存强制重拉
+    await renderKgOntology();
+    switchOntoProfile(r.profile.id);
+  };
+  // 先预览（解析+推断+合并，不落库）→ 弹窗确认 → 确认后才真正导入（落库+复制源文件）。
+  const previewThenBundle = async (body) => {
+    let pv = null;
+    try { pv = await window.kb.graphPreviewBundle(body); } catch (e) { pv = { ok: false, error: e.message }; }
+    if (pv && pv.canceled) return;  // 用户在系统对话框里取消了选主本体
+    showBundleImportModal(pv, {
+      onConfirm: async () => {
+        // 复用预览结果里的 mainPath（owlImport 透传），避免确认时二次弹框
+        const confBody = { mainPath: (pv && pv.mainPath) || (body && body.mainPath), fileName: body && body.fileName, displayName: body && body.displayName };
+        const r = await window.kb.graphImportBundle(confBody);
+        await handleBundleResult(r);
+      },
+    });
+  };
+  if (btnImportBundle) btnImportBundle.addEventListener('click', async () => {
+    if (!window.__KB_WEB__ && nativeDialogOpen) {
+      toast('还有未处理的文件选择对话框，请先在系统对话框中选择文件或取消');
+      return;
+    }
+    try {
+      btnImportBundle.disabled = true;
+      toast('体系化导入：选择主本体后会自动推断并下载依赖，首次可能需几十秒…', 3000);
+      // Web 模式：隐藏文件选择器 → 上传主本体 → 拿服务端路径（同 OWL 导入）
+      if (window.__KB_WEB__) {
+        const inp = document.createElement('input');
+        inp.type = 'file';
+        inp.accept = '.owl,.rdf,.ttl,.xml';
+        inp.onchange = async () => {
+          const f = inp.files && inp.files[0];
+          if (!f) { btnImportBundle.disabled = false; return; }
+          try {
+            const buf = await f.arrayBuffer();
+            const up = await fetch('/api/upload?name=' + encodeURIComponent(f.name), { method: 'POST', body: buf });
+            const uj = await up.json();
+            if (!uj || !uj.path) { toast('上传失败'); btnImportBundle.disabled = false; return; }
+            await previewThenBundle({ mainPath: uj.path, fileName: f.name });
+          } catch (e2) { toast('上传/导入异常：' + e2.message); }
+          btnImportBundle.disabled = false;
+        };
+        inp.click();
+        return;
+      }
+      // Electron 模式：直接走 dialog（主进程弹框选主本体）
+      await previewThenBundle({});
+      btnImportBundle.disabled = false;
+    } catch (e) { btnImportBundle.disabled = false; toast('体系化导入异常：' + e.message); }
   });
   // 删除当前 OWL 体系（仅 owl:* 时显示）
   const btnRemoveOwl = $('btn-onto-remove-owl');

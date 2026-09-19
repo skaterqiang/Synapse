@@ -172,6 +172,9 @@
     graphAsk: (payload) => call('graph:ask', payload),
     graphImportOwl: (body) => call('graph:importOwl', body),
     graphRemoveOwlProfile: (payload) => call('graph:removeOwlProfile', payload),
+    // 体系化导入（bundle：主本体 + 依赖合并为单一体系）
+    graphPreviewBundle: (body) => call('graph:previewBundle', body),
+    graphImportBundle: (body) => call('graph:importBundle', body),
     // 推理层（设计文档 §4–§6）
     graphReasonStatus: () => call('graph:reasonStatus'),
     graphReasonState: (profileId) => call('graph:reasonState', profileId),

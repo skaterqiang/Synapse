@@ -381,7 +381,7 @@ ex:knows a owl:ObjectProperty ; rdfs:label "认识" ; rdfs:domain ex:Thing ; rdf
   const rNT = await graph.runInference({}, {});
   check('该体系跑推理不报错，只是推不出新边（inferredEdges=0）', rNT.ok === true && rNT.skipped === false && rNT.inferredEdges === 0, J({ ok: rNT.ok, s: rNT.skipped, i: rNT.inferredEdges }));
   graph.removeOwlProfile(pidNT);
-  check('removeOwlProfile 后体系列表回到内置 3 个', J(graph.listProfiles().map((p) => p.id)) === '["bfo-lite","bfo","iso15926"]', J(graph.listProfiles().map((p) => p.id)));
+  check('removeOwlProfile 后体系列表回到内置 6 个', J(graph.listProfiles().map((p) => p.id)) === '["bfo-lite","bfo","iso15926","ogms","legal","automotive"]', J(graph.listProfiles().map((p) => p.id)));
 
   // ======================================================================
   section('§5.3 deleteEdgeWithCascade：删边并回收依赖它的推理边');
@@ -587,12 +587,12 @@ ex:knows a owl:ObjectProperty ; rdfs:label "认识" ; rdfs:domain ex:Thing ; rdf
   check('格式探测：Turtle / 按扩展名 / protege-js 解析', pv.preview.detectedFormat === 'Turtle' && pv.preview.detectedBy === 'ext' && pv.preview.parser === 'protege-js' && pv.preview.format === 'Turtle (.ttl)' && pv.preview.formatId === 'Turtle', J({ f: pv.preview.detectedFormat, by: pv.preview.detectedBy, p: pv.preview.parser }));
   check('preview 体系 id 为占位 owl:prev / name 取文件基名（不占用真实 id）', pv.profile.id === 'owl:prev' && pv.profile.name === 'prev', J({ id: pv.profile.id, name: pv.profile.name }));
   check('preview 体系带 2 类 / 1 谓词 / owl=true 标记', pv.profile.classes.length === 2 && pv.profile.predicates.length === 1 && pv.profile.owl === true, J({ c: pv.profile.classes.length, p: pv.profile.predicates.length, owl: pv.profile.owl }));
-  check('report 恰好 16 个字段', Object.keys(pv.report).length === 16, J(Object.keys(pv.report)));
+  check('report 恰好 18 个字段（含依赖推断 externalRefs/hasImportsDecl）', Object.keys(pv.report).length === 18 && Array.isArray(pv.report.externalRefs) && pv.report.hasImportsDecl === false, J(Object.keys(pv.report)));
   check('report.parser=protege-js / sourceFile 为基名（非全路径）', pv.report.parser === 'protege-js' && pv.report.sourceFile === 'prev.ttl', J({ p: pv.report.parser, f: pv.report.sourceFile }));
   check('report 计数与 preview.counts 一致（2 类 / 1 谓词 / 4 公理 / 4 约束 / 0 个体）', pv.report.classCount === 2 && pv.report.predicateCount === 1 && pv.report.axiomCount === 4 && pv.report.constraintCount === 4 && pv.report.individualCount === 0, J({ c: pv.report.classCount, p: pv.report.predicateCount, a: pv.report.axiomCount }));
   check('report.truncated=false / originalClassCount=2（未触发截断）', pv.report.truncated === false && pv.report.originalClassCount === 2, J({ t: pv.report.truncated, o: pv.report.originalClassCount }));
   check('§6.9 预览不写图谱（nodes 仍为 0）', graph.getGraph().nodes.length === 0, J(graph.getGraph().nodes.length));
-  check('§6.9 预览不注册体系（listProfiles 仍为内置 3 个）', J(graph.listProfiles().map((p) => p.id)) === '["bfo-lite","bfo","iso15926"]', J(graph.listProfiles().map((p) => p.id)));
+  check('§6.9 预览不注册体系（listProfiles 仍为内置 6 个）', J(graph.listProfiles().map((p) => p.id)) === '["bfo-lite","bfo","iso15926","ogms","legal","automotive"]', J(graph.listProfiles().map((p) => p.id)));
   const pvBad = await graph.previewOwlImport(path.join(env.dir, 'nope.ttl'), {}).then((r) => ({ resolved: r.ok })).catch((e) => ({ rejected: e.message }));
   check('文件不存在 → reject（错误信息含路径）', !!pvBad.rejected && pvBad.rejected.startsWith('文件不存在：'), J(pvBad));
 

@@ -200,6 +200,9 @@ contextBridge.exposeInMainWorld('kb', {
   graphAsk: (payload) => ipcRenderer.invoke('graph:ask', payload),
   graphImportOwl: (body) => ipcRenderer.invoke('graph:importOwl', body),
   graphRemoveOwlProfile: (payload) => ipcRenderer.invoke('graph:removeOwlProfile', payload),
+  // 体系化导入（bundle：主本体 + 依赖合并为单一体系）
+  graphPreviewBundle: (body) => ipcRenderer.invoke('graph:previewBundle', body),
+  graphImportBundle: (body) => ipcRenderer.invoke('graph:importBundle', body),
   // 推理层（设计文档 §4–§6）
   graphReasonStatus: () => ipcRenderer.invoke('graph:reasonStatus'),
   graphReasonState: (profileId) => ipcRenderer.invoke('graph:reasonState', profileId),

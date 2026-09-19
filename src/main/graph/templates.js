@@ -251,6 +251,7 @@ const PROFILE_PARENT_HINTS = {
   'bfo-lite': { entity: 'object', concept: 'information' },
   bfo: { entity: 'object', concept: 'generically_dependent_continuant' },
   iso15926: { entity: 'physical_object', concept: 'class_of_individual' },
+  ogms: { entity: 'material_entity', concept: 'clinical_data_item' },
 };
 async function generateTemplate(settings, { name, desc }, onDelta) {
   if (!trimStr(name, 100)) throw new Error('请先填写名称');
@@ -264,7 +265,7 @@ async function generateTemplate(settings, { name, desc }, onDelta) {
     '只输出一个 JSON 对象，不要输出其他任何内容：',
     '{',
     '  "id": "与该领域语义对应的英文标识符（小写字母/数字/下划线，字母开头；应是领域名称的英文翻译或缩写，例如领域“樱桃种植”对应 cherry_planting；严禁照抄本示例）",',
-    '  "ontologyProfile": "建议绑定的顶层本体体系，三选一：bfo-lite / bfo / iso15926",',
+    '  "ontologyProfile": "建议绑定的顶层本体体系，四选一：bfo-lite / bfo / iso15926 / ogms",',
     '  "keywords": ["用于领域匹配的中文关键词，5-8 个"]',
     '}',
     '要求：id 必须与领域名称语义一致；全部使用中文（id 除外）。',
@@ -273,6 +274,7 @@ async function generateTemplate(settings, { name, desc }, onDelta) {
     '- 日常办公 / 通用文档 / 产品说明 / 流程步骤 / 会议纪要 → bfo-lite',
     '- 科研文献 / 实验报告 / 学术论文 / 严谨推理 → bfo',
     '- 工业设备运维 / 工厂产线 / 质量检测流程 / 设备生命周期管理 / 工程数据集成 → iso15926',
+    '- 医疗病历 / 临床指南 / 疾病诊断治疗 / 公共卫生 / 医学文献 → ogms',
     '- 若领域同时涉及「质量检测/试验方法/工艺流程」与「设备/仪器」，优先 iso15926',
   ].join('\n');
   const answer1 = await chatOnce(settings, [
@@ -282,7 +284,7 @@ async function generateTemplate(settings, { name, desc }, onDelta) {
   const raw1 = extractJson(answer1);
   let id = /^[A-Za-z][A-Za-z0-9_]*$/.test(trimStr(raw1.id, 60)) ? trimStr(raw1.id, 60) : '';
   if (!id || /^(rental_service|example|domain|test|demo)$/.test(id)) id = 'domain_' + Date.now().toString(36);
-  const profileId = ['bfo-lite', 'bfo', 'iso15926'].includes(trimStr(raw1.ontologyProfile, 60)) ? trimStr(raw1.ontologyProfile, 60) : 'bfo-lite';
+  const profileId = ['bfo-lite', 'bfo', 'iso15926', 'ogms'].includes(trimStr(raw1.ontologyProfile, 60)) ? trimStr(raw1.ontologyProfile, 60) : 'bfo-lite';
   const keywords = toList(raw1.keywords);
 
   // 第二步：把所选体系的类树细节注入 prompt，让领域类 parent 从真实类树中选
@@ -383,6 +385,7 @@ async function suggestOntologyProfile(settings, raws, onDelta) {
     '- 内容是日常办公/通用文档/流程说明 → 选 bfo-lite（轻量、中文谓词、分类扁平）',
     '- 内容是科研文献/实验报告/学术推理 → 选 bfo（严谨分类、持续体/发生体二分）',
     '- 内容涉及设备/仪器/产线/质检流程/工程数据 → 选 iso15926（4D 时空观、物理对象/活动/事件）',
+    '- 内容涉及医疗病历/临床指南/疾病与诊断/治疗与检查/公共卫生 → 选 ogms（医学领域：疾病/障碍/病程/诊断/体征症状/医疗过程）',
     '- 内容是其他专用领域 → 选导入的 OWL 体系（如有）',
     '',
     ...lines,

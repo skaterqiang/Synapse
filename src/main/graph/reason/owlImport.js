@@ -122,6 +122,22 @@ function detectOwlFormat(filePath, text) {
   return { format: 'RDFXML', by: 'default' };
 }
 
+// 外部术语本体引用统计推断：xmlns 声明只是命名空间映射、OBO 发布版通常又无 owl:imports，
+// 故按正文实际引用的 OBO 共享 ID 空间 IRI（purl.obolibrary.org/obo/<PREFIX>_）按前缀聚合。
+// 排除本体自身前缀与纯注解词汇 IAO（其注解已消费为 label/定义/编码，无需导入）。
+function collectExternalRefs(text, ownPrefix) {
+  const counts = new Map();
+  for (const m of String(text || '').matchAll(/purl\.obolibrary\.org\/obo\/([A-Za-z]+)_/g)) {
+    const p = m[1];
+    if (!p || p === ownPrefix || p === 'IAO') continue;
+    counts.set(p, (counts.get(p) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([prefix, count]) => ({ prefix, count, purl: `http://purl.obolibrary.org/obo/${prefix.toLowerCase()}.owl` }));
+}
+
 // ---------------------------------------------------------------------------
 // 解析
 // ---------------------------------------------------------------------------
@@ -586,28 +602,33 @@ function ontologyToProfile(ontology, opts = {}) {
   }
 
   // --- 8) 引用完整性 ----------------------------------------------------
-  const finalClassKeys = new Set(classes.map((c) => c.key));
-  for (const c of classes) {
-    if (c.parent && !finalClassKeys.has(c.parent)) {
-      report.orphanClasses.push(`${c.key} (parent: ${c.parent})`);
-      c.parent = '';
+  // deferIntegrity（体系化导入用）：合并前**不**清空跨文件的 parent/domain/range、不丢弃悬挂公理，
+  // 交由 ontologyBundle 在所有文件合并出完整类集后统一回校——否则 RO 谓词指向 BFO 类的
+  // domain/range 会在单独解析 RO 时被误清（BFO 类不在 RO 文件里），合并后护栏将失去约束。
+  if (!opts.deferIntegrity) {
+    const finalClassKeys = new Set(classes.map((c) => c.key));
+    for (const c of classes) {
+      if (c.parent && !finalClassKeys.has(c.parent)) {
+        report.orphanClasses.push(`${c.key} (parent: ${c.parent})`);
+        c.parent = '';
+      }
     }
-  }
-  // 谓词 domain/range 指向被截断掉的类 → 清空，否则护栏会误拦所有边
-  let clearedRefs = 0;
-  for (const p of predicates) {
-    if (p.domain && !finalClassKeys.has(p.domain)) { p.domain = ''; clearedRefs++; }
-    if (p.range && !finalClassKeys.has(p.range)) { p.range = ''; clearedRefs++; }
-  }
-  if (clearedRefs) report.clearedRefs = clearedRefs;
+    // 谓词 domain/range 指向被截断掉的类 → 清空，否则护栏会误拦所有边
+    let clearedRefs = 0;
+    for (const p of predicates) {
+      if (p.domain && !finalClassKeys.has(p.domain)) { p.domain = ''; clearedRefs++; }
+      if (p.range && !finalClassKeys.has(p.range)) { p.range = ''; clearedRefs++; }
+    }
+    if (clearedRefs) report.clearedRefs = clearedRefs;
 
-  // 公理里引用了不存在的 key → 丢弃（悬挂引用会让推理器与护栏都出错）
-  const validKeys = new Set([...finalClassKeys, ...predicates.map((p) => p.key)]);
-  const keptAxioms = axioms.filter((a) => validKeys.has(a.subject) && (a.object === undefined || validKeys.has(a.object)));
-  report.droppedAxioms = axioms.length - keptAxioms.length;
-  axioms.length = 0;
-  for (const a of keptAxioms) axioms.push(a);
-  report.axiomCount = axioms.length;
+    // 公理里引用了不存在的 key → 丢弃（悬挂引用会让推理器与护栏都出错）
+    const validKeys = new Set([...finalClassKeys, ...predicates.map((p) => p.key)]);
+    const keptAxioms = axioms.filter((a) => validKeys.has(a.subject) && (a.object === undefined || validKeys.has(a.object)));
+    report.droppedAxioms = axioms.length - keptAxioms.length;
+    axioms.length = 0;
+    for (const a of keptAxioms) axioms.push(a);
+    report.axiomCount = axioms.length;
+  }
 
   // 被跳过的公理类型（让用户知道有多少表达力没保留下来）
   const SKIPPED = [
@@ -723,15 +744,21 @@ async function importOwlExtended(filePath, opts = {}) {
   const detected = detectOwlFormat(filePath, text);
   const wantFormat = KNOWN_FORMATS.includes(opts.forceFormat) ? opts.forceFormat : detected.format;
   const displayName = opts.displayName || fileName.replace(/\.[A-Za-z0-9]+$/, '');
+  // 依赖推断：声明块（xmlns）只表明引用了哪些词汇，owl:imports 才是正式依赖声明且发布版常缺；
+  // 两者都拿不到完整依赖清单时，用 IRI 引用统计给出「事实依赖」供预览提示
+  const externalRefs = collectExternalRefs(text, String(displayName).toUpperCase());
+  const hasImportsDecl = /<owl:imports\b/i.test(text);
 
   // 1) protege-js 路径
   if (!opts.forceLegacy && PJ) {
     try {
       const { ontology, format, tried } = parseWithProtege(text, wantFormat);
       const { profile, report } = ontologyToProfile(ontology, {
-        id: opts.id, displayName, sourceFile: fileName, format,
+        id: opts.id, displayName, sourceFile: fileName, format, deferIntegrity: !!opts.deferIntegrity,
       });
       if (!profile.classes.length) throw new Error('解析成功但未提取到任何类');
+      report.externalRefs = externalRefs;
+      report.hasImportsDecl = hasImportsDecl;
       const profileCheck = detectProfile(ontology);
       const preview = buildPreview(profile, report, profileCheck, detected);
       // 格式识别与实际解析成功的格式不一致时提示用户
@@ -840,6 +867,19 @@ function buildPreview(profile, report, profileCheck, detected) {
   if (report.predicatesTruncated) {
     warnings.push(`谓词数量超过上限 ${MAX_PREDICATES}，已截断至 ${report.predicateCount} 个。`);
   }
+  // 有类但零谓词：多数是源文件本身未声明对象/数据属性（OBO 系本体如 OGMS 的关系词汇
+  // 常在 BFO/RO 等外部本体，发布文件只含类层级与注解属性），明示以免误判为解析遗漏
+  if (!predicates.length && classes.length) {
+    notes.push('该本体文件未声明任何对象属性/数据属性（OBO 系本体如 OGMS 的关系词汇常在 BFO/RO 等外部本体，发布文件仅含类层级与注解属性），故谓词表为空，属源文件现状而非解析遗漏；如需谓词可导入含关系声明的本体（如 BFO/RO）或在「谓词」页手动新增。');
+  }
+  // 依赖本体提示：声明块/ owl:imports 拿不到完整依赖清单时，用 IRI 引用统计给出事实依赖与 purl 地址
+  const extRefs = Array.isArray(report.externalRefs) ? report.externalRefs : [];
+  if (extRefs.length) {
+    const decl = report.hasImportsDecl
+      ? '文件含 owl:imports 声明（导入器不联网拉取被依赖本体）'
+      : '文件无 owl:imports 声明（OBO 发布版惯例）';
+    notes.push(`${decl}；按 IRI 统计推断引用了外部术语本体：${extRefs.map((r) => `${r.prefix}×${r.count}`).join('、')}——上述本体不会随本次导入带入，如需补全类骨架/关系可按 purl 单独导入（如 ${extRefs[0].purl}）。`);
+  }
   if (report.orphanClasses && report.orphanClasses.length) {
     warnings.push(`${report.orphanClasses.length} 个类的父类不在导入范围内，已置为根类：${report.orphanClasses.slice(0, 5).join('、')}${report.orphanClasses.length > 5 ? ' 等' : ''}`);
   }
@@ -945,6 +985,7 @@ function axiomHistogram(axioms) {
 module.exports = {
   protegeAvailable,
   protegeError,
+  collectExternalRefs,
   detectOwlFormat,
   parseOne,
   parseWithProtege,
@@ -963,4 +1004,5 @@ module.exports = {
   MAX_CLASSES,
   MAX_PREDICATES,
   MAX_AXIOMS,
+  MAX_CONSTRAINTS,
 };

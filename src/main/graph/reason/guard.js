@@ -6,10 +6,10 @@
 // 职责：写边前校验 (fromNode.type, rel, toNode.type) 是否符合谓词的
 //       定义域/值域约束，不符合则降级为 fallbackRel 并**记日志**。
 //
-// ⚠️ 现实约束（已核实 constants.js）：三个内置体系的谓词**都没有**
+// ⚠️ 现实约束（已核实 constants.js）：bfo-lite / bfo / iso15926 三个老内置体系的谓词**都没有**
 //    domain/range 字段，定义域/值域只以 PropertyDomain/PropertyRange 公理
 //    的形式存在于 bfo（2 对）与 iso15926（2 对）；bfo-lite 一条都没有。
-//    而 owl.js 导入的体系恰好相反——domain/range 挂在谓词上、公理表为空。
+//    后加的 ogms 内置体系与 owl.js 导入体系一样——domain/range 直接挂在谓词上。
 //    因此本模块一律走 bridge.normalizeProfile 的**双源合并视图**，
 //    两处都没有约束时 checkEdge 返回 ok:true（不拦截），绝不臆造约束。
 // ---------------------------------------------------------------------------

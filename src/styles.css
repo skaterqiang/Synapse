@@ -1722,7 +1722,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   font-weight: 500;
   letter-spacing: .2px;
 }
-/* 体系徽章分色：BFO-Lite 绿 / BFO 2020 蓝紫 / ISO 15926 橙 / OWL 导入 灰紫 */
+/* 体系徽章分色：BFO-Lite 绿 / BFO 2020 蓝紫 / ISO 15926 橙 / OGMS 医学红 / OWL 导入 灰紫 */
 .tpl-badge-profile.tpl-profile-bfo-lite {
   color: #047857;
   background: rgba(16, 185, 129, .10);
@@ -1738,8 +1738,13 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   background: rgba(245, 158, 11, .12);
   border-color: rgba(245, 158, 11, .34);
 }
+.tpl-badge-profile.tpl-profile-ogms {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, .10);
+  border-color: rgba(220, 38, 38, .30);
+}
 /* OWL 导入或其他未知 profile：中性灰紫 */
-.tpl-badge-profile:not(.tpl-profile-bfo-lite):not(.tpl-profile-bfo):not(.tpl-profile-iso15926) {
+.tpl-badge-profile:not(.tpl-profile-bfo-lite):not(.tpl-profile-bfo):not(.tpl-profile-iso15926):not(.tpl-profile-ogms) {
   color: #6d28d9;
   background: rgba(109, 40, 217, .08);
   border-color: rgba(109, 40, 217, .22);
@@ -2492,6 +2497,10 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .job-summary { margin-top: 6px; font-size: 12px; color: var(--text-sub); }
 /* 作业实时解析过程（MinerU 子进程输出）：复用 .job-live 终端风格，限高滚动 */
 .job-parselog .parse-log { margin-top: 6px; max-height: 200px; }
+/* AI 本体抽取阶段的过程输出面板：嵌在对应阶段行正下方，缩进对齐阶段详情列 */
+.job-stage-live { margin: 2px 0 6px 22px; }
+.job-stage-live-head { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-sub); margin-bottom: 2px; }
+.job-stage-live .job-live { margin-top: 0; max-height: 160px; }
 .job-live {
   margin-top: 8px;
   max-height: 180px;
@@ -3070,6 +3079,21 @@ button.reason-entry:disabled { opacity:.42; }
 .owl-prof-bad { color:#ef4444; }
 .owl-warn-list { display:flex; flex-direction:column; gap:4px; }
 .owl-warn-item { padding:6px 8px; background:rgba(217,119,6,.06); border-radius:6px; color:#d97706; font-size:12px; }
+/* 体系化导入（bundle）预览弹窗：依赖清单 + 样本类/谓词行 */
+.bundle-dep-list { display:flex; flex-direction:column; gap:3px; }
+.bundle-dep-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px; font-size:12px; padding:4px 6px; border-radius:6px; background:var(--bg-soft,#fafbfc); border:1px solid var(--border); }
+.bundle-dep-row > b { font-weight:600; }
+.bundle-dep-badge { flex:none; font-size:10.5px; padding:1px 6px; border-radius:4px; line-height:1.6; }
+.bundle-dep-badge.dep-ok { color:#059669; background:rgba(5,150,105,.10); }
+.bundle-dep-badge.dep-miss { color:#dc2626; background:rgba(220,38,38,.10); }
+.bundle-dep-cnt { flex:none; color:var(--text-sub); font-size:11px; }
+.bundle-dep-row .owl-pv-iri { flex:1; min-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bundle-dep-err { flex:none; color:#dc2626; font-size:11px; }
+.bundle-sample-row { display:flex; align-items:baseline; gap:8px; font-size:12px; padding:2px 4px; border-bottom:1px dashed var(--border); }
+.bundle-sample-row:last-child { border-bottom:none; }
+.bundle-sample-row > code { flex:none; min-width:130px; font-size:11px; color:var(--text-sub); }
+.bundle-sample-row > span { flex:none; font-weight:600; }
+.bundle-sample-row > em { flex:1; min-width:0; font-style:normal; color:var(--text-sub); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* §6.7 提取弹窗推理行 */
 .modal .domain-reason-row { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: start; gap: 4px 10px; margin: 2px 0 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--primary-lighter); cursor: pointer; transition: border-color .15s, background .15s; }
 .modal .domain-reason-row:hover { border-color: var(--primary); background: var(--primary-light); }

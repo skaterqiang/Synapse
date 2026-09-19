@@ -952,6 +952,61 @@ function registerIpc(getWindow) {
       return { ok: false, error: err.message };
     }
   });
+  // 体系化导入预览（bundle）：解析主本体 → 自动推断/下载依赖 → 合并预览，不落库。
+  // Electron 无 mainPath 时弹 dialog 选主本体；web 由上传接口得到 mainPath 后传入。
+  ipcMain.handle('graph:previewBundle', async (e, body) => {
+    try {
+      let mainPath = body && (body.mainPath || body.filePath);
+      if (!mainPath) {
+        const { dialog, BrowserWindow } = require('electron');
+        let win = null;
+        try { win = (BrowserWindow && BrowserWindow.fromWebContents) ? BrowserWindow.fromWebContents(e.sender) : null; } catch (_) { win = null; }
+        const r = await dialog.showOpenDialog(win, {
+          title: '选择主本体（体系化导入）',
+          filters: [{ name: 'OWL 本体', extensions: ['owl', 'rdf', 'ttl', 'ofn', 'omn', 'xml', 'n3'] }],
+          properties: ['openFile'],
+        });
+        if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
+        mainPath = r.filePaths[0];
+      }
+      return await graph.previewBundleImport({
+        mainPath,
+        displayName: body && body.fileName ? body.fileName : (body && body.displayName) || undefined,
+        download: body && body.download !== undefined ? !!body.download : true,
+        discover: body && body.discover !== undefined ? !!body.discover : true,
+        followImports: body && body.followImports !== undefined ? !!body.followImports : true,
+        deps: body && Array.isArray(body.deps) ? body.deps : undefined,
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+  // 体系化导入（bundle）：确认后合并落库。mainPath 必传（复用预览结果，不二次弹框）。
+  ipcMain.handle('graph:importBundle', async (_e, body) => {
+    try {
+      const mainPath = body && (body.mainPath || body.filePath);
+      if (!mainPath) return { ok: false, error: '未指定主本体文件' };
+      const result = await graph.importBundle({
+        mainPath,
+        displayName: body && body.fileName ? body.fileName : (body && body.displayName) || undefined,
+        id: body && body.id ? body.id : undefined,
+        download: body && body.download !== undefined ? !!body.download : true,
+        discover: body && body.discover !== undefined ? !!body.discover : true,
+        followImports: body && body.followImports !== undefined ? !!body.followImports : true,
+        deps: body && Array.isArray(body.deps) ? body.deps : undefined,
+      });
+      return {
+        ok: true,
+        profile: result.profile,
+        report: result.report,
+        preview: result.preview,
+        dependencies: result.dependencies,
+        via: result.via || 'protege-js',
+      };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
   ipcMain.handle('onto:setProfile', (_e, profileId) => {
     try {
       return { ok: true, ontology: graph.setOntologyProfile(profileId) };

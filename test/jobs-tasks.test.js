@@ -46,10 +46,13 @@ const json = (obj) => ({ status: 200, headers: { 'Content-Type': 'text/event-str
   const host = { tasks: null };
   let persists = 0;
   const tr = makeTaskTracker(host, () => { persists++; });
+  // persist 为 tick 级合并（setImmediate 异步落库），计数断言须等一拍后再取（复用外层 tick）
   tr.init(['x', 'y']);
+  await tick();
   check('tracker.init 写入 job.tasks 并落库一次', host.tasks.length === 2 && persists === 1, String(persists));
   host.tasks[0].status = 'running'; host.tasks[0].output = '中途';
   tr.reset();
+  await tick();
   check('tracker.reset 全部回到 pending 且清空输出', host.tasks.every((t) => t.status === 'pending' && t.output === '') && persists === 2);
   tr.setRunning(0);
   check('setRunning 只改目标项', host.tasks[0].status === 'running' && host.tasks[1].status === 'pending');
@@ -59,8 +62,10 @@ const json = (obj) => ({ status: 200, headers: { 'Content-Type': 'text/event-str
   check('doneAt(下标) 标完成', host.tasks[0].status === 'done');
   check('doneCount 统计完成数', tr.doneCount() === 1, String(tr.doneCount()));
   check('list 返回同一引用', tr.list() === host.tasks);
+  await tick(); // 先 flush 上面正常操作的合并 persist，此后越界操作不应再新增落库
   const before = persists;
   tr.setRunning(99); tr.setDone(-1); tr.setOutput(7, 'x');
+  await tick();
   check('越界下标安全忽略且不落库', persists === before && host.tasks.length === 2);
   check('未传 persist 时不抛错', (() => { const h2 = {}; makeTaskTracker(h2).init(['a']); makeTaskTracker(h2).setDone(0); return h2.tasks[0].status === 'done'; })());
 
