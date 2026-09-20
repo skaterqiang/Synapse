@@ -732,13 +732,13 @@ async function renderKgOntology() {
     const btnRemoveOwl = $('btn-onto-remove-owl');
     if (btnRemoveOwl) btnRemoveOwl.hidden = !String(o.profileId || '').startsWith('owl:');
   }
-  // 统计卡：前 3 项属于当前体系（类/谓词/约束），后 2 项是全局图谱实例（跨体系累计）
+  // 统计卡：6 项均属于当前所选体系（实例/关系按节点 profile 归属隔离统计）
   $('kg-onto-cards').innerHTML =
     kgCard('entities', o.stats.classCount, '实体类', o.profileName) +
     kgCard('mcp', o.stats.predicateCount, '谓词', o.profileName) +
     kgCard('table', o.stats.constraintCount, '校验约束', o.profileName) +
-    kgCard('kg', o.stats.instanceCount, '实例总数', '全部体系') +
-    kgCard('mcp', o.stats.edgeCount, '关系总数', '全部体系') +
+    kgCard('kg', o.stats.instanceCount, '实例总数', o.profileName) +
+    kgCard('mcp', o.stats.edgeCount, '关系总数', o.profileName) +
     kgCard('table', o.stats.axiomCount || 0, '逻辑公理', o.profileName);
 
   // 视图切换：OWLViz / 列表（'tree' 已废弃，归一为 'viz'）

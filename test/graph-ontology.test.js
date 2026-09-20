@@ -136,7 +136,8 @@ const json = (obj) => ({ status: 200, headers: { 'Content-Type': 'text/event-str
     setKv(ONTOLOGY_KEY, null);
     return o2.classes.find((c) => c.key === 'MyCustom').custom === true;
   })());
-  check('stats 汇总正确', onto.stats.instanceCount === 3 && onto.stats.classCount === onto.classes.length && onto.stats.edgeCount === 0, JSON.stringify(onto.stats));
+  check('stats 按当前体系隔离统计', onto.stats.instanceCount === 2 && onto.stats.classCount === onto.classes.length && onto.stats.edgeCount === 0, JSON.stringify(onto.stats));
+  check('stats 切体系后只计本体系', graph.getOntology('bfo').stats.instanceCount === 1, JSON.stringify(graph.getOntology('bfo').stats));
   check('profiles 列表附带', Array.isArray(onto.profiles) && onto.profiles.length >= 3);
   check('owlProfiles 摘要列表', Array.isArray(onto.owlProfiles));
 
