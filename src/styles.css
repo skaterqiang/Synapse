@@ -2061,6 +2061,9 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 /* 默认模型卡片：字段节点从暂存区搬进来后的间距与卡内表单保持一致 */
 .mcp-card-body > #primary-model-fields > label { display: block; font-size: 12px; color: var(--text-sub); margin: 10px 0 4px; }
 .mcp-card-body > #primary-model-fields > label:first-child { margin-top: 2px; }
+/* 模型卡内「开启思考」勾选行：复选框 + 说明文字横排 */
+.model-think-row { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 0; font-size: 12px; color: var(--text-sub); cursor: pointer; }
+.model-think-row input[type="checkbox"] { width: auto; flex: none; margin: 2px 0 0; padding: 0; border: none; border-radius: 0; accent-color: var(--primary); cursor: pointer; box-shadow: none; }
 /* 模型卡「保存修改」行：主按钮 + 灰色说明并排 */
 .model-save-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
 .model-save-row .btn { white-space: nowrap; }

@@ -71,6 +71,8 @@ function withModelParams(body, settings) {
 // 数十秒拖到数分钟（实测 27B Q4 抽取任务 74s→37s，长资料批次 8min→约 4min），
 // 而结构化抽取/图谱问答的质量由提示词与图谱事实兜底，不依赖模型自述推理。
 function thinkingWanted(settings) {
+  // 模型级开关：settings.thinkingEnabled 由渲染层按「当前所选模型卡」注入
+  // （设置→模型卡「开启思考（thinking）」勾选状态）；未注入时默认开启，保持既有行为。
   return (settings || {}).thinkingEnabled !== false;
 }
 
@@ -276,6 +278,47 @@ async function streamChat(event, settings, messages) {
   // Ollama 本地服务按需自动启动（AI 问答入口）
   if (isOllamaStream) await ensureOllamaServer(baseUrl);
 
+  // Ollama 的 /v1 忽略 think:false（实测思考型模型照样输出 reasoning），因此「显式关思考 + Ollama」时
+  // 交互问答也直连原生 /api/chat（与 chatOnce 同口径），保证模型卡「开启思考」取消后问答真正不思考
+  if (isOllamaStream && !thinkingWanted(settings)) {
+    const origin = new URL(baseUrl).origin;
+    const numCtx = num(settings, 'ollamaNumCtx', 16384, 2048, 262144);
+    const body = withModelParams({ model, messages, stream: true, think: false, options: { num_ctx: numCtx } }, settings);
+    // withModelParams 把调参键写在顶层，原生端点要求放在 options 下（num_predict 对应 max_tokens）
+    if (body.temperature !== undefined) { body.options.temperature = body.temperature; delete body.temperature; }
+    if (body.top_p !== undefined) { body.options.top_p = body.top_p; delete body.top_p; }
+    if (body.max_tokens !== undefined) { body.options.num_predict = body.max_tokens; delete body.max_tokens; }
+    const { ctrl, token } = beginStream();
+    const isMine = () => streamToken === token;
+    const send = (ch, d) => { if (isMine()) event.sender.send(ch, d); };
+    const signal = ctrl.signal;
+    try {
+      const nresp = await fetchLoopback(`${origin}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
+        dispatcher: llmDispatcher(settings),
+      });
+      if (!nresp.ok) {
+        const detail = (await nresp.text().catch(() => '')).slice(0, 300);
+        send('ai:error', `接口返回错误 (${nresp.status})：${detail}`);
+        return;
+      }
+      await consumeOllamaNdjson(nresp, (delta, isReasoning) => {
+        if (isReasoning) send('ai:step', { kind: 'thinking', text: delta });
+        else send('ai:chunk', delta);
+      });
+      send('ai:done');
+    } catch (err) {
+      if (signal.aborted || isAbortErr(err)) { if (isMine()) event.sender.send('ai:error', '已停止回答。'); return; }
+      send('ai:error', `网络请求失败：${err.message}${err.cause ? `（${err.cause.code || err.cause.message}）` : ''}`);
+    } finally {
+      if (aiAbort && aiAbort.signal === signal) aiAbort = null;
+      if (streamToken === token) streamToken = null;
+    }
+    return;
+  }
 
   let resp;
   // 开启新流：顶替（静默 abort）尚未结束的旧流，避免旧流事件串进本次回答
@@ -290,7 +333,7 @@ async function streamChat(event, settings, messages) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify(withModelParams({ model, messages, stream: true }, settings)),
+      body: JSON.stringify(withThinkingBudget(withThinking(withModelParams({ model, messages, stream: true }, settings), settings), settings)),
       signal,
       dispatcher: llmDispatcher(settings),
     });
@@ -540,7 +583,7 @@ async function agenticChat(event, settings, messages, tools, toolRouter) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
         // 剔除内部标记字段（_toolResume），避免严格网关拒绝未知属性
-        body: JSON.stringify(withModelParams({ model: normalizeModel(settings.model), messages: msgs.map((m) => { const { _toolResume, ...rest } = m; return rest; }), stream: true, ...(openaiTools ? { tools: openaiTools } : {}) }, settings)),
+        body: JSON.stringify(withThinkingBudget(withThinking(withModelParams({ model: normalizeModel(settings.model), messages: msgs.map((m) => { const { _toolResume, ...rest } = m; return rest; }), stream: true, ...(openaiTools ? { tools: openaiTools } : {}) }, settings), settings), settings)),
         signal,
         dispatcher: llmDispatcher(settings),
       });

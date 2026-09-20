@@ -912,6 +912,7 @@ function modelEntryList() {
     model: (s.model || '').trim() || D.model || '',
     baseUrl: (s.apiBaseUrl || '').trim() || D.apiBaseUrl || '',
     apiKey: s.apiKey || '',
+    thinking: s.thinkingEnabled !== false,
   };
   return [primary, ...extraModels()];
 }
@@ -931,6 +932,8 @@ function fillPrimaryModelFields() {
   $('set-model').value = window.kb.normalizeModel ? window.kb.normalizeModel(modelVal) : (modelVal || D.model || '');
   $('set-model').placeholder = D.model || '';
   $('set-baseurl').placeholder = D.apiBaseUrl || '';
+  const thinkEl = $('set-thinking');
+  if (thinkEl) thinkEl.checked = s.thinkingEnabled !== false;
 }
 
 // 把某个“更多模型”提升为默认模型（写入 settings 的标量字段）。
@@ -947,12 +950,15 @@ function promoteModel(id, opts = {}) {
     model: (s.model || '').trim(),
     baseUrl: (s.apiBaseUrl || '').trim(),
     apiKey: s.apiKey || '',
+    thinking: s.thinkingEnabled !== false,
   };
   if (opts.keepOld && (old.model || old.baseUrl)) list.splice(i, 1, old); else list.splice(i, 1);
   s.apiProvider = normalizeProvider(picked.provider);
   s.apiBaseUrl = picked.baseUrl || '';
   s.apiKey = picked.apiKey || '';
   s.model = picked.model || '';
+  // 思考开关随模型走：提升后主模型沿用该卡片的勾选状态（未设置过视为开启）
+  if (picked.thinking === false) s.thinkingEnabled = false; else delete s.thinkingEnabled;
   state.settings.extraModels = list;
   // 被提升的条目 id 已不存在，若正被选中则改指默认模型
   if (state.aiModelId === id) setAiModel('__primary__');
@@ -980,6 +986,29 @@ function renderModelList() {
   renderMineruModelOptions();
 }
 
+// 默认模型卡的「无思考」徽标即时同步：勾选 #set-thinking 变化时不整体重渲染
+// （字段节点在卡片间复用，重渲染会打断输入焦点），只增删卡头徽标
+function syncPrimaryThinkBadge() {
+  const box = $('model-cards');
+  if (!box) return;
+  const card = box.querySelector('.mcp-card');
+  if (!card) return;
+  const keyBadge = card.querySelector('[data-keybadge]');
+  if (!keyBadge) return;
+  const on = $('set-thinking') ? $('set-thinking').checked : true;
+  let thinkBadge = card.querySelector('[data-thinkbadge]');
+  if (!on) {
+    if (!thinkBadge) {
+      thinkBadge = document.createElement('span');
+      thinkBadge.className = 'model-badge';
+      thinkBadge.setAttribute('data-thinkbadge', '');
+      keyBadge.after(thinkBadge);
+    }
+    thinkBadge.textContent = '无思考';
+    thinkBadge.title = '该模型已关闭思考（thinking）';
+  } else if (thinkBadge) thinkBadge.remove();
+}
+
 // entry: modelEntryList() 的一项（primary 为 true 时为默认模型）
 function modelCard(entry, primaryFields) {
   const isPrimary = !!entry.primary;
@@ -998,6 +1027,7 @@ function modelCard(entry, primaryFields) {
     + '<span class="mcp-test-name" data-modelname>' + escapeHtml(entry.model || '(未填模型名)') + '</span>'
     + (isPrimary ? '<span class="model-badge cur">默认</span>' : '')
     + keyTag
+    + (entry.thinking === false ? '<span class="model-badge" data-thinkbadge title="该模型已关闭思考（thinking）">无思考</span>' : '')
     + '<span class="mcp-test-target" data-baseurl title="' + escapeHtml(entry.baseUrl || '') + '">' + escapeHtml(entry.baseUrl || '') + '</span>'
     + '<span class="mcp-head-acts">'
     + (isPrimary
@@ -1089,6 +1119,7 @@ function extraModelForm(m) {
     + '<button type="button" class="btn btn-ghost" data-fetch>获取模型</button>'
     + '</div>'
     + '<p class="modal-tip" data-fetchtip></p>'
+    + '<label class="model-think-row"><input type="checkbox" data-f="thinking" /><span>开启思考（thinking）：思考型模型输出推理过程；取消可显著加快抽取/问答</span></label>'
     + '<div class="model-save-row">'
     + '<button type="button" class="btn btn-primary" data-saveform>保存修改</button>'
     + '<span class="modal-tip">修改上方配置后点「保存修改」写入，保存后立即生效</span>'
@@ -1101,6 +1132,8 @@ function extraModelForm(m) {
   url.value = m.baseUrl || '';
   keyEl.value = m.apiKey || '';
   nameEl.value = m.model || '';
+  const thinkEl = box.querySelector('[data-f="thinking"]');
+  thinkEl.checked = m.thinking !== false;
   const keyTip = box.querySelector('[data-keytip]');
   const syncKeyTip = () => {
     keyTip.textContent = providerNeedsKey(prov.value)
@@ -1140,7 +1173,20 @@ function extraModelForm(m) {
       else if (providerNeedsKey(p)) { keyBadge.className = 'model-badge warn'; keyBadge.textContent = '无 Key'; keyBadge.title = '该 provider 通常需要 API Key'; }
       else { keyBadge.className = 'model-badge'; keyBadge.textContent = '无需 Key'; keyBadge.removeAttribute('title'); }
     }
+    // 思考开关徽章：仅关闭时显示，便于一眼看出哪张卡是「无思考」快模式
+    let thinkBadge = card.querySelector('[data-thinkbadge]');
+    if (e.thinking === false) {
+      if (!thinkBadge) {
+        thinkBadge = document.createElement('span');
+        thinkBadge.className = 'model-badge';
+        thinkBadge.setAttribute('data-thinkbadge', '');
+        keyBadge.after(thinkBadge);
+      }
+      thinkBadge.textContent = '无思考';
+      thinkBadge.title = '该模型已关闭思考（thinking）';
+    } else if (thinkBadge) thinkBadge.remove();
   };
+  thinkEl.addEventListener('change', () => { save({ thinking: thinkEl.checked }); syncCardHead(); });
   prov.addEventListener('change', () => {
     const preset = PROVIDER_PRESETS[prov.value] || PROVIDER_PRESETS[DEFAULT_PROVIDER];
     if (preset.url) url.value = preset.url;
@@ -1160,6 +1206,7 @@ function extraModelForm(m) {
       baseUrl: url.value.trim(),
       apiKey: keyEl.value.trim(),
       model: nameEl.value.trim(),
+      thinking: thinkEl.checked,
     }, { rerender: true });
     toast('已保存模型修改', 2500);
   });
@@ -2489,6 +2536,11 @@ function saveSettingsFields() {
   if (reasonOn) delete s.reasonEnabled; else s.reasonEnabled = false;
   // 修复 LLM 仲裁（方案3）：默认关 → 勾选落 true，取消勾选删键（主进程按 !!settings.graphRepairLlm 读）
   if ($('set-repair-llm').checked) s.graphRepairLlm = true; else delete s.graphRepairLlm;
+  // 思考开关（模型级，默认模型卡）：默认开 → 勾选即删键回退默认开启，取消勾选落 false
+  // 与 chat.js aiSettings() 的 thinkingEnabled 口径一致，主进程 thinkingWanted 据此下发 think/enable_thinking
+  const thinkEl = $('set-thinking');
+  if (thinkEl) { if (thinkEl.checked) delete s.thinkingEnabled; else s.thinkingEnabled = false; }
+  syncPrimaryThinkBadge(); // 卡头「无思考」徽标随勾选即时更新（默认模型卡不整体重渲染）
   fillReasonStatusTip(reasonOn);
   // 开关变化要立刻反映到知识图谱各页的置灰态（F10）；以主进程 reasonStatus 为准
   // （它同时反映「模块是否可用」与「开关是否打开」，比前端乐观值可靠）

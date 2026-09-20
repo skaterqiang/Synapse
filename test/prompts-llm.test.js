@@ -318,6 +318,40 @@ function fakeResp(pieces) {
     } finally { await fake.close(); }
   }
   {
+    // 模型级思考开关：settings.thinkingEnabled 由渲染层按所选模型卡注入（false=该模型关思考）
+    const fake = await startFakeLlm(({ url }) => (url === '/api/chat'
+      ? { status: 200, sse: [JSON.stringify({ message: { content: '原生回答' } }) + '\n'] }
+      : { status: 200, headers: { 'Content-Type': 'text/event-stream' }, sse: sseText('v1回答') }));
+    try {
+      await llm.chatOnce(fake.settings({ apiProvider: 'ollama', thinkingEnabled: false }), []);
+      check('模型级关思考：ollama 直连原生 /api/chat', fake.requests[0].url === '/api/chat', fake.requests[0].url);
+      check('模型级关思考：原生请求体 think:false', fake.requests[0].body.think === false, JSON.stringify(fake.requests[0].body.think));
+      await llm.chatOnce(fake.settings({ apiProvider: 'dashscope', thinkingEnabled: false }), []);
+      check('模型级关思考：dashscope 下发 enable_thinking:false', fake.requests[1].body.enable_thinking === false, JSON.stringify(fake.requests[1].body.enable_thinking));
+      await llm.chatOnce(fake.settings({ apiProvider: 'dashscope', thinkingEnabled: true }), []);
+      check('模型级开思考：dashscope 下发 enable_thinking:true', fake.requests[2].body.enable_thinking === true, JSON.stringify(fake.requests[2].body.enable_thinking));
+      await llm.chatOnce(fake.settings({ apiProvider: 'ollama', thinkingEnabled: true }), []);
+      check('模型级开思考：ollama 走 /v1 且 think:true', fake.requests[3].url === '/v1/chat/completions' && fake.requests[3].body.think === true, fake.requests[3].url);
+    } finally { await fake.close(); }
+  }
+  {
+    // 交互问答（streamChat）：关思考 + Ollama 同样直连原生 /api/chat（/v1 忽略 think:false）
+    const fake = await startFakeLlm(({ url }) => (url === '/api/chat'
+      ? { status: 200, sse: [JSON.stringify({ message: { content: '原生回答' } }) + '\n'] }
+      : { status: 200, headers: { 'Content-Type': 'text/event-stream' }, sse: sseText('v1回答') }));
+    const events = [];
+    const ev = { sender: { send: (ch, d) => events.push([ch, d]) } };
+    try {
+      await llm.streamChat(ev, fake.settings({ apiProvider: 'ollama', thinkingEnabled: false }), [{ role: 'user', content: 'q' }]);
+      const native = fake.requests.find((r) => r.url === '/api/chat');
+      check('streamChat 关思考：ollama 直连原生 /api/chat', !!native, JSON.stringify(fake.requests.map((r) => r.url)));
+      check('streamChat 原生请求体 think:false', native && native.body.think === false, native && JSON.stringify(native.body.think));
+      check('streamChat 正常收尾 ai:done', events.some((x) => x[0] === 'ai:done'), JSON.stringify(events.slice(-2)));
+      await llm.streamChat(ev, fake.settings({ apiProvider: 'ollama', thinkingEnabled: true }), []);
+      check('streamChat 开思考：走 /v1', fake.requests[fake.requests.length - 1].url === '/v1/chat/completions', fake.requests[fake.requests.length - 1].url);
+    } finally { await fake.close(); }
+  }
+  {
     // baseUrl 末尾斜杠归一
     const fake = await startFakeLlm(() => ({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, sse: sseText('x') }));
     try {
