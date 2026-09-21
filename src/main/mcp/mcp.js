@@ -26,54 +26,70 @@ async function loadSdk() {
 }
 
 function authHeaders(cfg, settings) {
-  const h = {};
-  if (cfg.useModelKey && settings && settings.apiKey) h.Authorization = 'Bearer ' + settings.apiKey;
-  if (cfg.env && cfg.env.Authorization) h.Authorization = cfg.env.Authorization;
+  // 与内置客户端共用同一套认证逻辑（含 ${VAR} 占位符解析与 X-Api-Key 等自定义头），
+  // 只去掉传输层字段，Content-Type/Accept 由 SDK 自行设置
+  const { 'Content-Type': _ct, Accept: _ac, ...h } = builtin.authHeaders(cfg, settings);
   return h;
 }
 
 // 建立 SDK 连接：stdio 用 StdioClientTransport；远程先试 StreamableHTTP，失败回退 SSE
+// 返回 { client, via }，via 记录最终生效的传输方式，供执行过程展示
 async function connectSdk(cfg, settings) {
   const sdk = await loadSdk();
   if (!sdk) return null;
   if (cfg.type === 'stdio') {
     const client = new sdk.Client({ name: 'synapse', version: '1.0' });
     await client.connect(new sdk.Stdio({ command: cfg.command, args: cfg.args || [], env: { ...process.env, ...(cfg.env || {}) } }));
-    return client;
+    return { client, via: 'stdio' };
   }
   const headers = authHeaders(cfg, settings);
   try {
     const client = new sdk.Client({ name: 'synapse', version: '1.0' });
     await client.connect(new sdk.Http(new URL(cfg.url), { requestInit: { headers } }));
-    return client;
+    return { client, via: 'streamable-http' };
   } catch (_) {
     const client = new sdk.Client({ name: 'synapse', version: '1.0' });
     await client.connect(new sdk.Sse(new URL(cfg.url), { requestInit: { headers } }));
-    return client;
+    return { client, via: 'sse' };
   }
 }
 
 // 打开一次会话并执行 fn，结束后必定关闭；仅"建连失败"才回退内置客户端，
 // 会话内部的业务错误直接抛出（避免工具被重复执行）
-async function withClient(cfg, settings, fn) {
-  const sdkClient = await connectSdk(cfg, settings).catch(() => null);
-  if (sdkClient) {
+// onProgress(msg) 可选：把连接/请求等执行过程实时上报给调用方（问答界面据此展示）
+async function withClient(cfg, settings, fn, onProgress) {
+  const name = cfg.name || cfg.url || cfg.command || 'MCP';
+  const prog = (m) => { try { if (onProgress) onProgress(m); } catch (_) {} };
+  const desc = (kind, serverInfo) => `已连接 ${name}（${kind}${serverInfo && serverInfo.name ? ' · ' + serverInfo.name : ''}）`;
+  prog(`正在连接 MCP 服务器 ${name}…`);
+  const conn = await connectSdk(cfg, settings).catch(() => null);
+  if (conn) {
+    const { client: sdkClient, via } = conn;
     try {
+      const serverInfo = sdkClient.getServerVersion && sdkClient.getServerVersion();
+      prog(desc(via, serverInfo));
       return await fn({
-        kind: 'sdk',
-        serverInfo: sdkClient.getServerVersion && sdkClient.getServerVersion(),
+        kind: via,
+        serverInfo,
         listTools: async () => builtin.toOpenAiTools(cfg, await sdkClient.listTools()),
-        callTool: async (name, args) => builtin.toText(await sdkClient.callTool({ name, arguments: args || {} })),
+        callTool: async (n, args, raw = false) => {
+          const result = await sdkClient.callTool({ name: n, arguments: args || {} });
+          return raw ? result : builtin.toText(result);
+        },
       });
     } finally { try { await sdkClient.close(); } catch (_) {} }
   }
   const s = await builtin.openSession(cfg, settings);
   try {
+    prog(desc(s.kind, s.serverInfo));
     return await fn({
       kind: s.kind,
       serverInfo: s.serverInfo,
       listTools: async () => builtin.toOpenAiTools(cfg, await s.request('tools/list', {})),
-      callTool: async (name, args) => builtin.toText(await s.request('tools/call', { name, arguments: args || {} })),
+      callTool: async (n, args, raw = false) => {
+        const result = await s.request('tools/call', { name: n, arguments: args || {} });
+        return raw ? result : builtin.toText(result);
+      },
     });
   } finally { await s.close(); }
 }
@@ -82,8 +98,15 @@ function listTools(cfg, settings) {
   return withClient(cfg, settings, (c) => c.listTools());
 }
 
-function callTool(cfg, settings, name, args) {
-  return withClient(cfg, settings, (c) => c.callTool(name, args));
+function callTool(cfg, settings, name, args, opts) {
+  const onProgress = opts && opts.onProgress;
+  return withClient(cfg, settings, async (c) => {
+    if (onProgress) onProgress(`发送工具请求 ${name}…`);
+    const t0 = Date.now();
+    const r = await c.callTool(name, args);
+    if (onProgress) onProgress(`收到响应，耗时 ${Date.now() - t0}ms`);
+    return r;
+  }, onProgress);
 }
 
 // 工具列表缓存（按服务器身份）：自动模式下每次提问都要列工具，缓存避免重复建连开销
@@ -168,7 +191,7 @@ function resultHint(text) {
   const badStatus = status !== undefined && status !== null && String(status) !== '0';
   if (badStatus) {
     return `⚠️ 服务端返回 status=${status}（非 0 通常表示未执行成功）${empty ? '且结果为空' : ''}。`
-      + '这意味着连接与工具调用均正常，但该 MCP 服务本身没有回数据。'
+      + 'MCP 已连接，但本次工具执行未成功返回业务数据。'
       + '请到服务商控制台确认：① 该 MCP 服务（如百炼 WebSearch）已开通；② 当前 API Key 对该服务有权限；③ 账户有可用额度。';
   }
   if (empty) return '⚠️ 工具已调通，但服务端返回 0 条结果，请确认该 MCP 服务已开通、API Key 有权限与额度。';
@@ -198,6 +221,7 @@ async function testMcp(cfg) {
         return { name: x._tool, required: (p.required || []).filter((k) => k !== 'ctx'), params: props };
       });
       let result = null; let usedTool = ''; let usedArgs = null; let toolErr = ''; let argHint = '';
+      let toolIsError = false;
       // 显式指定优先；否则仅在有 query 时自动挑搜索类工具
       let target = null;
       if (wantTool) {
@@ -220,7 +244,15 @@ async function testMcp(cfg) {
             argHint = `已自动填入 ${g.filled}；该工具还有必填参数未提供：${g.missing.join('、')}，请在「参数 JSON」里补全。`;
           }
         }
-        result = await c.callTool(target._tool, usedArgs);
+        // 测试界面保留工具错误标记，不能把「收到响应」等同于「业务成功」。
+        try {
+          const response = await c.callTool(target._tool, usedArgs, true);
+          result = builtin.toText(response);
+          toolIsError = !!(response && response.isError);
+        } catch (e) {
+          toolErr = e.message;
+          toolIsError = true;
+        }
       }
       const via = c.serverInfo && c.serverInfo.name ? `${c.kind} · ${c.serverInfo.name}` : c.kind;
       return {
@@ -231,6 +263,8 @@ async function testMcp(cfg) {
         toolSchemas,
         usedTool,
         usedArgs,
+        toolIsError,
+        toolError: toolErr,
         hint: [argHint, result ? resultHint(result) : ''].filter(Boolean).join(' '),
         result,
       };

@@ -168,7 +168,7 @@ function registerIpc(getWindow) {
         + '- 凡有“让我搜索/查询”之类意图，必须立即真实发起工具调用，不得只口头宣告后直接结束回答。',
     } : null;
     const all = [...sysMsgs, ...(toolPolicy ? [toolPolicy] : []), ...messages];
-    if (tools.length) return llm.agenticChat(event, payload.settings, all, tools, (t, args) => (t._builtin === 'run' ? require('./skills/runner').runNodeScript(args) : mcpMod.callTool(t._server, payload.settings, t._tool, args)));
+    if (tools.length) return llm.agenticChat(event, payload.settings, all, tools, (t, args, onProgress) => (t._builtin === 'run' ? require('./skills/runner').runNodeScript(args) : mcpMod.callTool(t._server, payload.settings, t._tool, args, { onProgress })));
     return llm.streamChat(event, payload.settings, all);
   });
 

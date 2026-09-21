@@ -945,19 +945,7 @@ function getOntology(profileId) {
   const o = resolveOntology(id);
   const g = getGraph();
   const countBy = {};
-  // 实例/关系统计按体系隔离：节点用自身 profile（缺失时从 id 前缀还原，与 recallFor/scopeFilter 同口径），
-  // 边按两端节点归属（两端同体系才计入该体系；跨体系边不计入任何单体系，避免重复计数）
-  const pidOf = (n) => String((n && n.profile) || String((n && n.id) || '').split(':')[0] || 'bfo-lite');
-  const nodePid = new Map();
-  for (const n of g.nodes) {
-    const p = pidOf(n);
-    nodePid.set(n.id, p);
-    if (p === id) countBy[n.type] = (countBy[n.type] || 0) + 1;
-  }
-  let instCount = 0;
-  let edgeCount = 0;
-  for (const n of g.nodes) if (pidOf(n) === id) instCount += 1;
-  for (const e of g.edges) if (e && e.from && e.to && nodePid.get(e.from) === id && nodePid.get(e.to) === id) edgeCount += 1;
+  for (const n of g.nodes) countBy[n.type] = (countBy[n.type] || 0) + 1;
   const baseKeys = { classes: new Set(), predicates: new Set() };
   const baseProfile = id.startsWith('owl:') ? (kv.owlProfiles || []).find((p) => p.id === id) : ONTOLOGY_PROFILES[id];
   (baseProfile ? baseProfile.classes : []).forEach((c) => baseKeys.classes.add(c.key));
@@ -980,8 +968,8 @@ function getOntology(profileId) {
       predicateCount: o.predicates.length,
       constraintCount: (o.constraints || []).length,
       axiomCount: (o.axioms || []).length,
-      instanceCount: instCount,
-      edgeCount,
+      instanceCount: g.nodes.length,
+      edgeCount: g.edges.length,
     },
   };
 }

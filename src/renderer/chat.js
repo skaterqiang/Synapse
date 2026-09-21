@@ -1144,13 +1144,9 @@ function currentAiModel() {
 function aiSettings() {
   const base = state.settings || {};
   const m = currentAiModel();
-  if (!m) return base;
-  // 思考开关按「当前所选模型卡」生效（模型级设置）：主模型读 settings.thinkingEnabled，
-  // 非主模型读该卡片自身的 thinking 勾选；主进程 thinkingWanted 据此下发 think/enable_thinking
-  const thinking = m.thinking !== false;
-  if (m.primary) return { ...base, thinkingEnabled: thinking };
+  if (!m || m.primary) return base;
   const key = m.apiKey || (providerNeedsKey(m.provider) ? (base.apiKey || '') : '');
-  return { ...base, apiProvider: m.provider, apiBaseUrl: m.baseUrl || base.apiBaseUrl, apiKey: key, model: m.model, thinkingEnabled: thinking };
+  return { ...base, apiProvider: m.provider, apiBaseUrl: m.baseUrl || base.apiBaseUrl, apiKey: key, model: m.model };
 }
 
 // 按钮回显当前模型名
@@ -1342,16 +1338,40 @@ function createStepsGroup() {
         body.scrollTop = body.scrollHeight;
         return;
       }
+      // MCP/工具执行过程：并入当前工具块的过程区，不另起一条折叠项，避免刷屏
+      if (s.kind === 'progress') {
+        steps.push({ kind: 'progress', name: s.name || '', text: s.text || '' });
+        if (lastToolRec && lastToolRec.progressEl) {
+          const line = document.createElement('div');
+          line.className = 'ai-step-progress-line';
+          line.textContent = String(s.text || '');
+          lastToolRec.progressEl.appendChild(line);
+          lastToolRec.progressEl.hidden = false;
+          if (lastToolRec.el) lastToolRec.el.open = true; // 展开当前工具块，让过程实时可见
+        } else {
+          // 无归属工具块（异常顺序）时退化为普通思考行
+          const d = document.createElement('details');
+          d.className = 'ai-step-item thought';
+          d.innerHTML = '<summary>' + escapeHtml(String(s.text || '').slice(0, 60)) + '</summary>';
+          body.appendChild(d);
+        }
+        if (s.text) label.textContent = String(s.text).slice(0, 34);
+        body.scrollTop = body.scrollHeight;
+        return;
+      }
       const rec = { kind: s.kind, name: s.name || '', args: s.args || '', text: s.text || '', result: '' };
       steps.push(rec);
       const d = document.createElement('details');
       d.className = 'ai-step-item ' + (s.kind === 'tool' ? 'tool' : 'thought');
       const lab = s.kind === 'tool' ? '调用工具：' + (s.name || '') : String(s.text || '').slice(0, 60);
-      d.innerHTML = '<summary>' + escapeHtml(lab) + '</summary><div class="ai-step-detail"></div>';
+      // 工具块内预留一条执行过程区（MCP 连接/请求/耗时），无过程时保持隐藏
+      d.innerHTML = '<summary>' + escapeHtml(lab) + '</summary>'
+        + (s.kind === 'tool' ? '<div class="ai-step-progress" hidden></div>' : '')
+        + '<div class="ai-step-detail"></div>';
       rec.detailEl = d.querySelector('.ai-step-detail');
       rec.detailEl.textContent = s.kind === 'tool' ? (s.args || '') : (s.text || '');
       body.appendChild(d);
-      if (s.kind === 'tool') { lastToolRec = rec; liveThinking = null; }
+      if (s.kind === 'tool') { lastToolRec = rec; liveThinking = null; rec.progressEl = d.querySelector('.ai-step-progress'); rec.el = d; }
       // 折叠头也显示当前阶段，避免长时间停在笼统的“思考中…”
       label.textContent = s.kind === 'tool'
         ? '调用工具：' + (s.name || '')
@@ -1359,7 +1379,8 @@ function createStepsGroup() {
       body.scrollTop = body.scrollHeight;
     },
     finish() {
-      const kept = steps.filter((x) => x.kind !== 'tool-result');
+      // tool-result 合入工具块、progress 嵌套在工具块过程区，均不单独计数
+      const kept = steps.filter((x) => x.kind !== 'tool-result' && x.kind !== 'progress');
       const n = kept.length;
       if (!n) { wrap.remove(); return; }
       // 结束后收起流式期间展开的思考块

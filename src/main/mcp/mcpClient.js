@@ -8,19 +8,33 @@ const { MCP_PROTOCOL: PROTOCOL, MCP_CONNECT_MS: CONNECT_MS, MCP_REQUEST_MS: REQU
 // 远程传输探测缓存：url → { kind, sseUrl }，避免每次调用都重复付出 405 回退的往返
 const probeCache = new Map();
 
+// Cline 风格 ${VAR} 占位符：先取进程环境变量，再回退模型 Key；
+// 解析不出返回空串，由调用端决定回退或丢弃（否则把占位符原文发出去，服务端 401 且难以定位）
+function resolveSecret(value, settings) {
+  const ph = String(value || '').match(/^(Bearer\s+)?\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/i);
+  if (!ph) return String(value || '');
+  const secret = process.env[ph[2]] || (settings && settings.apiKey) || '';
+  if (!secret) return '';
+  return /^Bearer /i.test(secret) ? secret : 'Bearer ' + secret;
+}
+
 function authHeaders(cfg, settings) {
   const h = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
   if (cfg.useModelKey && settings && settings.apiKey) h.Authorization = 'Bearer ' + settings.apiKey;
   if (cfg.env && cfg.env.Authorization) {
-    // Cline 风格 ${VAR} 占位符：先取进程环境变量，再回退模型 Key；
-    // 解析不出就不发占位符原文（否则服务端 401 且难以定位）
-    let auth = String(cfg.env.Authorization);
-    const ph = auth.match(/^(Bearer\s+)?\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/i);
-    if (ph) {
-      const secret = process.env[ph[2]] || (settings && settings.apiKey) || '';
-      auth = secret ? (/^Bearer /i.test(secret) ? secret : 'Bearer ' + secret) : '';
-    }
+    const auth = resolveSecret(cfg.env.Authorization, settings);
     if (auth) h.Authorization = auth;
+  }
+  // 自定义认证头（如 X-Api-Key）：Cline 格式 headers 里的非 Authorization 字段，
+  // 服务端可能 initialize/tools/list 不校验、tools/call 才校验，漏发会表现为工具结果里的 Unauthorized
+  // 未归一化的旧配置回退读 raw.headers，无需重新保存即可生效
+  const extraHeaders = cfg.headers || (cfg.raw && cfg.raw.headers);
+  if (extraHeaders) {
+    for (const [k, v] of Object.entries(extraHeaders)) {
+      if (!k || /^content-type$/i.test(k) || /^accept$/i.test(k)) continue;
+      const val = resolveSecret(v, settings);
+      if (val) h[k] = val; // 占位符解析失败时不发原文
+    }
   }
   return h;
 }
@@ -402,4 +416,4 @@ async function callTool(cfg, settings, toolName, args) {
   finally { await s.close(); }
 }
 
-module.exports = { listTools, callTool, openSession, toOpenAiTools, toText };
+module.exports = { listTools, callTool, openSession, toOpenAiTools, toText, authHeaders, resolveSecret };

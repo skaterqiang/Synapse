@@ -1999,6 +1999,10 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .ai-step-item summary::before { content: '▸'; font-size: 10px; transition: transform .15s; flex: none; }
 .ai-step-item[open] summary::before { transform: rotate(90deg); }
 .ai-step-detail { margin: 4px 0 2px 16px; white-space: pre-wrap; color: var(--text-sub); font-size: 11.5px; max-height: 160px; overflow-y: auto; background: rgba(0, 0, 0, 0.03); border-radius: var(--radius-sm); padding: 6px 8px; }
+/* MCP/工具执行过程区：嵌套在工具块内，逐条显示连接/请求/耗时 */
+.ai-step-progress { margin: 4px 0 0 16px; display: flex; flex-direction: column; gap: 2px; }
+.ai-step-progress-line { font-size: 11.5px; color: var(--text-sub); line-height: 1.5; padding-left: 10px; position: relative; }
+.ai-step-progress-line::before { content: '·'; position: absolute; left: 0; color: var(--muted, #999); }
 /* 可滚动区域的滚动条常显：默认的浅色 thumb 几乎看不见，内容被裁切在半行处时用户无法得知还能滚动 */
 .ai-steps-body::-webkit-scrollbar,
 .ai-step-detail::-webkit-scrollbar,
@@ -2061,9 +2065,6 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 /* 默认模型卡片：字段节点从暂存区搬进来后的间距与卡内表单保持一致 */
 .mcp-card-body > #primary-model-fields > label { display: block; font-size: 12px; color: var(--text-sub); margin: 10px 0 4px; }
 .mcp-card-body > #primary-model-fields > label:first-child { margin-top: 2px; }
-/* 模型卡内「开启思考」勾选行：复选框 + 说明文字横排 */
-.model-think-row { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 0; font-size: 12px; color: var(--text-sub); cursor: pointer; }
-.model-think-row input[type="checkbox"] { width: auto; flex: none; margin: 2px 0 0; padding: 0; border: none; border-radius: 0; accent-color: var(--primary); cursor: pointer; box-shadow: none; }
 /* 模型卡「保存修改」行：主按钮 + 灰色说明并排 */
 .model-save-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
 .model-save-row .btn { white-space: nowrap; }
@@ -2138,7 +2139,20 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .mcp-test-status.running { color: var(--text-sub); }
 .mcp-test-status.ok { color: #2ea121; }
 .mcp-test-status.fail { color: var(--danger); }
-.mcp-test-out { margin: 10px 0 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto; color: var(--text); user-select: text; cursor: text; }
+.mcp-test-status.info { color: var(--text-sub); }
+.mcp-test-status.warn { color: #a46816; }
+.mcp-test-out { margin: 10px 0 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto; color: var(--text); user-select: text; }
+.mcp-test-meta, .mcp-result-body { margin: 0; font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mcp-test-meta { color: var(--text-sub); }
+.mcp-result-note { margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-sm); border-left: 3px solid var(--border); background: rgba(138, 145, 159, 0.08); }
+.mcp-result-note strong { display: block; margin-bottom: 3px; font-size: 13px; }
+.mcp-result-note.ok { border-left-color: #2ea121; background: rgba(46, 161, 33, 0.06); }
+.mcp-result-note.warn { border-left-color: #b98129; background: rgba(185, 129, 41, 0.08); }
+.mcp-result-note.fail { border-left-color: var(--danger); background: rgba(245, 74, 69, 0.06); }
+.mcp-result-heading { margin: 10px 0 4px; color: var(--text-sub); }
+.mcp-result-raw { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.mcp-result-raw summary { cursor: pointer; color: var(--text-sub); }
+.mcp-result-raw .mcp-result-body { margin-top: 8px; }
 /* 技能广场式管理 */
 .skill-mgr-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 .skill-mgr-head b { font-size: 15px; flex: none; }

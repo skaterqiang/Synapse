@@ -912,7 +912,6 @@ function modelEntryList() {
     model: (s.model || '').trim() || D.model || '',
     baseUrl: (s.apiBaseUrl || '').trim() || D.apiBaseUrl || '',
     apiKey: s.apiKey || '',
-    thinking: s.thinkingEnabled !== false,
   };
   return [primary, ...extraModels()];
 }
@@ -932,8 +931,6 @@ function fillPrimaryModelFields() {
   $('set-model').value = window.kb.normalizeModel ? window.kb.normalizeModel(modelVal) : (modelVal || D.model || '');
   $('set-model').placeholder = D.model || '';
   $('set-baseurl').placeholder = D.apiBaseUrl || '';
-  const thinkEl = $('set-thinking');
-  if (thinkEl) thinkEl.checked = s.thinkingEnabled !== false;
 }
 
 // 把某个“更多模型”提升为默认模型（写入 settings 的标量字段）。
@@ -950,15 +947,12 @@ function promoteModel(id, opts = {}) {
     model: (s.model || '').trim(),
     baseUrl: (s.apiBaseUrl || '').trim(),
     apiKey: s.apiKey || '',
-    thinking: s.thinkingEnabled !== false,
   };
   if (opts.keepOld && (old.model || old.baseUrl)) list.splice(i, 1, old); else list.splice(i, 1);
   s.apiProvider = normalizeProvider(picked.provider);
   s.apiBaseUrl = picked.baseUrl || '';
   s.apiKey = picked.apiKey || '';
   s.model = picked.model || '';
-  // 思考开关随模型走：提升后主模型沿用该卡片的勾选状态（未设置过视为开启）
-  if (picked.thinking === false) s.thinkingEnabled = false; else delete s.thinkingEnabled;
   state.settings.extraModels = list;
   // 被提升的条目 id 已不存在，若正被选中则改指默认模型
   if (state.aiModelId === id) setAiModel('__primary__');
@@ -986,29 +980,6 @@ function renderModelList() {
   renderMineruModelOptions();
 }
 
-// 默认模型卡的「无思考」徽标即时同步：勾选 #set-thinking 变化时不整体重渲染
-// （字段节点在卡片间复用，重渲染会打断输入焦点），只增删卡头徽标
-function syncPrimaryThinkBadge() {
-  const box = $('model-cards');
-  if (!box) return;
-  const card = box.querySelector('.mcp-card');
-  if (!card) return;
-  const keyBadge = card.querySelector('[data-keybadge]');
-  if (!keyBadge) return;
-  const on = $('set-thinking') ? $('set-thinking').checked : true;
-  let thinkBadge = card.querySelector('[data-thinkbadge]');
-  if (!on) {
-    if (!thinkBadge) {
-      thinkBadge = document.createElement('span');
-      thinkBadge.className = 'model-badge';
-      thinkBadge.setAttribute('data-thinkbadge', '');
-      keyBadge.after(thinkBadge);
-    }
-    thinkBadge.textContent = '无思考';
-    thinkBadge.title = '该模型已关闭思考（thinking）';
-  } else if (thinkBadge) thinkBadge.remove();
-}
-
 // entry: modelEntryList() 的一项（primary 为 true 时为默认模型）
 function modelCard(entry, primaryFields) {
   const isPrimary = !!entry.primary;
@@ -1027,7 +998,6 @@ function modelCard(entry, primaryFields) {
     + '<span class="mcp-test-name" data-modelname>' + escapeHtml(entry.model || '(未填模型名)') + '</span>'
     + (isPrimary ? '<span class="model-badge cur">默认</span>' : '')
     + keyTag
-    + (entry.thinking === false ? '<span class="model-badge" data-thinkbadge title="该模型已关闭思考（thinking）">无思考</span>' : '')
     + '<span class="mcp-test-target" data-baseurl title="' + escapeHtml(entry.baseUrl || '') + '">' + escapeHtml(entry.baseUrl || '') + '</span>'
     + '<span class="mcp-head-acts">'
     + (isPrimary
@@ -1119,7 +1089,6 @@ function extraModelForm(m) {
     + '<button type="button" class="btn btn-ghost" data-fetch>获取模型</button>'
     + '</div>'
     + '<p class="modal-tip" data-fetchtip></p>'
-    + '<label class="model-think-row"><input type="checkbox" data-f="thinking" /><span>开启思考（thinking）：思考型模型输出推理过程；取消可显著加快抽取/问答</span></label>'
     + '<div class="model-save-row">'
     + '<button type="button" class="btn btn-primary" data-saveform>保存修改</button>'
     + '<span class="modal-tip">修改上方配置后点「保存修改」写入，保存后立即生效</span>'
@@ -1132,8 +1101,6 @@ function extraModelForm(m) {
   url.value = m.baseUrl || '';
   keyEl.value = m.apiKey || '';
   nameEl.value = m.model || '';
-  const thinkEl = box.querySelector('[data-f="thinking"]');
-  thinkEl.checked = m.thinking !== false;
   const keyTip = box.querySelector('[data-keytip]');
   const syncKeyTip = () => {
     keyTip.textContent = providerNeedsKey(prov.value)
@@ -1173,20 +1140,7 @@ function extraModelForm(m) {
       else if (providerNeedsKey(p)) { keyBadge.className = 'model-badge warn'; keyBadge.textContent = '无 Key'; keyBadge.title = '该 provider 通常需要 API Key'; }
       else { keyBadge.className = 'model-badge'; keyBadge.textContent = '无需 Key'; keyBadge.removeAttribute('title'); }
     }
-    // 思考开关徽章：仅关闭时显示，便于一眼看出哪张卡是「无思考」快模式
-    let thinkBadge = card.querySelector('[data-thinkbadge]');
-    if (e.thinking === false) {
-      if (!thinkBadge) {
-        thinkBadge = document.createElement('span');
-        thinkBadge.className = 'model-badge';
-        thinkBadge.setAttribute('data-thinkbadge', '');
-        keyBadge.after(thinkBadge);
-      }
-      thinkBadge.textContent = '无思考';
-      thinkBadge.title = '该模型已关闭思考（thinking）';
-    } else if (thinkBadge) thinkBadge.remove();
   };
-  thinkEl.addEventListener('change', () => { save({ thinking: thinkEl.checked }); syncCardHead(); });
   prov.addEventListener('change', () => {
     const preset = PROVIDER_PRESETS[prov.value] || PROVIDER_PRESETS[DEFAULT_PROVIDER];
     if (preset.url) url.value = preset.url;
@@ -1206,7 +1160,6 @@ function extraModelForm(m) {
       baseUrl: url.value.trim(),
       apiKey: keyEl.value.trim(),
       model: nameEl.value.trim(),
-      thinking: thinkEl.checked,
     }, { rerender: true });
     toast('已保存模型修改', 2500);
   });
@@ -1341,7 +1294,7 @@ function mcpCard(m) {
     + '<button type="button" class="btn btn-ghost mcp-test-btn" data-test>' + icoSvg('search', 12) + '测试</button>'
     + '<button type="button" class="btn btn-ghost mcp-copy-btn" data-copy hidden>⎘ 复制</button>'
     + '</div>'
-    + '<pre class="mcp-test-out" hidden></pre>'
+    + '<div class="mcp-test-out" hidden></div>'
     + '</div>';
   // 该服务器自身的配置片段（仍为只读 JSON，编辑一律走 JSON 弹窗）
   wrap.querySelector('.mcp-json-view').textContent = JSON.stringify(mcpArrayToObject([m], true), null, 2);
@@ -1377,7 +1330,8 @@ function mcpCard(m) {
   const copyBtn = wrap.querySelector('[data-copy]');
   copyBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
-    const text = wrap.querySelector('.mcp-test-out').textContent || '';
+    const output = wrap.querySelector('.mcp-test-out');
+    const text = output.dataset.copyText || output.textContent || '';
     try {
       await navigator.clipboard.writeText(text);
       toast('测试结果已复制');
@@ -1772,6 +1726,7 @@ function mcpArrayToObject(arr, keepRaw) {
     if (m.command) v.command = m.command;
     if (m.args && m.args.length) v.args = m.args;
     if (m.env && Object.keys(m.env).length) v.env = m.env;
+    if (m.headers && Object.keys(m.headers).length) v.headers = m.headers;
     if (m.url) v.url = m.url;
     if (m.useModelKey) v.useModelKey = true;
     v.enabled = m.enabled !== false;
@@ -1805,6 +1760,15 @@ function mcpObjectToArray(obj) {
       if (/\$\{/.test(auth)) { e.useModelKey = true; e.env = Object.assign({}, e.env, { Authorization: auth }); }
       else e.env = Object.assign({}, e.env, { Authorization: auth });
     } else if (v.useModelKey) e.useModelKey = true;
+    // 其余自定义认证头（如 X-Api-Key）单独保留为 headers，连接时逐头发送；
+    // Authorization 已归一到 env，不重复存，避免两处取值不一致
+    if (v.headers && typeof v.headers === 'object') {
+      const extra = {};
+      for (const [k, hv] of Object.entries(v.headers)) {
+        if (!/^authorization$/i.test(k) && hv) extra[k] = String(hv);
+      }
+      if (Object.keys(extra).length) e.headers = extra;
+    }
     if (v.description) e.desc = String(v.description);
     // 原样保留用户输入的 JSON 对象：展示/再编辑时优先回显原文，连接仍用归一化字段
     e.raw = v;
@@ -1846,6 +1810,64 @@ function formatMcpResult(text) {
   return { body: lines.join('\n'), count: arr.length };
 }
 
+// 连接状态与工具业务结果分开表达；只识别明确的服务端提示，不扫描正文中的泛化错误词。
+function describeMcpTestResult(res) {
+  if (!res || !res.ok) return { tone: 'fail', title: '测试未完成', detail: (res && res.error) || '未知错误' };
+  if (res.toolError) return { tone: 'fail', title: '工具调用未完成', detail: res.toolError };
+  if (!res.usedTool) return { tone: 'info', title: '仅验证连接与工具列表', detail: '本次未执行工具；填写测试内容或参数后可测试工具返回。' };
+  const raw = String(res.result == null ? '' : res.result);
+  const plain = raw.trim().replace(/^[❌✖✗×]\uFE0F?\s*/, '');
+  const schema = (res.toolSchemas || []).find((x) => x.name === res.usedTool);
+  const args = res.usedArgs || {};
+  const emptyParams = ((schema && schema.required) || []).filter((k) =>
+    args[k] == null || (typeof args[k] === 'string' && !args[k].trim()));
+  const paramHint = emptyParams.length ? '本次必填参数 ' + emptyParams.join('、') + ' 为空，请在上方「参数 JSON」中填写真实值后重试。' : '';
+  if (/^(?:Failed to [^:\n]+:\s*)?(?:Unauthorized\b|Forbidden\b|HTTP\s+(?:401|403)\b)/i.test(plain)) {
+    return { tone: 'fail', title: '工具鉴权未通过', detail: '连接已建立，但该工具拒绝访问。请检查该 MCP 服务的凭证与数据访问权限。' };
+  }
+  if (/^(?:Data item|Dataset|Record|File)\b[^\n]*\bnot found\b/i.test(plain)) {
+    const idsHint = res.usedTool === 'get_raw_data'
+      ? '可先用 list_datasets 获取 dataset_id，再用 list_data_items 获取对应的 data_id。'
+      : '请核对查询条件或资源标识后重试。';
+    return { tone: emptyParams.length || res.toolIsError ? 'warn' : 'info', title: '未找到匹配的数据',
+      detail: (paramHint || '服务端未找到本次查询的数据，这不是 MCP 连接失败。') + '\n' + idsHint };
+  }
+  let obj = null;
+  try { obj = JSON.parse(raw); } catch (_) {}
+  const businessError = obj && typeof obj === 'object' && (obj.success === false || obj.error
+    || (obj.status != null && String(obj.status) !== '0' && Number.isFinite(Number(obj.status))));
+  if (res.toolIsError || businessError || /^[❌✖✗×]/.test(raw.trim()) || /^(?:Error\s*:|Failed to\b|INVALID_PARAMS?\b)/i.test(plain)) {
+    return { tone: 'fail', title: '工具执行未成功', detail: paramHint || res.hint || '连接已建立，但服务端报告工具执行异常。请展开原始返回查看原因。' };
+  }
+  if (!raw.trim() || formatMcpResult(raw).count === 0) {
+    return { tone: 'info', title: '未返回数据', detail: '本次工具返回为空；可调整查询条件后重试。这不等同于连接失败。' };
+  }
+  return { tone: 'ok', title: '已收到工具返回', detail: res.hint || '', showBody: true };
+}
+
+// 摘要使用友好文案，原文始终保留在折叠区与复制文本中；所有服务端内容必须转义。
+function formatMcpTestOutput(lines, res, view) {
+  let html = '<pre class="mcp-test-meta">' + escapeHtml(lines.join('\n')) + '</pre>';
+  const copy = [...lines, '', '工具结果：' + view.title];
+  html += '<div class="mcp-result-note ' + view.tone + '"><strong>' + escapeHtml(view.title) + '</strong>'
+    + (view.detail ? '<div>' + escapeHtml(view.detail) + '</div>' : '') + '</div>';
+  if (view.detail) copy.push(view.detail);
+  const raw = res && res.result != null ? String(res.result) : '';
+  if (view.showBody && raw) {
+    const f = formatMcpResult(raw);
+    const heading = '工具返回内容' + (f.count === null ? '' : `（${f.count} 条）`);
+    html += '<div class="mcp-result-heading">' + heading + '</div><pre class="mcp-result-body">' + escapeHtml(f.body) + '</pre>';
+    copy.push('', heading, f.body);
+  }
+  if (raw) {
+    const heading = '查看服务端原始返回（保留原文）';
+    html += '<details class="mcp-result-raw"><summary>' + heading + '</summary>'
+      + '<pre class="mcp-result-body">' + escapeHtml(raw) + '</pre></details>';
+    copy.push('', '—— 服务端原始返回 ——', raw);
+  }
+  return { html, text: copy.join('\n') };
+}
+
 // 卡片级工具入参缓存（测试一次即获得，供下拉与参数提示使用）
 const mcpToolSchemas = {};
 
@@ -1860,7 +1882,8 @@ function applyMcpToolHint(wrap) {
   if (!name || !s) { hint.hidden = true; hint.textContent = ''; return; }
   hint.hidden = false;
   hint.textContent = '必填：' + ((s.required || []).join('、') || '无')
-    + '    全部参数：' + ((s.params || []).join('、') || '无');
+    + '    全部参数：' + ((s.params || []).join('、') || '无')
+    + ((s.required || []).length ? '。预填的空字符串仅为占位，请替换为真实参数。' : '');
   if (!argsEl.value.trim() && (s.required || []).length) {
     const skel = {};
     s.required.forEach((k) => { skel[k] = ''; });
@@ -1888,10 +1911,16 @@ async function runMcpTest(server, btn, status, queryEl, outEl, wrap) {
   const argsRaw = ((wrap && wrap.querySelector('.mcp-args').value) || '').trim();
   let args = null;
   if (argsRaw) {
-    try { args = JSON.parse(argsRaw); }
+    try {
+      args = JSON.parse(argsRaw);
+      if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('参数必须是 JSON 对象');
+    }
     catch (e) {
       out.hidden = false;
       out.textContent = '参数 JSON 解析失败：' + e.message + '\n请填写合法 JSON，例：{"city":"西安"}';
+      out.dataset.copyText = out.textContent;
+      status.className = 'mcp-test-status warn';
+      status.textContent = '参数待修改';
       toast('参数 JSON 格式错误', 3000);
       return;
     }
@@ -1902,6 +1931,14 @@ async function runMcpTest(server, btn, status, queryEl, outEl, wrap) {
   btn.textContent = '测试中…';
   status.className = 'mcp-test-status running';
   status.textContent = '连接中…';
+  out.hidden = true;
+  out.textContent = '';
+  out.dataset.copyText = '';
+  if (wrap) {
+    wrap.querySelectorAll('.img-preview').forEach((x) => x.remove());
+    const copy = wrap.querySelector('[data-copy]');
+    if (copy) copy.hidden = true;
+  }
   const t0 = Date.now();
   let res;
   try {
@@ -1913,8 +1950,9 @@ async function runMcpTest(server, btn, status, queryEl, outEl, wrap) {
   btn.disabled = false;
   btn.textContent = oldText;
   const ok = !!(res && res.ok);
-  status.className = 'mcp-test-status ' + (ok ? 'ok' : 'fail');
-  status.textContent = ok ? '✓ 正常' : '✗ 失败';
+  const view = describeMcpTestResult(res);
+  status.className = 'mcp-test-status ' + view.tone;
+  status.textContent = ok ? '已连接 · ' + view.title : '测试未完成';
 
   const lines = [
     '服务器：' + label + '    类型：' + (server.type || 'stdio'),
@@ -1927,37 +1965,23 @@ async function runMcpTest(server, btn, status, queryEl, outEl, wrap) {
   if (ok) {
     // 工具列表回填下拉，供下一次精确选工具
     if (wrap && res.tools) fillMcpToolSelect(wrap, res.tools, res.toolSchemas);
-    lines.push('结果：成功');
+    lines.push('连接状态：已连接');
     if (res.message) lines.push(res.message);
     lines.push('工具（' + ((res.tools || []).length) + '）：' + ((res.tools || []).join('、') || '无'));
     if (res.usedTool) lines.push('实际调用：' + res.usedTool + '  入参：' + JSON.stringify(res.usedArgs || {}));
-    if (res.result) {
-      const f = formatMcpResult(res.result);
-      lines.push('', '—— 返回内容' + (f.count === null ? '' : `（${f.count} 条）`) + ' ——', f.body);
-      // 工具层报错（如 INVALID_PARAMS）：提示改用显式选工具 + 填参数
-      if (/INVALID_PARAM|调用失败|error|invalid/i.test(String(res.result)) && !toolName) {
-        const names = (res.tools || []).length;
-        lines.push('', `⚠️ 该工具报参数错误。本次是自动猜选工具与入参${names > 1 ? `（该服务共 ${names} 个工具）` : ''}，`
-          + '多工具服务建议在上方下拉里**显式选定工具**，再按提示的必填参数填写「参数 JSON」后重试。');
-      }
-    }
-    if (res.hint) lines.push('', res.hint);
-    // 原始报文放最后；与格式化内容完全相同时不重复展示
-    if (res.result) {
-      const f = formatMcpResult(res.result);
-      if (f.body.trim() !== String(res.result).trim()) lines.push('', '—— 原始返回 ——', String(res.result));
-    }
   } else {
-    lines.push('结果：失败', (res && res.error) || '未知错误');
+    lines.push('连接或工具列表检查未完成');
   }
   out.hidden = false;
-  out.textContent = lines.join('\n');
+  const output = formatMcpTestOutput(lines, res, view);
+  out.innerHTML = output.html;
+  out.dataset.copyText = output.text;
   // 生图/文件类工具返回的图片链接，渲染为可点击预览（而不是裸 URL 文本）
   if (wrap) wrap.querySelectorAll('.img-preview').forEach((x) => x.remove());
   const pv = buildImagePreview(extractImageUrls(ok ? (res && res.result) || '' : ''), '🖼 返回的图片');
   if (pv) out.insertAdjacentElement('afterend', pv);
   if (wrap) { const cb = wrap.querySelector('[data-copy]'); if (cb) cb.hidden = false; }
-  toast(ok ? `「${label}」测试通过（${cost} ms）` : `「${label}」测试失败`, 3000);
+  toast(`「${label}」${ok ? '已连接 · ' : ''}${view.title}（${cost} ms）`, 3000);
 }
 
 // 弹窗作用域：无论添加还是编辑，都只动目标条目，从不全量替换 mcpServers
@@ -2536,11 +2560,6 @@ function saveSettingsFields() {
   if (reasonOn) delete s.reasonEnabled; else s.reasonEnabled = false;
   // 修复 LLM 仲裁（方案3）：默认关 → 勾选落 true，取消勾选删键（主进程按 !!settings.graphRepairLlm 读）
   if ($('set-repair-llm').checked) s.graphRepairLlm = true; else delete s.graphRepairLlm;
-  // 思考开关（模型级，默认模型卡）：默认开 → 勾选即删键回退默认开启，取消勾选落 false
-  // 与 chat.js aiSettings() 的 thinkingEnabled 口径一致，主进程 thinkingWanted 据此下发 think/enable_thinking
-  const thinkEl = $('set-thinking');
-  if (thinkEl) { if (thinkEl.checked) delete s.thinkingEnabled; else s.thinkingEnabled = false; }
-  syncPrimaryThinkBadge(); // 卡头「无思考」徽标随勾选即时更新（默认模型卡不整体重渲染）
   fillReasonStatusTip(reasonOn);
   // 开关变化要立刻反映到知识图谱各页的置灰态（F10）；以主进程 reasonStatus 为准
   // （它同时反映「模块是否可用」与「开关是否打开」，比前端乐观值可靠）
