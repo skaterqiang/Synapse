@@ -667,8 +667,14 @@ SubClassOf(:A ObjectComplementOf(:B))
   check('profileCheckAvailable() 为真', prof.profileCheckAvailable() === true);
   // dl-js-reasoner 融合设计 §9.2.1 T2-b/T2-c：PROFILE_META 新增 DL 条目（键序 RL/DL/QL/EL）。
   check('PROFILE_META 覆盖 RL/DL/QL/EL', J(Object.keys(prof.PROFILE_META)) === '["RL","DL","QL","EL"]', J(Object.keys(prof.PROFILE_META)));
-  check('只有 RL 与 DL 标记为可本地推理', prof.PROFILE_META.RL.localReasoning === true && prof.PROFILE_META.DL.localReasoning === true && prof.PROFILE_META.QL.localReasoning === false && prof.PROFILE_META.EL.localReasoning === false);
+  // RL/DL 完整本地推理；QL/EL 由 protege-js 的 OWL2QLReasoner/OWL2ELReasoner 做最小规则前向链（reasoningKind='minimal'）。
+  check('四个子语言均标记为可本地推理，QL/EL 为最小规则推理',
+    prof.PROFILE_META.RL.localReasoning === true && prof.PROFILE_META.DL.localReasoning === true
+    && prof.PROFILE_META.QL.localReasoning === true && prof.PROFILE_META.EL.localReasoning === true
+    && prof.PROFILE_META.QL.reasoningKind === 'minimal' && prof.PROFILE_META.EL.reasoningKind === 'minimal',
+    J({ ql: prof.PROFILE_META.QL, el: prof.PROFILE_META.EL }));
   check('RL 元信息指明使用 OWL2RLReasoner', /OWL2RLReasoner/.test(prof.PROFILE_META.RL.reasoner));
+  check('QL/EL 元信息指明使用 protege-js 的专用推理机', /OWL2QLReasoner/.test(prof.PROFILE_META.QL.reasoner) && /OWL2ELReasoner/.test(prof.PROFILE_META.EL.reasoner), J({ ql: prof.PROFILE_META.QL.reasoner, el: prof.PROFILE_META.EL.reasoner }));
   check('DL 元信息指明使用 dl-js-reasoner', /dl-js-reasoner/.test(prof.PROFILE_META.DL.reasoner) && prof.PROFILE_META.DL.name === 'OWL 2 DL', J(prof.PROFILE_META.DL));
   const pNull = prof.detectProfile(null);
   check('detectProfile(null) → available:false 且给出中文原因', pNull.available === false && pNull.error === '需要 OWLOntology 实例（含 getAxiomsOfType）', J(pNull.error));

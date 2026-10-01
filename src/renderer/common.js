@@ -2234,7 +2234,9 @@ async function renderProfileMatrix() {
   box.innerHTML = ORDER.filter((k) => meta[k]).map((k) => {
     const m = meta[k];
     const badge = m.localReasoning
-      ? '<i class="pm-badge pm-ok">已内置本地推理</i>'
+      ? (m.reasoningKind === 'minimal'
+        ? '<i class="pm-badge pm-ok">本地最小规则推理</i>'
+        : '<i class="pm-badge pm-ok">已内置本地推理</i>')
       : '<i class="pm-badge">未内置本地推理</i>';
     return `<div class="pm-row"><div class="pm-head"><b>${escapeHtml(m.name || k)}</b>${badge}</div>`
       + `<div class="pm-desc">${escapeHtml(m.desc || '')}</div>`

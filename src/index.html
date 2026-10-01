@@ -781,7 +781,7 @@
               <div class="config-card">
                 <div class="config-card-title">OWL 2 子语言支持情况（RL / DL / QL / EL）</div>
                 <div class="profile-matrix" id="set-profile-matrix"></div>
-                <p class="config-tip">只读信息：EL（大规模分类）与 QL（数据库查询改写）需外部推理机，Synapse 不内置；导入 OWL 时会自动判定子语言归属，结果可在「知识图谱管理 → 推理与校验」查看</p>
+                <p class="config-tip">只读信息：EL（大规模分类）与 QL（查询改写）由 protege-js 内置的 OWL2ELReasoner / OWL2QLReasoner 做最小规则前向链推理（EL 含传递性分类）；完整 QL 查询改写需 OBDA 引擎（如 Ontop），未接。导入 OWL 时会自动判定子语言归属，结果可在「知识图谱管理 → 推理与校验」查看</p>
               </div>
               <p class="modal-tip">本体体系的全局默认与新建模版缺省体系，已移至「知识图谱管理 → 本体定义」页顶部管理（此处不再重复设置）。</p>
             </div>

@@ -68,16 +68,16 @@ const PROFILE_META = {
   },
   QL: {
     id: 'QL', name: 'OWL 2 QL',
-    desc: '面向数据库查询改写的子语言',
-    localReasoning: false,
-    reasoner: '需 OBDA/查询改写引擎（如 Ontop），Synapse 不内置',
+    desc: '面向数据库查询改写的子语言；本地可做最小规则前向链',
+    localReasoning: true, reasoningKind: 'minimal',
+    reasoner: 'OWL2QLReasoner（protege-js，RL 规则子集；完整查询改写需 OBDA 引擎如 Ontop，未接）',
     complexity: 'AC0（查询复杂度）',
   },
   EL: {
     id: 'EL', name: 'OWL 2 EL',
-    desc: '面向大规模分类推理的子语言（SNOMED CT、GO 常用）',
-    localReasoning: false,
-    reasoner: '需 EL 专用分类器（Synapse 暂不接）',
+    desc: '面向大规模分类推理的子语言（SNOMED CT、GO 常用）；本地可做最小规则前向链分类',
+    localReasoning: true, reasoningKind: 'minimal',
+    reasoner: 'OWL2ELReasoner（protege-js，14 条 EL 规则子集含传递性；多项式时间，非完整 tableau）',
     complexity: '多项式时间',
   },
 };
@@ -205,7 +205,7 @@ function explainProfile(result) {
     lines.push('→ 可本地推理：dl-js-reasoner（OWL 2 DL tableau）支持一致性、不可满足类、分类、蕴含与合取查询。');
     lines.push('  ABox 级深度推理（实例类型/属性值）按规模门控，超大规模仅做 TBox 级。');
   } else if (result.recommend) {
-    lines.push(`→ 属于 ${PROFILE_META[result.recommend].name}，但 Synapse 只内置 RL 推理机：${PROFILE_META[result.recommend].reasoner}。`);
+    lines.push(`→ 属于 ${PROFILE_META[result.recommend].name}：${PROFILE_META[result.recommend].reasoner}。`);
   } else {
     lines.push('→ 暂无法本地推理：dl-js-reasoner 未安装，或本体规模/属性层级超出 DL 门控。');
     lines.push('  仍可导入类层级与谓词作为受控词表。');
