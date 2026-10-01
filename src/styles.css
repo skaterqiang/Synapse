@@ -888,23 +888,28 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .settings-view-header {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 10px 16px;
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
 .settings-view-title { font-size: 15px; font-weight: 700; }
 .settings-view-header .toolbar-actions { margin-left: auto; }
+/* Tab 栏恒独占第二行：11 个分类不再因宽度不足折成参差块，关闭按钮也留在标题行右侧 */
+.settings-view-header .settings-tabs { order: 3; flex: 1 1 100%; width: auto; }
 .settings-tabs { display: flex; gap: 4px; background: rgba(0, 0, 0, 0.04); border-radius: var(--radius); padding: 3px; flex-wrap: wrap; width: fit-content; }
 .settings-tabs button {
   border: none;
   background: transparent;
   font-size: 12.5px;
-  padding: 6px 14px;
+  padding: 6px 10px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   color: var(--text-sub);
   transition: var(--transition);
+  flex: 1 1 auto;
+  white-space: nowrap;
+  text-align: center;
 }
 .settings-tabs button:hover { color: var(--text); }
 .settings-tabs button.active {
@@ -914,7 +919,7 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   box-shadow: var(--shadow);
 }
 .settings-view-body { flex: 1; overflow-y: auto; padding: 24px 20px; }
-.settings-form { max-width: 560px; margin: 0 auto; }
+.settings-form { max-width: 640px; margin: 0 auto; }
 /* 仅技能广场放宽内容区：配置表单仍保持适合逐项阅读的紧凑宽度。 */
 .settings-form.is-wide { max-width: 1400px; }
 .settings-form.is-wide .settings-pane[data-pane="skills"] { width: 100%; }
@@ -941,16 +946,31 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
   box-shadow: 0 0 0 3px var(--primary-lighter);
 }
 .settings-pane .modal-tip { margin: 0 0 4px; }
+/* 设置页开关状态行：独立浅色横幅，与普通灰色提示区分，长文本不再糊成一行灰字 */
+#set-reason-status,
+#set-dl-status {
+  display: block;
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft, #f2f4f7);
+  border: 1px solid var(--border-light);
+  line-height: 1.6;
+}
 .settings-pane label.checkbox-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   font-size: 13px;
   color: var(--text);
   margin: 16px 0 4px;
   cursor: pointer;
 }
-.settings-pane label.checkbox-row input { width: auto; }
+.settings-pane label.checkbox-row input { width: auto; margin-top: 2px; }
+.settings-pane label.checkbox-row .cb-text { font-weight: 600; line-height: 1.5; }
+/* 长说明独占一行并缩进对齐选项文字，避免挤在选项右侧形成窄列 */
+.settings-pane label.checkbox-row .radio-hint { flex: 0 0 100%; padding-left: 24px; }
 .settings-view-actions {
   display: flex;
   align-items: center;
@@ -1066,6 +1086,14 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 }
 /* 单选项右侧的灰色说明（领域选择弹窗）：跟在选项文字后，不抢主文本的注意 */
 .radio-hint { flex: 1; min-width: 0; font-size: 11.5px; font-style: normal; color: var(--text-sub); line-height: 1.5; }
+/* 推理设置页：OWL 2 子语言支持矩阵（只读小卡片，逐行展示 RL/DL/QL/EL） */
+.profile-matrix { display: flex; flex-direction: column; gap: 8px; }
+.profile-matrix .pm-row { padding: 8px 10px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); background: var(--bg-soft, #f7f8fa); }
+.profile-matrix .pm-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); }
+.profile-matrix .pm-badge { font-size: 11px; font-style: normal; padding: 1px 7px; border-radius: 999px; background: rgba(0, 0, 0, 0.06); color: var(--text-sub); white-space: nowrap; }
+.profile-matrix .pm-badge.pm-ok { background: var(--primary-lighter, #e6f4ec); color: var(--primary, #1a7f4b); }
+.profile-matrix .pm-desc { margin-top: 3px; font-size: 12px; color: var(--text-sub); line-height: 1.5; }
+.profile-matrix .pm-meta { margin-top: 3px; font-size: 11.5px; color: var(--text-muted, #98a0a8); line-height: 1.5; }
 /* 解析方式行的短提示不换行，避免「仅支持 PDF」折成两行 */
 .mineru-mode-row .radio-hint { flex: 0 0 auto; white-space: nowrap; }
 /* ===== 提取知识图谱 · AI 自主判定进度流（卡片化） ===== */
@@ -2065,6 +2093,9 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 /* 默认模型卡片：字段节点从暂存区搬进来后的间距与卡内表单保持一致 */
 .mcp-card-body > #primary-model-fields > label { display: block; font-size: 12px; color: var(--text-sub); margin: 10px 0 4px; }
 .mcp-card-body > #primary-model-fields > label:first-child { margin-top: 2px; }
+/* 模型卡内「开启思考」勾选行：复选框 + 说明文字横排 */
+.model-think-row { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 0; font-size: 12px; color: var(--text-sub); cursor: pointer; }
+.model-think-row input[type="checkbox"] { width: auto; flex: none; margin: 2px 0 0; padding: 0; border: none; border-radius: 0; accent-color: var(--primary); cursor: pointer; box-shadow: none; }
 /* 模型卡「保存修改」行：主按钮 + 灰色说明并排 */
 .model-save-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
 .model-save-row .btn { white-space: nowrap; }
@@ -3020,6 +3051,28 @@ mark { background: #ffe58f; border-radius: 2px; padding: 0 1px; }
 .mini-tag.kg-feat-functional { background:rgba(16,185,129,.12); color:#10b981; }
 .mini-tag.kg-feat-inverseFunctional { background:rgba(245,158,11,.12); color:#f59e0b; }
 .mini-tag.kg-feat-asymmetric { background:rgba(239,68,68,.12); color:#ef4444; }
+/* DL 深度推理区块（dl-js-reasoner 融合设计 §6.1）：复用 .kg-diagnostic 外壳，
+   只补探针表单/答案表/层级列表三类新元素，配色沿用既有的 ok(#059669)/bad(#ef4444)。 */
+.kg-dl-ok { color:#059669; font-weight:600; }
+.kg-dl-bad { color:#ef4444; font-weight:600; }
+.kg-dl-probe { margin-top:10px; border-top:1px dashed var(--border); padding-top:8px; }
+.kg-dl-probe .kg-reason-section-head { margin:8px 0 4px; }
+.kg-dl-probe h4 { margin:1px 0 2px; font-size:13px; line-height:1.35; }
+.kg-dl-probe .kg-reason-section-head p { font-size:11.5px; }
+.kg-dl-form { display:flex; flex-wrap:wrap; align-items:flex-end; gap:8px 12px; margin:6px 0; }
+.kg-dl-form label { display:inline-flex; flex-direction:column; gap:3px; font-size:11.5px; color:var(--text-sub); }
+.kg-dl-form select, .kg-dl-form input { min-width:150px; height:28px; padding:3px 8px; border:1px solid var(--border); border-radius:6px; background:var(--panel); color:var(--text); font:inherit; font-size:12px; }
+.kg-dl-form .btn { height:28px; padding:0 12px; }
+.kg-dl-hier { display:flex; flex-direction:column; gap:1px; max-height:260px; overflow-y:auto; margin:6px 0; padding:6px 8px; border:1px solid var(--border); border-radius:8px; background:rgba(0,0,0,.02); }
+.kg-dl-table { width:100%; border-collapse:collapse; font-size:12px; margin:6px 0; }
+.kg-dl-table th, .kg-dl-table td { padding:5px 8px; border-bottom:1px solid var(--border); text-align:left; }
+.kg-dl-table thead th { position:sticky; top:0; background:var(--panel); color:var(--text-sub); font-weight:600; font-size:11px; }
+.kg-dl-table tbody tr:hover { background:rgba(0,0,0,.02); }
+/* 不可满足类的可点击定位（§6.1）：长在 .kg-dl-bad 里，故继承红色，只补「可点」的视觉线索。
+   用 button 而非 a：它不导航 URL，而是切到图谱 tab 并居中节点。 */
+.kg-dl-link { padding:0; border:0; background:none; color:inherit; font:inherit; font-weight:inherit; cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px; }
+.kg-dl-link:hover { text-decoration:underline; }
+.kg-dl-link:focus-visible { outline:2px solid var(--primary); outline-offset:1px; border-radius:3px; }
 /* 推理与校验：概览 → 问题 → 诊断，避免所有信息以同等权重堆叠。 */
 .kg-reason-dashboard, .kg-reason-issues-section, .kg-reason-diagnostics { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px 18px; margin-bottom:14px; }
 .kg-reason-dashboard-head, .kg-issues-head, .kg-reason-section-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }

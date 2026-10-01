@@ -268,6 +268,82 @@ const TRASH_ID = '__trash__';
   settingsMod.saveSettings({ ...settingsMod.getSettings(), probeKey: 'probeVal' });
   check('loadStore 带回当前 settings', store.loadStore().settings.probeKey === 'probeVal');
 
+  // ---------- 15. frontmatter 换行风格容错（CRLF / CR-only）----------
+  // ⚠️ 回归守卫：parseNoteFile 曾用 `text.startsWith('---\n')` + `indexOf('\n---')` 两步硬编码 LF。
+  //    CRLF 文件第一步就失配 → 整段 frontmatter 被当成正文 → id/title/tags/pinned/createdAt 全空，
+  //    loadNotesFromDisk 再用兜底 id（'file:'+相对路径）与文件名标题补齐，于是**下一次存盘**就会
+  //    把真 id 覆盖掉、清空标签与置顶、createdAt 归零，并把原 frontmatter 复制进正文。
+  //    实测后果：仓库里被 git 跟踪的欢迎笔记 1184 → 1314 字节，元数据全毁且不可逆。
+  //    CRLF 的两个真实来源：① git core.autocrlf=true 的 Windows 检出；② 用户用记事本另存笔记。
+  section('frontmatter 换行风格容错（CRLF / CR-only）');
+  // 本节自带夹具，先清空笔记根（保留常驻 trash/），避免受前面各节遗留状态影响
+  for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+    if (e.name === TRASH) continue;
+    fs.rmSync(path.join(root, e.name), { recursive: true, force: true });
+  }
+  const FM = [
+    '---',
+    'id: crlf1',
+    'title: "换行容错笔记"',
+    'tags: ["甲","乙"]',
+    'pinned: 1',
+    'favorited: 1',
+    'createdAt: 1788788857371',
+    'updatedAt: 1788788857371',
+    '---',
+    '',
+    '正文第一段。',
+    '',
+    '正文第二段。',
+  ];
+  const EOL_VARIANTS = [
+    ['LF（应用自己写盘的格式）', FM.join('\n')],
+    ['CRLF（git autocrlf 检出 / 记事本另存）', FM.join('\r\n')],
+    ['CR-only（老 Mac）', FM.join('\r')],
+    ['混合：frontmatter CRLF + 正文 LF', FM.slice(0, 9).join('\r\n') + '\r\n' + FM.slice(9).join('\n')],
+    ['--- 行带尾随空格', FM.join('\n').replace(/^---\n/, '---   \n')],
+    ['frontmatter 后只有单换行（手写旧文件）', FM.join('\n').replace('---\n\n正文第一段', '---\n正文第一段')],
+  ];
+  const crlfFile = path.join(root, '换行容错笔记.md');
+  for (const [label, text] of EOL_VARIANTS) {
+    fs.writeFileSync(crlfFile, text, 'utf8');
+    const n = store.getNotes().find((x) => x.id === 'crlf1');
+    check(`${label}：id 正确解析（不退化成 file: 兜底键）`, !!n, JSON.stringify(store.getNotes().map((x) => x.id)));
+    check(`${label}：标签/置顶/收藏/时间全部还原`, !!n && n.tags.join(',') === '甲,乙' && n.pinned === true && n.favorited === true && n.createdAt === 1788788857371, JSON.stringify(n && { tags: n.tags, pinned: n.pinned, favorited: n.favorited, createdAt: n.createdAt }));
+    check(`${label}：frontmatter 未被当成正文`, !!n && !String(n.content).includes('crlf1') && String(n.content).startsWith('正文第一段'), JSON.stringify(n && String(n.content).slice(0, 40)));
+  }
+
+  // 存盘往返：CRLF 文件经一次 saveStore 后，id 必须仍是真 id（这是数据损坏的关键判据）
+  fs.writeFileSync(crlfFile, FM.join('\r\n'), 'utf8');
+  for (let round = 1; round <= 3; round++) {
+    const before = store.getNotes().find((x) => x.id === 'crlf1');
+    store.saveStore({ folders: [], notes: [before] });
+    const after = store.getNotes().find((x) => x.id === 'crlf1');
+    check(`CRLF 存/读第 ${round} 轮：id 未被 'file:' 兜底键顶掉`, !!after, JSON.stringify(store.getNotes().map((x) => x.id)));
+    check(`CRLF 存/读第 ${round} 轮：标签与置顶未丢失`, !!after && after.tags.join(',') === '甲,乙' && after.pinned === true && after.createdAt === 1788788857371, JSON.stringify(after && { tags: after.tags, pinned: after.pinned, createdAt: after.createdAt }));
+    check(`CRLF 存/读第 ${round} 轮：正文未累积前导空行、未混入 frontmatter`, !!after && after.content.startsWith('正文第一段') && !after.content.includes('crlf1'), JSON.stringify(after && String(after.content).slice(0, 30)));
+  }
+
+  // 正文里的 markdown 分隔线不能被误当 frontmatter 结束符（惰性匹配取第一个行首 ---）
+  for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+    if (e.name === TRASH) continue;
+    fs.rmSync(path.join(root, e.name), { recursive: true, force: true });
+  }
+  const tricky = ['---', 'id: hr1', 'title: "正文含分隔线"', 'tags: []', 'pinned: 0', 'favorited: 0', 'createdAt: 1', 'updatedAt: 2', '---', '', '第一段', '', '---', '', '第二段'].join('\r\n');
+  fs.writeFileSync(path.join(root, '正文含分隔线.md'), tricky, 'utf8');
+  const hr = store.getNotes().find((x) => x.id === 'hr1');
+  check('正文中的 markdown 分隔线不被误当结束符', !!hr && hr.title === '正文含分隔线' && hr.createdAt === 1, JSON.stringify(hr && { title: hr.title, createdAt: hr.createdAt }));
+  check('正文两段与其中的分隔线均完整保留', !!hr && hr.content.startsWith('第一段') && hr.content.includes('第二段') && /(?:^|\r\n|\n|\r)---(?:\r\n|\n|\r)/.test(hr.content) && !hr.content.includes('id: hr1'), JSON.stringify(hr && hr.content));
+
+  // 无 frontmatter 的纯正文文件：仍走 file: 兜底键，正文原样返回
+  for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+    if (e.name === TRASH) continue;
+    fs.rmSync(path.join(root, e.name), { recursive: true, force: true });
+  }
+  fs.writeFileSync(path.join(root, '纯正文.md'), '# 只有正文\n\n没有 frontmatter。', 'utf8');
+  const bare = store.getNotes().find((x) => String(x.id).startsWith('file:'));
+  check('无 frontmatter 文件回退 file: 键且正文原样', !!bare && bare.content === '# 只有正文\n\n没有 frontmatter。', JSON.stringify(bare && { id: bare.id, content: bare.content }));
+
   summary();
 })().catch((err) => {
   console.error('测试执行异常：', err);

@@ -27,6 +27,16 @@ const NUM_SETTING_FIELDS = {
   extractSkillTimeoutSec: ['set-extracttimeout', 5, 600], // mode:script 子进程超时（秒），默认 120
   corpusChunkChars: ['set-corpuschunk', 1000, 40000],    // 分块大小，默认 6000（= graph BATCH_CHARS）
   corpusMaxFiles: ['set-corpumaxfiles', 100, 20000],     // 语料库文件数上限，超出按 generatedAt 淘汰最旧
+  // DL 深度推理（dl-js-reasoner 融合设计 §12 设置页）：5 项规模/产出上限，
+  // 键名 → dl.js:DL_LIMITS 的 5 个字段（maxClasses/aboxBudget/transitiveIndividualCap/
+  // maxDlAxioms/maxInferredEdges），由主进程 graph.js:dlLimitsFromSettings() 翻译。
+  // ⚠️ 下面的 min/max 必须与主进程 dlLimitsFromSettings() 的 num(...,min,max) 逐字一致，
+  //    否则「设置里能填但主进程静默钳回」。控件在 设置→推理（RL/DL 同页）。
+  dlMaxClasses: ['set-dl-maxclasses', 10, 20000],        // TBox 类数上限，默认 2000
+  dlAboxBudget: ['set-dl-aboxbudget', 0, 100000000],     // 个体数×类数 预算，默认 20000
+  dlTransitiveCap: ['set-dl-transcap', 0, 100000],       // 传递属性个体数上限，默认 80
+  dlMaxAxioms: ['set-dl-maxaxioms', 0, 100000],          // 参与合成的 dlAxioms 条数上限，默认 600
+  dlMaxEdges: ['set-dl-maxedges', 0, 1000000],           // 单次 ABox 推理边上限，默认 5000
 };
 
 // ---------- 模型服务商 ----------
@@ -96,6 +106,11 @@ const INFERRED_VIA_NAMES = {
   subproperty: '子谓词继承',
   'equivalent-property': '等价谓词',
   unknown: '推理器得出（未记录推导路径）',
+  // DL tableau（dl-js-reasoner 融合设计 §4.5）：reason/dl.js 的 reasonABox 产出。
+  // dl-tableau = ABox 级属性值推理（getObjectPropertyValues 的新增对）。
+  'dl-tableau': 'DL tableau 推理（dl-js-reasoner · OWL 2 DL）',
+  'dl-classify': 'DL 类分类（dl-js-reasoner）',
+  'dl-realise': 'DL 实例化（dl-js-reasoner）',
 };
 function inferredViaName(via) {
   if (!via) return '';

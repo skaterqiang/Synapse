@@ -525,7 +525,7 @@
             <button data-tab="parse"><svg class="ico" width="14" height="14"><use href="#i-parse"/></svg>文档解析</button>
             <button data-tab="pipeline"><svg class="ico" width="14" height="14"><use href="#i-parse"/></svg>语料流水线</button>
             <button data-tab="ask"><svg class="ico" width="14" height="14"><use href="#i-ask"/></svg>问答</button>
-            <button data-tab="graph"><svg class="ico" width="14" height="14"><use href="#i-kg"/></svg>图谱</button>
+            <button data-tab="dl"><svg class="ico" width="14" height="14"><use href="#i-ontology"/></svg>推理</button>
             <button data-tab="editor"><svg class="ico" width="14" height="14"><use href="#i-editor"/></svg>编辑器</button>
             <button data-tab="mcp"><svg class="ico" width="14" height="14"><use href="#i-mcp"/></svg>MCP</button>
             <button data-tab="skills"><svg class="ico" width="14" height="14"><use href="#i-skill"/></svg>技能</button>
@@ -565,6 +565,7 @@
                     <button class="btn btn-ghost" id="btn-fetch-models">获取模型</button>
                   </div>
                   <p class="modal-tip" id="model-fetch-tip">点「获取模型」拉取可用模型；点输入框右侧 ▾ 下拉选择全部已获取模型</p>
+                  <label class="model-think-row"><input type="checkbox" id="set-thinking" /><span>开启思考（thinking）：思考型模型输出推理过程；取消可显著加快抽取/问答（Ollama 走原生 /api/chat 生效，百炼下发 enable_thinking:false）</span></label>
                   <div class="model-save-row">
                     <button type="button" class="btn btn-primary" id="btn-save-primary-model">保存修改</button>
                     <span class="modal-tip">修改上方配置后点「保存修改」写入，保存后立即生效</span>
@@ -641,9 +642,9 @@
               <div class="config-card">
                 <div class="config-card-title">流水线总开关</div>
                 <span class="settings-autosave" id="settings-autosave-pipeline" aria-live="polite"></span>
-                <label class="checkbox-row"><input type="checkbox" id="set-pipeline" /> 启用可组合语料流水线<i class="radio-hint">开启后，解析与图谱抽取改走可组合的语料流水线（配方 + 装饰器链）。关闭时行为与当前版本完全一致</i></label>
-                <label class="checkbox-row"><input type="checkbox" id="set-corpuspersist" checked /> 落盘为语料库<i class="radio-hint">把解析产物落盘为 corpus/**/*.md（关闭则只在内存中流转，不留语料库）</i></label>
-                <label class="checkbox-row"><input type="checkbox" id="set-corpusreuse" /> 复用未过期语料<i class="radio-hint">已有未过期语料时直接复用、跳过解析（改了技能指令后想重抽，请保持关闭）</i></label>
+                <label class="checkbox-row"><input type="checkbox" id="set-pipeline" /><span class="cb-text">启用可组合语料流水线</span><i class="radio-hint">开启后，解析与图谱抽取改走可组合的语料流水线（配方 + 装饰器链）。关闭时行为与当前版本完全一致</i></label>
+                <label class="checkbox-row"><input type="checkbox" id="set-corpuspersist" checked /><span class="cb-text">落盘为语料库</span><i class="radio-hint">把解析产物落盘为 corpus/**/*.md（关闭则只在内存中流转，不留语料库）</i></label>
+                <label class="checkbox-row"><input type="checkbox" id="set-corpusreuse" /><span class="cb-text">复用未过期语料</span><i class="radio-hint">已有未过期语料时直接复用、跳过解析（改了技能指令后想重抽，请保持关闭）</i></label>
                 <p class="config-tip">corpus/ 语料库是可重生成的机器产物，不含在备份 / 迁移范围内；换机或换数据根后，需从「原始文件」重新抽取。</p>
               </div>
               <div class="config-card">
@@ -680,7 +681,7 @@
                   <label class="radio-row"><input type="radio" name="set-minerumode" id="set-minerumode-mineru" value="mineru" /> MinerU 解析<i class="radio-hint">仅支持 PDF</i></label>
                 </div>
                 <p class="config-tip">内置解析：快速，直接支持常见文本型与常规 PDF/Office，可用技能扩展；MinerU：仅支持 PDF，质量更高，失败自动回退</p>
-                <label class="checkbox-row"><input type="checkbox" id="set-skillparse" checked /> 技能解析（内置解析的技能扩展）<i class="radio-hint">已启用技能（SKILL.md 指令）+ 模型直读文档产出 Markdown：可解析图片等内置解析不支持的格式，并按技能指令重组内容；失败自动回退内置解析</i></label>
+                <label class="checkbox-row"><input type="checkbox" id="set-skillparse" checked /><span class="cb-text">技能解析（内置解析的技能扩展）</span><i class="radio-hint">已启用技能（SKILL.md 指令）+ 模型直读文档产出 Markdown：可解析图片等内置解析不支持的格式，并按技能指令重组内容；失败自动回退内置解析</i></label>
               </div>
 
               <!-- MinerU 配置卡片（仅 MinerU 模式显示） -->
@@ -731,17 +732,56 @@
               <label>日志展示行数（log.md 尾部）</label>
               <input type="number" id="set-loglines" min="1" max="500" placeholder="默认 30" />
             </div>
-            <div class="settings-pane" data-pane="graph" hidden>
+            <!-- 推理设置：RL 与 DL 同页（pane 键保留 dl，兼容「修改 DL 配置」深链与测试硬契约） -->
+            <div class="settings-pane" data-pane="dl" hidden>
               <div class="config-card">
-                <div class="config-card-title">OWL 2 RL 推理</div>
-                <label class="checkbox-row"><input type="checkbox" id="set-reason-enabled" checked /> 启用本地推理<i class="radio-hint">关闭后所有推理功能停用：提取时自动推理、影响面扩展、推理 Tab、问答的影响面 stage 均置灰；已生成的推理边保留但不再更新</i></label>
+                <div class="config-card-title">OWL 2 RL 推理（前向链）</div>
+                <label class="checkbox-row"><input type="checkbox" id="set-reason-enabled" checked /><span class="cb-text">启用本地推理</span><i class="radio-hint">关闭后所有推理功能停用：提取时自动推理、影响面扩展、推理 Tab、问答的影响面 stage 均置灰；已生成的推理边保留但不再更新</i></label>
                 <label class="config-label">推理超时（秒）</label>
                 <div class="setting-row">
                   <input type="number" id="set-reason-timeout" min="5" max="120" placeholder="默认 30" style="max-width: 180px;" />
                 </div>
                 <p class="config-tip">超时即放弃本轮推理并保留原始图谱（推理是增强项，失败不丢抽取结果）；大图或慢机器可调大，范围 5–120</p>
                 <p class="modal-tip" id="set-reason-status"></p>
-                <label class="checkbox-row"><input type="checkbox" id="set-repair-llm" /> 修复时允许 LLM 语义仲裁<i class="radio-hint">冲突修复默认只用确定性规则（降级谓词/删边）；开启后对「降级边 vs 改节点类型」多解冲突会征询模型选择更贴切的类，失败时静默退回确定性方案。默认关闭，保证修复结果可预期</i></label>
+                <label class="checkbox-row"><input type="checkbox" id="set-repair-llm" /><span class="cb-text">修复时允许 LLM 语义仲裁</span><i class="radio-hint">冲突修复默认只用确定性规则（降级谓词/删边）；开启后对「降级边 vs 改节点类型」多解冲突会征询模型选择更贴切的类，失败时静默退回确定性方案。默认关闭，保证修复结果可预期</i></label>
+              </div>
+              <!-- DL 深度推理配置（dl-js-reasoner 融合设计 §12：设置页 UI）
+                   ⚠️ 数值项的 min/max/placeholder 必须与 src/renderer/constants.js 的 NUM_SETTING_FIELDS
+                      以及主进程 graph.js 的 dlLimitsFromSettings() 逐字一致，
+                      否则会出现「设置里能填但主进程静默钳回」。 -->
+              <div class="config-card">
+                <div class="config-card-title">DL 深度推理（OWL 2 DL）</div>
+                <span class="settings-autosave" id="settings-autosave-dl" aria-live="polite"></span>
+                <label class="checkbox-row"><input type="checkbox" id="set-dl-enabled" checked /><span class="cb-text">启用 DL 深度推理</span><i class="radio-hint">在 OWL 2 RL 前向链之外，额外用 dl-js-reasoner（HermiT 的 JS 移植）跑完整 OWL 2 DL tableau：一致性判定、不可满足类、类层级分类、合取查询与实例类型推理。仅对 OWL 导入的完整 DL 体系生效；内置体系（bfo-lite 等）不受影响。关闭后 RL 推理照常工作，DL 区块与探针置灰</i></label>
+                <label class="checkbox-row"><input type="checkbox" id="set-dl-deep" /><span class="cb-text">默认执行 ABox 级深度扫描</span><i class="radio-hint">关闭时 DL 只做 TBox 级判定（一致性/不可满足类/类层级，毫秒级），不产生实例级推理边；开启后「立即推理」与提取后的自动推理都会做逐个体×谓词的属性值推理，产出 dl-tableau 推理边。大图上开销显著更高，建议保持关闭，需要时到「知识图谱 → 推理」页点「运行深度推理」单次触发</i></label>
+                <p class="modal-tip" id="set-dl-status"></p>
+              </div>
+              <div class="config-card">
+                <div class="config-card-title">规模门控（防止大图卡死）</div>
+                <label class="config-label">类数上限（TBox）</label>
+                <div class="setting-row"><input type="number" id="set-dl-maxclasses" min="10" max="20000" step="10" placeholder="默认 2000" style="max-width: 180px;" /></div>
+                <p class="config-tip">体系的类（概念）数超过该上限时，整个 DL 推理跳过（原因码 dl-too-large）。实测 500 类纯 TBox 一致性判定 0 ms，默认 2000 已留足余量</p>
+                <label class="config-label">ABox 预算（个体数 × 类数）</label>
+                <div class="setting-row"><input type="number" id="set-dl-aboxbudget" min="0" max="100000000" step="1000" placeholder="默认 20000" style="max-width: 180px;" /></div>
+                <p class="config-tip">图谱节点数 × 类数超过该预算时，只做 TBox 级推理、不合成 ABox（原因码 dl-abox-budget），合取查询与实例类型推理随之不可用。默认 20000 对应实测 50 个体 × 100 类 ≈ 517 ms 的安全区；填 0 表示彻底禁用 ABox</p>
+                <label class="config-label">传递属性个体数上限</label>
+                <div class="setting-row"><input type="number" id="set-dl-transcap" min="0" max="100000" step="10" placeholder="默认 80" style="max-width: 180px;" /></div>
+                <p class="config-tip">体系含传递属性或属性链时，ABox 推理是最坏情况（实测 100 类 × 200 个体 → 8 s）。个体数超过该上限即降级为只做 TBox。填 0 表示「只要有传递属性就不做 ABox」</p>
+              </div>
+              <div class="config-card">
+                <div class="config-card-title">产出上限</div>
+                <label class="config-label">参与合成的 DL 公理条数上限</label>
+                <div class="setting-row"><input type="number" id="set-dl-maxaxioms" min="0" max="100000" step="50" placeholder="默认 600" style="max-width: 180px;" /></div>
+                <p class="config-tip">OWL 导入体系里 dlAxioms（等价类/不相交并/基数限制/属性链等复杂公理）参与 tableau 合成的条数上限，超出部分直接丢弃。与 OWL 导入侧的收录上限同口径；调大可让更完整的公理参与推理，但单次推理耗时随之上升</p>
+                <label class="config-label">单次 ABox 推理边上限</label>
+                <div class="setting-row"><input type="number" id="set-dl-maxedges" min="0" max="1000000" step="100" placeholder="默认 5000" style="max-width: 180px;" /></div>
+                <p class="config-tip">一次深度推理最多回收多少条 DL 推理边（保护本地数据库不被撑爆）。填 0 表示一条都不落库（DL 阶段仍会执行，一致性判定照常）。此项只影响「深度扫描」，不影响 TBox 判定</p>
+                <p class="config-tip">以上五项留空即使用默认值；填写后会被钳制到标注范围内。运行时实际生效值可在「知识图谱 → 推理 → DL 深度推理」区块查看。</p>
+              </div>
+              <div class="config-card">
+                <div class="config-card-title">OWL 2 子语言支持情况（RL / DL / QL / EL）</div>
+                <div class="profile-matrix" id="set-profile-matrix"></div>
+                <p class="config-tip">只读信息：EL（大规模分类）与 QL（数据库查询改写）需外部推理机，Synapse 不内置；导入 OWL 时会自动判定子语言归属，结果可在「知识图谱管理 → 推理与校验」查看</p>
               </div>
               <p class="modal-tip">本体体系的全局默认与新建模版缺省体系，已移至「知识图谱管理 → 本体定义」页顶部管理（此处不再重复设置）。</p>
             </div>

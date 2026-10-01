@@ -218,6 +218,11 @@ contextBridge.exposeInMainWorld('kb', {
   graphDeleteNode: (nodeId) => ipcRenderer.invoke('graph:deleteNode', nodeId),
   graphImpactClosure: (nodeId, opts) => ipcRenderer.invoke('graph:impactClosure', { nodeId, opts }),
   graphPredicateFeatures: (profileId) => ipcRenderer.invoke('graph:predicateFeatures', profileId),
+  // DL 深度推理（dl-js-reasoner 融合设计 §4.6：三处同步登记之二）——均为只读
+  reasonProfileMeta: () => ipcRenderer.invoke('reason:profileMeta'),
+  graphDlQuery: (profileId, spec) => ipcRenderer.invoke('graph:dlQuery', profileId, spec),
+  graphDlEntail: (profileId, axiom) => ipcRenderer.invoke('graph:dlEntail', profileId, axiom),
+  graphDlHierarchy: (profileId) => ipcRenderer.invoke('graph:dlHierarchy', profileId),
   graphPreviewOwl: (body) => ipcRenderer.invoke('graph:previewOwl', body),
   onKgFacts: (callback) => {
     const handler = (_e, data) => callback(data);

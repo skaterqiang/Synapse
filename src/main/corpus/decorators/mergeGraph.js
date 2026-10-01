@@ -113,12 +113,19 @@ class GraphMergeDecorator extends CorpusDecorator {
     if (doReason) {
       if (c.onStage) { try { c.onStage('reason', 'running', '本地物化推理中（OWL 2 RL 前向链）…'); } catch (_) {} }
       try {
+        // DL 生效配置（dl-js-reasoner 融合设计 §12）：语料流水线与 graph.js:extractGraph
+        // 必须同口径，否则「同样一批内容，走图谱页和走语料库，DL 结论不一致」。
+        const dlLimits = graph.dlLimitsFromSettings(settings);
         const mat = await R.infer.materializeGraph(
           { nodes: mergedNodeList, edges: rawEdgeList },
           onto,
           {
             timeoutMs: graph.reasonTimeoutSec(settings) * 1000,
             signal: c.signal,
+            dlEnabled: (settings && settings.dlEnabled === false) ? false : undefined,
+            deep: graph.dlDeepDefault(settings),
+            maxDlEdges: dlLimits.maxInferredEdges,
+            limits: dlLimits,
             onProgress: (info) => { if (c.onStage && info && info.phase) { try { c.onStage('reason', 'running', info.phase); } catch (_) {} } },
           }
         );

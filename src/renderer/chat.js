@@ -1144,9 +1144,13 @@ function currentAiModel() {
 function aiSettings() {
   const base = state.settings || {};
   const m = currentAiModel();
-  if (!m || m.primary) return base;
+  if (!m) return base;
+  // 思考开关按「当前所选模型卡」生效（模型级设置）：主模型读 settings.thinkingEnabled，
+  // 非主模型读该卡片自身的 thinking 勾选；主进程 thinkingWanted 据此下发 think/enable_thinking
+  const thinking = m.thinking !== false;
+  if (m.primary) return { ...base, thinkingEnabled: thinking };
   const key = m.apiKey || (providerNeedsKey(m.provider) ? (base.apiKey || '') : '');
-  return { ...base, apiProvider: m.provider, apiBaseUrl: m.baseUrl || base.apiBaseUrl, apiKey: key, model: m.model };
+  return { ...base, apiProvider: m.provider, apiBaseUrl: m.baseUrl || base.apiBaseUrl, apiKey: key, model: m.model, thinkingEnabled: thinking };
 }
 
 // 按钮回显当前模型名

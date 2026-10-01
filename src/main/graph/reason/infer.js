@@ -14,6 +14,11 @@ const { OWL2RLReasoner } = require('@skaterqiang/protege-js/src/inference/OWL2RL
 const { ReasonerQueries } = require('@skaterqiang/protege-js/src/inference/ReasonerQueries');
 const bridge = require('./bridge');
 
+// DL 适配层（dl-js-reasoner 融合设计 §4.4）：惰性 require，缺失时静默降级（I5/D6）。
+let dl = null;
+let dlLoadError = '';
+try { dl = require('./dl'); } catch (err) { dlLoadError = String((err && err.message) || err); }
+
 /**
  * 规则集本体（用于重扫取回完整冲突消息，见 recoverInconsistencyMessages）。
  * 取不到时降级为 reasoner 自带的残缺记录，不影响主流程。
@@ -88,7 +93,7 @@ function recoverInconsistencyMessages(store, reasoner) {
 }
 
 /**
- * 对图谱跑一次 OWL 2 RL 物化。
+ * 对图谱跑一次 OWL 2 RL 物化（原 materializeGraph 主体，设计 §4.4 双路径拆分）。
  *
  * @param {{nodes:Array, edges:Array}} graph
  * @param {object} profile  已 resolveOntology 的体系
@@ -102,7 +107,7 @@ function recoverInconsistencyMessages(store, reasoner) {
  *   inferredEdges:Array, inconsistencies:Array, stats:object,
  *   queries:object|null, ctx:object|null, skipped:boolean, skipReason?:string }>}
  */
-async function materializeGraph(graph, profile, opts = {}) {
+async function materializeRL(graph, profile, opts = {}) {
   const t0 = Date.now();
   const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
   const report = (phase, pct) => { if (onProgress) { try { onProgress({ phase, pct }); } catch (_) {} } };
@@ -215,6 +220,159 @@ async function materializeGraph(graph, profile, opts = {}) {
       elapsedMs,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// materializeGraph — RL + DL 双路径（dl-js-reasoner 融合设计 §4.4）
+//
+// 仲裁（Q-DL-6）：RL 优先；DL 边仅在 edgeKey 不与 RL 边/原始边重复时补充
+// （mergeInferredEdges 天然去重，这里再前置一道，避免 stats 虚高）。
+// DL 触发条件：profile.dlCapable（§4.3 由 owlImport 裁决）&& dl 模块可用 &&
+// gateScale 门控通过。ABox 级深度推理需 opts.deep 显式触发（D4）。
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {{nodes:Array, edges:Array}} graph
+ * @param {object} profile
+ * @param {object} [opts]  materializeRL 的全部 opts，另支持：
+ * @param {boolean} [opts.deep=false]   显式触发 ABox 级 DL 深度推理（D4 门控）
+ * @param {object}  [opts.limits]       覆盖 dl.DL_LIMITS
+ * @returns {Promise<object>}  与 materializeRL 同形态；stats 增嵌套 dl 子对象（不增顶层键）
+ */
+async function materializeGraph(graph, profile, opts = {}) {
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  const report = (phase, pct) => { if (onProgress) { try { onProgress({ phase, pct }); } catch (_) {} } };
+
+  // --- RL 路径（protege-js 缺失时 skipped，不阻断 DL） ---
+  let rl;
+  if (reasonerAvailable()) {
+    rl = await materializeRL(graph, profile, opts);
+  } else {
+    rl = {
+      inferredEdges: [], inconsistencies: [], queries: null, ctx: null, skipped: true,
+      skipReason: 'reasoner-unavailable',
+      stats: { inputTriples: 0, inferredCount: 0, rounds: 0, elapsedMs: 0 },
+    };
+  }
+
+  // --- DL 路径（仅 dlCapable 体系；内置体系 dlCapable 缺省 false → 行为与既往完全一致） ---
+  const dlStats = { ran: false, consistent: null, unsatCount: 0, dlInferred: 0, elapsedMs: 0, skipReason: '' };
+  const dlCapable = !!(profile && profile.dlCapable);
+  let dlEdges = [];
+  let dlInconsistencies = [];
+  // 设置页总开关（融合设计 §12）：opts.dlEnabled === false 才关闭。
+  // ⚠️ undefined 必须视为「开启」—— test/graph-reason.test.js 有 27 处直接调用
+  //    materializeGraph 且不传该项，语义不能变。
+  const dlSwitchOff = opts.dlEnabled === false;
+  if (dlCapable) {
+    if (dlSwitchOff) {
+      dlStats.skipReason = 'dl-disabled';
+    } else if (!dl || typeof dl.dlAvailable !== 'function' || !dl.dlAvailable()) {
+      dlStats.skipReason = 'dl-unavailable';
+    } else if (!graph || !Array.isArray(graph.nodes) || !graph.nodes.length) {
+      dlStats.skipReason = 'empty-graph';
+    } else {
+      const gate = dl.gateScale(profile, graph, opts.limits);
+      if (!gate.allowTBox) {
+        dlStats.skipReason = gate.reason || 'dl-too-large';
+      } else {
+        report('DL tableau 推理中…');
+        const t0 = Date.now();
+        try {
+          // ABox 合成随门控放行（使 isConsistent 能检出**实例级**矛盾，如互斥类同时实例化）；
+          // 但逐个体×谓词的 reasonABox 深度扫描需 opts.deep 显式触发（D4 成本控制）。
+          const wantAbox = !!gate.allowABox;
+          // limits 同时喂给 buildDLOntology：否则「设置里调大 maxDlAxioms」门控放行但合成仍按默认截断。
+          const ont = dl.buildDLOntology(profile, graph, { abox: wantAbox, limits: opts.limits });
+          const cfg = dl.makeConfig({ timeoutMs: num(opts.timeoutMs, 30000, 100, 600000) });
+          const tbox = dl.reasonTBox(ont, cfg);
+          dlStats.ran = !tbox.skipped;
+          dlStats.consistent = tbox.consistent;
+          dlStats.unsatCount = (tbox.unsatClasses || []).length;
+          dlStats.skipReason = tbox.skipped ? (tbox.skipReason || 'dl-error') : '';
+          if (tbox.skipped) {
+            if (tbox.error) dlStats.error = String(tbox.error).slice(0, 300);
+          } else {
+            // R7：不一致时不报不可满足类（此时 unsat 无意义），只报不一致冲突
+            if (tbox.consistent === false) {
+              dlInconsistencies.push({
+                rule: 'dl-inconsistent',
+                message: 'DL tableau detected ontology inconsistency (TBox)',
+                messageZh: '本体不一致（DL tableau 检出）',
+                reasonZh: '体系公理经完整 OWL 2 DL 推理后矛盾（如互斥类被等价/子类关系同时成立）。请检查类层级与不相交声明。',
+                raw: '',
+              });
+            }
+            // 不可满足类 → 冲突面板留痕（每个类一条，UI 可定位）
+            for (const key of (tbox.unsatClasses || [])) {
+              const label = (tbox.hierarchy && tbox.hierarchy[key] && tbox.hierarchy[key].label) || key;
+              dlInconsistencies.push({
+                rule: 'dl-unsatisfiable',
+                message: `Class ${key} is unsatisfiable`,
+                messageZh: `类「${label}」不可满足（无法有任何实例）`,
+                reasonZh: 'DL tableau 判定该类与本体公理矛盾（如被归入互斥类的交集）；该类下的节点类型标注或相关公理需要修正。',
+                raw: key,
+              });
+            }
+            if (wantAbox && opts.deep) {
+              const abox = dl.reasonABox(ont, cfg, { maxInferredEdges: opts.maxDlEdges });
+              if (!abox.skipped) {
+                dlEdges = abox.inferredEdges || [];
+                dlInconsistencies.push(...(abox.inconsistencies || []));
+              } else if (abox.skipReason && !dlStats.skipReason) {
+                dlStats.skipReason = abox.skipReason;
+              }
+            }
+          }
+        } catch (err) {
+          dlStats.skipReason = 'dl-error';
+          dlStats.error = String((err && err.message) || err).slice(0, 300);
+        }
+        dlStats.elapsedMs = Date.now() - t0;
+      }
+    }
+  }
+
+  // --- 合并（Q-DL-6：RL 优先，DL 边仅补 edgeKey 不重复者） ---
+  if (!dlEdges.length && !dlInconsistencies.length && !dlStats.ran) {
+    // DL 没产出：保持 RL 结果原样（含 skipped/skipReason 语义，既有测试零感知）；
+    // 仅在 stats 里嵌 dl 子对象留痕（不增顶层键，附录 B.6：stats 未被完整 JSON 断言）
+    if (rl.stats && typeof rl.stats === 'object') rl.stats.dl = dlStats;
+    return rl;
+  }
+  const rlKeys = new Set();
+  for (const e of (graph && Array.isArray(graph.edges) ? graph.edges : [])) {
+    if (e && e.from && e.to && !e.inferred) rlKeys.add(bridge.edgeKey(e.from, e.to, e.rel || ''));
+  }
+  for (const e of (rl.inferredEdges || [])) {
+    if (e && e.from && e.to) rlKeys.add(bridge.edgeKey(e.from, e.to, e.rel || ''));
+  }
+  const extraDl = dlEdges.filter((e) => {
+    if (!e || !e.from || !e.to) return false;
+    const k = bridge.edgeKey(e.from, e.to, e.rel || '');
+    if (rlKeys.has(k)) return false;
+    rlKeys.add(k);
+    return true;
+  });
+  dlStats.dlInferred = extraDl.length;
+
+  const inferredEdges = [...(rl.inferredEdges || []), ...extraDl];
+  const inconsistencies = [...(rl.inconsistencies || []), ...dlInconsistencies];
+  const skipped = !!(rl.skipped && !inferredEdges.length && !dlInconsistencies.length && !dlStats.ran);
+  const stats = Object.assign({}, rl.stats || {}, {
+    dl: dlStats,
+    elapsedMs: ((rl.stats && rl.stats.elapsedMs) || 0) + dlStats.elapsedMs,
+  });
+  const out = {
+    inferredEdges,
+    inconsistencies,
+    queries: rl.queries || null,
+    ctx: rl.ctx || null,
+    skipped,
+    stats,
+  };
+  if (skipped) out.skipReason = rl.skipReason || dlStats.skipReason || 'no-rule-fuel';
+  return out;
 }
 
 /**

@@ -884,6 +884,39 @@ function registerIpc(getWindow) {
   ipcMain.handle('graph:predicateFeatures', (_e, profileId) => {
     try { return { ok: true, features: graph.predicateFeatures(profileId) }; } catch (err) { return { ok: false, error: err.message }; }
   });
+  // OWL 2 子语言元信息（设置→推理页的支持矩阵，只读）：直接回传 profile.js 的 PROFILE_META，
+  // 前端不复制一份，避免 RL/QL/EL 描述与主进程漂移。
+  ipcMain.handle('reason:profileMeta', () => {
+    try { return { ok: true, meta: require('./graph/reason/profile').PROFILE_META }; } catch (err) { return { ok: false, error: err.message }; }
+  });
+  // ---------- DL 深度推理（dl-js-reasoner 融合设计 §4.6：三处同步登记之一） ----------
+  // 三个通道均为**只读**（不落库、不写 kv，I4）；失败时返回 {ok:false, reason:'dl-*'}，
+  // reason 与 graph.js:SKIP_REASON_TEXT 同码，前端可直接查表出中文。
+  // ⚠️ 入参兼容两种形态：桌面端 invoke(ch, profileId, payload)；web shim 只转发单 body
+  //    → {profileId, spec|axiom}。与 graph:validate / graph:impactClosure 同口径。
+  ipcMain.handle('graph:dlQuery', (_e, profileIdOrBody, spec) => {
+    try {
+      const isObj = profileIdOrBody && typeof profileIdOrBody === 'object';
+      const pid = isObj ? profileIdOrBody.profileId : profileIdOrBody;
+      const s = isObj ? profileIdOrBody.spec : spec;
+      return graph.dlQuery(pid, s || {});
+    } catch (err) { return { ok: false, reason: 'dl-error', error: err.message, answers: [], columns: [], isHorn: null, elapsedMs: 0 }; }
+  });
+  ipcMain.handle('graph:dlEntail', (_e, profileIdOrBody, axiom) => {
+    try {
+      const isObj = profileIdOrBody && typeof profileIdOrBody === 'object';
+      const pid = isObj ? profileIdOrBody.profileId : profileIdOrBody;
+      const ax = isObj ? profileIdOrBody.axiom : axiom;
+      return graph.dlEntail(pid, ax || {});
+    } catch (err) { return { ok: false, reason: 'dl-error', error: err.message, entailed: null, explain: '', elapsedMs: 0 }; }
+  });
+  ipcMain.handle('graph:dlHierarchy', (_e, profileIdOrBody) => {
+    try {
+      const isObj = profileIdOrBody && typeof profileIdOrBody === 'object';
+      const pid = isObj ? profileIdOrBody.profileId : profileIdOrBody;
+      return graph.dlHierarchy(pid);
+    } catch (err) { return { ok: false, reason: 'dl-error', error: err.message, consistent: null, hierarchy: null, topClasses: [], unsatClasses: [], elapsedMs: 0 }; }
+  });
   // OWL 导入预览：只解析不落库（§6.9）
   ipcMain.handle('graph:previewOwl', async (e, body) => {
     try {

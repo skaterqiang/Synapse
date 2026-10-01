@@ -65,8 +65,11 @@ ex:partOf a owl:ObjectProperty , owl:TransitiveProperty ; rdfs:label "属于" ; 
   check('reasonEnabled(null) 默认开', graph.reasonEnabled(null) === true);
   check('reasonEnabled({reasonEnabled:false}) 关', graph.reasonEnabled({ reasonEnabled: false }) === false);
   check('reasonEnabled({reasonEnabled:true}) 开', graph.reasonEnabled({ reasonEnabled: true }) === true);
-  check('SKIP_REASON_TEXT 覆盖 7 种 skipReason', J(Object.keys(graph.SKIP_REASON_TEXT)) === '["reasoner-unavailable","empty-graph","bridge-failed","no-rule-fuel","aborted","materialize-failed","timeout"]', J(Object.keys(graph.SKIP_REASON_TEXT)));
+  // dl-js-reasoner 融合设计 §9.2 T1-b：7 → 15 键（新增 8 个 dl-* 码）。
+  check('SKIP_REASON_TEXT 覆盖 15 种 skipReason', J(Object.keys(graph.SKIP_REASON_TEXT)) === '["reasoner-unavailable","empty-graph","bridge-failed","no-rule-fuel","aborted","materialize-failed","timeout","dl-too-large","dl-abox-budget","dl-non-horn","dl-timeout","dl-unavailable","dl-irregular","dl-error","dl-no-abox"]', J(Object.keys(graph.SKIP_REASON_TEXT)));
   check('SKIP_REASON_TEXT 每项都是非空中文说明', Object.values(graph.SKIP_REASON_TEXT).every((v) => typeof v === 'string' && v.length > 3));
+  // dl.js 能产出的码必须全部有中文文案，否则前端会把英文码直接展示给用户。
+  check('SKIP_REASON_TEXT 覆盖 dl.js 能产出的全部 8 个 dl-* 码', ['dl-too-large', 'dl-abox-budget', 'dl-non-horn', 'dl-timeout', 'dl-unavailable', 'dl-irregular', 'dl-error', 'dl-no-abox'].every((c) => !!graph.SKIP_REASON_TEXT[c]), J(Object.keys(graph.SKIP_REASON_TEXT).filter((k) => k.startsWith('dl-'))));
 
   const st0 = graph.reasonStatus();
   check('reasonStatus() 恰好 5 个字段', J(Object.keys(st0)) === '["available","enabled","reason","timeoutSec","coverage"]', J(Object.keys(st0)));
@@ -583,7 +586,12 @@ ex:knows a owl:ObjectProperty ; rdfs:label "认识" ; rdfs:domain ex:Thing ; rdf
   check('preview.counts = 2 类 / 1 谓词 / 4 公理 / 4 约束 / 0 个体 / 1 根', J(pv.preview.counts) === '{"classes":2,"predicates":1,"axioms":4,"constraints":4,"individuals":0,"roots":1}', J(pv.preview.counts));
   check('preview.rootClasses 识别出唯一根类 Device（设备）', J(pv.preview.rootClasses) === '[{"key":"Device","label":"设备"}]', J(pv.preview.rootClasses));
   check('preview.sampleClasses 还原类层级（Charger ⊑ Device）', J(pv.preview.sampleClasses) === '[{"key":"Device","label":"设备","parent":"","desc":""},{"key":"Charger","label":"充电桩","parent":"Device","desc":""}]', J(pv.preview.sampleClasses));
-  check('§4.5 子语言判定：推荐 RL，符合 RL+EL，QL 有 1 处不符', J(pv.preview.profileCheck) === '{"recommend":"RL","profiles":["RL","EL"],"reasonerAvailable":true,"rl":{"ok":true,"total":0,"sample":[]},"ql":{"ok":false,"total":1},"el":{"ok":true,"total":0}}', J(pv.preview.profileCheck));
+  // dl-js-reasoner 融合设计 §9.2 T1-a：profileCheck 新增 dl 子对象（嵌进既有子对象，不增 preview 顶层键）。
+  check('§4.5 子语言判定：推荐 RL，符合 RL+EL，QL 有 1 处不符，DL 亦可用', J(pv.preview.profileCheck) === '{"recommend":"RL","profiles":["RL","EL"],"reasonerAvailable":true,"rl":{"ok":true,"total":0,"sample":[]},"ql":{"ok":false,"total":1},"el":{"ok":true,"total":0},"dl":{"available":true,"reason":"","classCount":2,"dlAxiomCount":0}}', J(pv.preview.profileCheck));
+  check('profileCheck.dl 四字段齐全（available/reason/classCount/dlAxiomCount）', (() => {
+    const d = pv.preview.profileCheck.dl;
+    return !!d && J(Object.keys(d)) === '["available","reason","classCount","dlAxiomCount"]';
+  })(), J(pv.preview.profileCheck.dl));
   check('格式探测：Turtle / 按扩展名 / protege-js 解析', pv.preview.detectedFormat === 'Turtle' && pv.preview.detectedBy === 'ext' && pv.preview.parser === 'protege-js' && pv.preview.format === 'Turtle (.ttl)' && pv.preview.formatId === 'Turtle', J({ f: pv.preview.detectedFormat, by: pv.preview.detectedBy, p: pv.preview.parser }));
   check('preview 体系 id 为占位 owl:prev / name 取文件基名（不占用真实 id）', pv.profile.id === 'owl:prev' && pv.profile.name === 'prev', J({ id: pv.profile.id, name: pv.profile.name }));
   check('preview 体系带 2 类 / 1 谓词 / owl=true 标记', pv.profile.classes.length === 2 && pv.profile.predicates.length === 1 && pv.profile.owl === true, J({ c: pv.profile.classes.length, p: pv.profile.predicates.length, owl: pv.profile.owl }));
@@ -597,13 +605,31 @@ ex:knows a owl:ObjectProperty ; rdfs:label "认识" ; rdfs:domain ex:Thing ; rdf
   check('文件不存在 → reject（错误信息含路径）', !!pvBad.rejected && pvBad.rejected.startsWith('文件不存在：'), J(pvBad));
 
   // ======================================================================
-  section('§6 IPC 通道层：14 个通道全部注册且异常被兜住');
+  section('§6 IPC 通道层：17 个通道全部注册且异常被兜住');
   // ======================================================================
   const { registerIpc } = require('../src/main/ipc');
   registerIpc(() => ({ isDestroyed: () => false, webContents: { send: () => {} } }));
   const invoke = env.el.invoke;
-  const CHANNELS = ['graph:reasonStatus', 'graph:reasonState', 'graph:predicateFeatures', 'graph:runInference', 'graph:clearInferred', 'graph:deleteEdge', 'graph:deleteNode', 'graph:impactClosure', 'graph:previewOwl', 'graph:validate', 'graph:planRepairs', 'graph:planRepairsForIssues', 'graph:applyRepairs', 'graph:undoRepair'];
-  check('14 个推理通道全部注册（v1.2.2 增 graph:planRepairsForIssues 行级修复）', CHANNELS.every((c) => env.el.handlers.has(c)), J(CHANNELS.filter((c) => !env.el.handlers.has(c))));
+  // dl-js-reasoner 融合设计 §9.2 T1-c：14 → 17（新增 graph:dlQuery / graph:dlEntail / graph:dlHierarchy）
+  const CHANNELS = ['graph:reasonStatus', 'graph:reasonState', 'graph:predicateFeatures', 'graph:runInference', 'graph:clearInferred', 'graph:deleteEdge', 'graph:deleteNode', 'graph:impactClosure', 'graph:previewOwl', 'graph:validate', 'graph:planRepairs', 'graph:planRepairsForIssues', 'graph:applyRepairs', 'graph:undoRepair', 'graph:dlQuery', 'graph:dlEntail', 'graph:dlHierarchy'];
+  check('17 个推理通道全部注册（v1.2.2 增 graph:planRepairsForIssues 行级修复；DL 融合增 3 个 dl* 通道）', CHANNELS.every((c) => env.el.handlers.has(c)), J(CHANNELS.filter((c) => !env.el.handlers.has(c))));
+  check('DL 三通道均已注册', ['graph:dlQuery', 'graph:dlEntail', 'graph:dlHierarchy'].every((c) => env.el.handlers.has(c)), J(['graph:dlQuery', 'graph:dlEntail', 'graph:dlHierarchy'].filter((c) => !env.el.handlers.has(c))));
+  // DL 通道在「体系未启用 DL」时不抛，而是返回 {ok:false, reason:'dl-unavailable'}（I5 静默降级）
+  const iDlQ = await invoke('graph:dlQuery', 'bfo-lite', { select: ['?x'], where: [] });
+  check('graph:dlQuery 对非 DL 体系 → {ok:false, reason:"dl-unavailable"}（不抛）', iDlQ.ok === false && iDlQ.reason === 'dl-unavailable' && J(iDlQ.answers) === '[]', J(iDlQ));
+  const iDlE = await invoke('graph:dlEntail', 'bfo-lite', { kind: 'subclassOf', sub: 'object', super: 'continuant' });
+  check('graph:dlEntail 对非 DL 体系 → {ok:false, entailed:null}（不抛）', iDlE.ok === false && iDlE.entailed === null && iDlE.reason === 'dl-unavailable', J(iDlE));
+  const iDlH = await invoke('graph:dlHierarchy', 'bfo-lite');
+  check('graph:dlHierarchy 对非 DL 体系 → {ok:false, consistent:null, hierarchy:null}（不抛）', iDlH.ok === false && iDlH.consistent === null && iDlH.hierarchy === null && iDlH.reason === 'dl-unavailable', J(iDlH));
+  // web shim 的单 body 形态（{profileId, spec}）同样兜住
+  const iDlQBody = await invoke('graph:dlQuery', { profileId: 'bfo-lite', spec: { select: ['?x'], where: [] } });
+  check('graph:dlQuery 兼容 web shim 单 body 形态', iDlQBody.ok === false && iDlQBody.reason === 'dl-unavailable', J(iDlQBody));
+  const iDlHBody = await invoke('graph:dlHierarchy', { profileId: 'bfo-lite' });
+  check('graph:dlHierarchy 兼容 web shim 单 body 形态', iDlHBody.ok === false && iDlHBody.reason === 'dl-unavailable', J(iDlHBody));
+  // ⚠️ resolveOntology 对未知 id 静默回退 bfo-lite（不抛），故未知体系走的是
+  //    「非 dlCapable」分支 → dl-unavailable，而不是 unknown-profile。
+  check('graph:dlQuery 对不存在的体系 → 回退 bfo-lite 后仍为 dl-unavailable（不抛）', (await invoke('graph:dlQuery', 'nope-nope', {})).reason === 'dl-unavailable', J(await invoke('graph:dlQuery', 'nope-nope', {})));
+  check('graph:dlHierarchy 省略 profileId 时用 kv 当前体系（不抛）', (await invoke('graph:dlHierarchy')).ok === false, J(await invoke('graph:dlHierarchy')));
 
   graph.clearGraph();
   const iStatus = await invoke('graph:reasonStatus');

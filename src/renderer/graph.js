@@ -732,13 +732,13 @@ async function renderKgOntology() {
     const btnRemoveOwl = $('btn-onto-remove-owl');
     if (btnRemoveOwl) btnRemoveOwl.hidden = !String(o.profileId || '').startsWith('owl:');
   }
-  // 统计卡：前 3 项属于当前体系（类/谓词/约束），后 2 项是全局图谱实例（跨体系累计）
+  // 统计卡：6 项**均属当前所选体系**（实例/关系按节点 profile 归属隔离统计，随体系 tab 联动）
   $('kg-onto-cards').innerHTML =
     kgCard('entities', o.stats.classCount, '实体类', o.profileName) +
     kgCard('mcp', o.stats.predicateCount, '谓词', o.profileName) +
     kgCard('table', o.stats.constraintCount, '校验约束', o.profileName) +
-    kgCard('kg', o.stats.instanceCount, '实例总数', '全部体系') +
-    kgCard('mcp', o.stats.edgeCount, '关系总数', '全部体系') +
+    kgCard('kg', o.stats.instanceCount, '实例总数', o.profileName) +
+    kgCard('mcp', o.stats.edgeCount, '关系总数', o.profileName) +
     kgCard('table', o.stats.axiomCount || 0, '逻辑公理', o.profileName);
 
   // 视图切换：OWLViz / 列表（'tree' 已废弃，归一为 'viz'）
@@ -994,13 +994,129 @@ function renderReasonIssues(ctx, v) {
 }
 
 function renderReasonDiagnostics(ctx) {
-  const { lg, guardHtml, featHtml, covHtml, viaHtml } = ctx;
+  const { lg, guardHtml, featHtml, covHtml, viaHtml, dlHtml } = ctx;
   const guardTotal = Number((lg && lg.total) || 0);
   return `<section class="kg-reason-diagnostics"><div class="kg-reason-section-head"><div><div class="kg-reason-kicker">按需查看</div><h3>诊断详情</h3></div><p>体检明细、护栏记录和本体谓词特性。</p></div>
     <details class="kg-diagnostic" id="kg-diagnostic-validation"><summary><span>全图校验明细</span><em id="kg-validate-summary">体检中…</em></summary><div class="kg-diagnostic-body" id="kg-validate-body"><div class="kg-issues-loading">正在执行只读体检…</div></div></details>
     <details class="kg-diagnostic"${guardTotal ? ' open' : ''}><summary><span>护栏拦截日志</span><em>${guardTotal ? `${guardTotal} 条越界连线已降级` : '最近一次提取未发现越界连线'}</em></summary><div class="kg-diagnostic-body">${guardHtml}</div></details>
     <details class="kg-diagnostic"><summary><span>本体诊断</span><em>谓词特性与护栏覆盖</em></summary><div class="kg-diagnostic-body">${covHtml}${viaHtml ? `<div class="kg-reason-row"><span>推导方式</span><b class="kg-reason-vias">${viaHtml}</b></div>` : ''}${featHtml}</div></details>
+    ${dlHtml || ''}
   </section>`;
+}
+
+// ---------- 区块 6：DL 深度推理（dl-js-reasoner 融合设计 §6.1） ----------
+// 渲染条件：rs.coverage.dlCapable（该体系可由 DL 推理）**或** meta.lastStats.dl.ran
+// （上次全图推理真的跑过 DL）。两者皆假 → 返回空串，第 6 区块整个不出现，
+// 内置体系（bfo-lite 等 dlCapable:false）的推理 Tab 与改造前完全一致。
+//
+// 数据来源分两层：
+//   ① 上次全图推理的 DL 摘要（meta.lastStats.dl，graph.js:summarizeDl 落库）——免费，首屏即有；
+//   ② 按需现算（graph:dlHierarchy / graph:dlEntail / graph:dlQuery）——只读、不落库（I4），
+//      每次点击才合成一次 DL 本体，避免打开推理 Tab 就白跑一次 tableau。
+function renderReasonDl(ctx) {
+  const { rs, meta } = ctx;
+  const cov = rs.coverage || {};
+  const dl = (meta && meta.lastStats && meta.lastStats.dl) || null;
+  const capable = !!cov.dlCapable;
+  if (!capable && !(dl && dl.ran)) return '';
+
+  // 生效配置（融合设计 §12）：主进程回传 coverage.dl = {ready, enabled, deepDefault, limits, customized}。
+  // 上限数值一律取自主进程（DL_LIMITS 的唯一真源），前端不硬编码默认值 —— 这正是本区块
+  // 此前刻意不显示「预算分母」的原因，现在有了权威来源就能补上。
+  const cfg = cov.dl || null;
+  const dlOff = !!(cfg && cfg.enabled === false);
+  let cfgHtml = '';
+  if (cfg) {
+    const L = cfg.limits || {};
+    const cust = new Set(cfg.customized || []);
+    const cell = (label, lk, unit) => {
+      const v = Number.isFinite(Number(L[lk])) ? Number(L[lk]) : null;
+      const tag = cust.has(lk) ? ' <span class="mini-tag">已自定义</span>' : '';
+      return `<div class="kg-reason-row"><span>${escapeHtml(label)}</span><b>${v === null ? '默认' : v}${unit ? ' ' + escapeHtml(unit) : ''}${tag}</b></div>`;
+    };
+    cfgHtml = `<div class="kg-reason-row"><span>DL 开关</span><b>${cfg.ready === false
+      ? '<span class="kg-dl-bad">模块不可用</span>'
+      : (cfg.enabled ? '<span class="kg-dl-ok">已启用</span>' : '<span class="kg-dl-bad">已关闭</span>')}</b></div>
+      ${cfg.ready === false && cfg.unavailableReason ? `<div class="gd-desc">${escapeHtml(String(cfg.unavailableReason))}</div>` : ''}
+      <div class="kg-reason-row"><span>默认深度扫描</span><b>${cfg.deepDefault ? '开（ABox 级）' : '关（仅 TBox 判定）'}</b></div>
+      ${cell('类数上限（TBox）', 'maxClasses', '类')}
+      ${cell('ABox 预算（个体数 × 类数）', 'aboxBudget', '')}
+      ${cell('传递属性个体数上限', 'transitiveIndividualCap', '个体')}
+      ${cell('参与合成的 DL 公理条数', 'maxDlAxioms', '条')}
+      ${cell('单次 ABox 推理边上限', 'maxInferredEdges', '条')}
+      <div class="kg-reason-action-groups"><button class="btn btn-ghost" id="btn-dl-settings">修改 DL 配置</button></div>`;
+  }
+  const offNote = dlOff
+    ? '<div class="gd-desc"><b>DL 深度推理已在「设置 → 推理」中关闭</b>：下方按钮与探针均不可用，OWL 2 RL 前向链推理照常工作。</div>'
+    : '';
+
+  // ① 上次运行摘要
+  let lastHtml;
+  if (!dl) {
+    lastHtml = '<div class="gd-desc">尚未运行过 DL 推理。点「运行深度推理」做一次 ABox 级 tableau（受规模门控）。</div>';
+  } else if (!dl.ran) {
+    const reasons = (dl.skipReasons || []).map((c) => `<span class="mini-tag">${escapeHtml(reasonSkipText(c))}</span>`).join(' ');
+    lastHtml = `<div class="gd-desc">上次推理未触发 DL：${reasons || '（无原因码）'}</div>`;
+  } else {
+    const cons = dl.consistent === false
+      ? '<b class="kg-dl-bad">❌ 不一致</b>'
+      : (dl.consistent === true ? '<b class="kg-dl-ok">✅ 一致</b>' : '<b>未知</b>');
+    lastHtml = `<div class="kg-reason-row"><span>一致性</span>${cons}</div>
+      <div class="kg-reason-row"><span>不可满足类</span><b>${Number(dl.unsatCount) || 0} 个</b></div>
+      <div class="kg-reason-row"><span>ABox 推理边</span><b>${Number(dl.dlInferred) || 0} 条</b></div>
+      <div class="kg-reason-row"><span>参与体系 / 耗时</span><b>${Number(dl.profiles) || 0} 个 · ${Number(dl.elapsedMs) || 0} ms</b></div>
+      ${(dl.skipReasons || []).length ? `<div class="kg-reason-row"><span>跳过原因</span><b>${dl.skipReasons.map((c) => escapeHtml(reasonSkipText(c))).join('、')}</b></div>` : ''}`;
+  }
+
+  const bridgeOk = typeof window.kb.graphDlHierarchy === 'function';
+  const bridgeNote = bridgeOk ? '' : '<div class="gd-desc">当前环境不支持 DL 交互查询（缺少 graphDlHierarchy 桥接）。</div>';
+  // DL 关闭或模块不可用时，深度推理/层级刷新/探针全部置灰（口径同 reason-off 的 .reason-entry）
+  const usable = capable && !dlOff && !(cfg && cfg.ready === false);
+  const disTitle = dlOff ? ' disabled title="DL 深度推理已在设置中关闭"' : ' disabled title="该体系未启用 DL 推理（仅 OWL 导入的完整 DL 体系支持）"';
+
+  return `<details class="kg-diagnostic" id="kg-diagnostic-dl"><summary><span>DL 深度推理</span><em>${capable ? 'dl-js-reasoner · OWL 2 DL tableau' : '上次运行摘要'}</em></summary>
+    <div class="kg-diagnostic-body">
+      <div class="gd-desc">完整 OWL 2 DL 推理（HermiT JS 移植，本地运行、不联网）。一致性判定与类分类为 TBox 级（毫秒级）；实例类型与属性值推理为 ABox 级，按规模门控。</div>
+      ${offNote}
+      ${lastHtml}
+      <div class="kg-reason-action-groups"><button class="btn btn-primary" id="btn-dl-deep"${usable ? '' : disTitle}>运行深度推理</button><button class="btn btn-ghost" id="btn-dl-hierarchy"${bridgeOk && usable ? '' : ' disabled'}>刷新类层级与一致性</button></div>
+      ${bridgeNote}
+      ${cfgHtml}
+      <div id="kg-dl-hierarchy"></div>
+      <div id="kg-dl-probe">${bridgeOk && usable ? renderDlProbeForm() : ''}</div>
+    </div>
+  </details>`;
+}
+
+// 蕴含探针 + 合取查询表单（§6.1）。选项在 bindReasonDlActions 里按当前体系异步填充，
+// 因为类/谓词表要 graphOntology(activeProfileId)、个体表要 state.graph 按 profile 过滤。
+function renderDlProbeForm() {
+  return `<div class="kg-dl-probe">
+    <div class="kg-reason-section-head"><div><h4>蕴含探针</h4></div><p>问「这条公理是否被本体蕴含」，只读、不落库。</p></div>
+    <div class="kg-dl-form">
+      <label><span>公理形态</span><select id="dl-entail-kind">
+        <option value="subclassOf">子类（A ⊑ B）</option>
+        <option value="classAssertion">类断言（A(个体)）</option>
+        <option value="objectPropertyAssertion">属性断言（P(主, 宾)）</option>
+        <option value="sameIndividual">相同个体</option>
+        <option value="differentIndividuals">不同个体</option>
+      </select></label>
+      <div id="dl-entail-args"></div>
+      <button class="btn btn-ghost" id="btn-dl-entail">判定蕴含</button>
+    </div>
+    <div id="kg-dl-entail-result"></div>
+    <div class="kg-reason-section-head"><div><h4>合取查询（CQ）</h4></div><p>仅 Horn 本体可用；非 Horn 时返回 dl-non-horn。</p></div>
+    <div class="kg-dl-form">
+      <label><span>原子</span><select id="dl-cq-atom">
+        <option value="class">类成员：C(?x)</option>
+        <option value="objectProperty">属性：P(?x, ?y)</option>
+      </select></label>
+      <div id="dl-cq-args"></div>
+      <label><span>返回变量</span><input id="dl-cq-select" value="?x" placeholder="?x 或 ?x,?y"></label>
+      <button class="btn btn-ghost" id="btn-dl-cq">执行查询</button>
+    </div>
+    <div id="kg-dl-cq-result"></div>
+  </div>`;
 }
 
 function updateReasonValidation(body, ctx, v) {
@@ -1160,6 +1276,7 @@ async function renderKgReasonTab(body, profileId) {
   const reasonCtx = {
     rs, meta, ls, lg, counts, det, conTotal, profileId: activeProfileId, profiles,
     guardHtml, featHtml, covHtml, viaHtml,
+    dlHtml: renderReasonDl({ rs, meta }),
     renderId,
     validationSeq: 0,
   };
@@ -1200,6 +1317,207 @@ async function renderKgReasonTab(body, profileId) {
   });
   // 打开页面即执行一次只读体检；结果只更新仍处于当前渲染批次的页面。
   reasonCtx.refreshValidation();
+  // DL 深度推理区块（§6.1）：按钮与探针表单的事件绑定 + 选项异步填充。
+  // 区块不存在（非 DL 体系）时函数内部直接返回，零开销。
+  bindReasonDlActions(body, reasonCtx);
+}
+
+// ---- DL 深度推理区块的事件绑定（融合设计 §6.1）----
+// 三个交互入口全部只读（I4：不落库、不写 kv）；「运行深度推理」是唯一会改图的按钮，
+// 它复用 runGraphInference({deep:true}) → graph:runInference → materializeGraph 的 ABox 分支。
+async function bindReasonDlActions(body, ctx) {
+  const panel = body.querySelector('#kg-diagnostic-dl');
+  if (!panel) return;   // 非 DL 体系：区块未渲染
+  const pid = ctx.profileId;
+
+  // ---- 「修改 DL 配置」深链（融合设计 §12）----
+  // 放在 await 之前绑定：即使本体拉取失败/页面已切走，这个纯导航按钮也应当可用。
+  const cfgBtn = panel.querySelector('#btn-dl-settings');
+  if (cfgBtn) cfgBtn.addEventListener('click', () => {
+    if (typeof showSettingsView !== 'function' || typeof switchSettingsTab !== 'function') return;
+    showSettingsView();
+    switchSettingsTab('dl');
+  });
+
+  // 选项数据源：类/谓词取当前体系本体，个体取全图按 profile 过滤（与 getOntology 同口径）
+  let onto = null;
+  try { onto = await window.kb.graphOntology(pid); } catch (_) { onto = null; }
+  if (body.dataset.reasonRenderId !== ctx.renderId) return;   // 已切走，别写进过期页面
+  const classes = ((onto && onto.classes) || []).map((c) => ({ key: c.key, label: c.label || c.key }));
+  const predicates = ((onto && onto.predicates) || []).map((p) => ({ key: p.key, label: p.label || p.key }));
+  const nodes = ((state.graph && state.graph.nodes) || [])
+    .filter((n) => n && String(n.profile || String(n.id || '').split(':')[0] || 'bfo-lite') === pid)
+    .map((n) => ({ id: n.id, name: n.name || n.id }));
+
+  const optList = (arr, valKey, labelKey) => arr.map((x) => `<option value="${escapeHtml(String(x[valKey]))}">${escapeHtml(String(x[labelKey]))}</option>`).join('');
+  const sel = (id, optionsHtml, label) => `<label><span>${escapeHtml(label)}</span><select id="${id}">${optionsHtml}</select></label>`;
+  const clsOpts = optList(classes, 'key', 'label');
+  const relOpts = optList(predicates, 'key', 'label');
+  const indOpts = optList(nodes, 'id', 'name');
+
+  // ---- 蕴含探针：按公理形态切换参数输入 ----
+  const kindSel = panel.querySelector('#dl-entail-kind');
+  const argsBox = panel.querySelector('#dl-entail-args');
+  const renderEntailArgs = () => {
+    if (!argsBox || !kindSel) return;
+    const k = kindSel.value;
+    if (k === 'subclassOf') argsBox.innerHTML = sel('dl-e-sub', clsOpts, '子类') + sel('dl-e-super', clsOpts, '超类');
+    else if (k === 'classAssertion') argsBox.innerHTML = sel('dl-e-class', clsOpts, '类') + sel('dl-e-ind', indOpts, '个体');
+    else if (k === 'objectPropertyAssertion') argsBox.innerHTML = sel('dl-e-prop', relOpts, '属性') + sel('dl-e-subj', indOpts, '主体') + sel('dl-e-obj', indOpts, '客体');
+    else argsBox.innerHTML = `<label><span>个体（逗号分隔，≥2）</span><input id="dl-e-inds" placeholder="${escapeHtml(nodes.slice(0, 2).map((n) => n.id).join(', '))}"></label>`;
+  };
+  if (kindSel) kindSel.addEventListener('change', renderEntailArgs);
+  renderEntailArgs();
+
+  const val = (id) => { const el = panel.querySelector('#' + id); return el ? String(el.value || '').trim() : ''; };
+
+  const entailBtn = panel.querySelector('#btn-dl-entail');
+  if (entailBtn) entailBtn.addEventListener('click', async () => {
+    const out = panel.querySelector('#kg-dl-entail-result');
+    const k = kindSel ? kindSel.value : 'subclassOf';
+    let axiom = { kind: k };
+    if (k === 'subclassOf') { axiom.sub = val('dl-e-sub'); axiom.super = val('dl-e-super'); }
+    else if (k === 'classAssertion') { axiom.class = val('dl-e-class'); axiom.individual = val('dl-e-ind'); }
+    else if (k === 'objectPropertyAssertion') { axiom.property = val('dl-e-prop'); axiom.subject = val('dl-e-subj'); axiom.object = val('dl-e-obj'); }
+    else axiom.individuals = val('dl-e-inds').split(',').map((s) => s.trim()).filter(Boolean);
+    entailBtn.disabled = true;
+    if (out) out.innerHTML = '<div class="kg-issues-loading">DL 判定中…</div>';
+    try {
+      const r = await window.kb.graphDlEntail(pid, axiom);
+      if (out) out.innerHTML = renderDlEntailResult(r);
+    } catch (err) {
+      if (out) out.innerHTML = `<div class="kg-issues-error"><b>判定异常</b><span>${escapeHtml(String((err && err.message) || err))}</span></div>`;
+    } finally { entailBtn.disabled = false; }
+  });
+
+  // ---- 合取查询（CQ）：按原子类型切换参数 ----
+  const atomSel = panel.querySelector('#dl-cq-atom');
+  const cqArgs = panel.querySelector('#dl-cq-args');
+  const renderCqArgs = () => {
+    if (!cqArgs || !atomSel) return;
+    cqArgs.innerHTML = atomSel.value === 'class'
+      ? sel('dl-c-class', clsOpts, '类') + `<label><span>变量</span><input id="dl-c-arg" value="?x"></label>`
+      : sel('dl-c-prop', relOpts, '属性') + `<label><span>主体变量</span><input id="dl-c-subj" value="?x"></label><label><span>客体变量</span><input id="dl-c-obj" value="?y"></label>`;
+  };
+  if (atomSel) atomSel.addEventListener('change', renderCqArgs);
+  renderCqArgs();
+
+  const cqBtn = panel.querySelector('#btn-dl-cq');
+  if (cqBtn) cqBtn.addEventListener('click', async () => {
+    const out = panel.querySelector('#kg-dl-cq-result');
+    const isClass = atomSel && atomSel.value === 'class';
+    const select = val('dl-cq-select').split(',').map((s) => s.trim()).filter(Boolean);
+    const where = isClass
+      ? [{ class: val('dl-c-class'), arg: val('dl-c-arg') || '?x' }]
+      : [{ objectProperty: val('dl-c-prop'), subject: val('dl-c-subj') || '?x', object: val('dl-c-obj') || '?y' }];
+    cqBtn.disabled = true;
+    if (out) out.innerHTML = '<div class="kg-issues-loading">DL 查询中…</div>';
+    try {
+      const r = await window.kb.graphDlQuery(pid, { select, where });
+      if (out) out.innerHTML = renderDlCqResult(r);
+    } catch (err) {
+      if (out) out.innerHTML = `<div class="kg-issues-error"><b>查询异常</b><span>${escapeHtml(String((err && err.message) || err))}</span></div>`;
+    } finally { cqBtn.disabled = false; }
+  });
+
+  // ---- 类层级 / 一致性：按需现算（graph:dlHierarchy） ----
+  const hierBtn = panel.querySelector('#btn-dl-hierarchy');
+  if (hierBtn) hierBtn.addEventListener('click', async () => {
+    const out = panel.querySelector('#kg-dl-hierarchy');
+    hierBtn.disabled = true;
+    if (out) out.innerHTML = '<div class="kg-issues-loading">DL 分类中…</div>';
+    try {
+      const r = await window.kb.graphDlHierarchy(pid);
+      if (out) out.innerHTML = renderDlHierarchyResult(r);
+    } catch (err) {
+      if (out) out.innerHTML = `<div class="kg-issues-error"><b>分类异常</b><span>${escapeHtml(String((err && err.message) || err))}</span></div>`;
+    } finally { hierBtn.disabled = false; }
+  });
+
+  // ---- 不可满足类点击定位（§6.1）----
+  // 层级结果是按需渲染的，故用**事件委托**挂在 panel 上（一次绑定，覆盖后续每次刷新）。
+  // 语义：不可满足类**不该有任何实例**，所以「它的实例节点」正是不一致的成因 ——
+  // 点一下就跳到图谱里那个节点，用户能直接看到该改哪条边/哪个类型。
+  panel.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-dl-unsat]') : null;
+    if (!btn) return;
+    const clsKey = String(btn.getAttribute('data-dl-unsat') || '');
+    if (!clsKey) return;
+    const hit = ((state.graph && state.graph.nodes) || [])
+      .filter((n) => n && n.type === clsKey && String(n.profile || String(n.id || '').split(':')[0] || '') === pid)
+      .sort((a, b) => (a.inferred ? 1 : 0) - (b.inferred ? 1 : 0));   // 原始节点优先于推理节点
+    if (!hit.length) {
+      btn.title = '图谱里没有该类型的实例节点（不可满足类目前无实例，本体仍可能因 TBox 公理矛盾而不可满足）';
+      return;
+    }
+    focusGraphEntity(hit[0].id);
+  });
+
+  // ---- 运行深度推理（ABox 级，唯一会改图的按钮） ----
+  const deepBtn = panel.querySelector('#btn-dl-deep');
+  if (deepBtn) deepBtn.addEventListener('click', async () => {
+    deepBtn.disabled = true;
+    try {
+      // deep:true → graph.js:runInference 透传给 materializeGraph → dl.reasonABox（受 gateScale 门控）
+      await runGraphInference({ deep: true });
+      await renderKgOntology();
+      if (state.kg.tab === 'reason') renderKgReasonTab(body, pid);
+    } finally { deepBtn.disabled = false; }
+  });
+}
+
+// DL 结果渲染（三块，均为纯函数：入参是 IPC 返回，出参是 HTML 字符串）
+function renderDlEntailResult(r) {
+  if (!r) return '<div class="kg-issues-error"><b>无返回</b></div>';
+  if (r.ok === false) return `<div class="kg-issues-error"><b>无法判定</b><span>${escapeHtml(reasonSkipText(r.reason) || r.reason || '')}${r.error ? '：' + escapeHtml(String(r.error).slice(0, 200)) : ''}</span></div>`;
+  const tone = r.entailed ? 'kg-dl-ok' : 'kg-dl-bad';
+  return `<div class="kg-reason-row"><span>判定</span><b class="${tone}">${r.entailed ? '✅ 被蕴含' : '❌ 不被蕴含'}</b></div>
+    ${r.explain ? `<div class="gd-desc">${escapeHtml(r.explain)}</div>` : ''}
+    <div class="gd-desc">耗时 ${Number(r.elapsedMs) || 0} ms</div>`;
+}
+
+function renderDlCqResult(r) {
+  if (!r) return '<div class="kg-issues-error"><b>无返回</b></div>';
+  if (r.ok === false) return `<div class="kg-issues-error"><b>查询不可用</b><span>${escapeHtml(reasonSkipText(r.reason) || r.reason || '')}${r.error ? '：' + escapeHtml(String(r.error).slice(0, 200)) : ''}</span></div>`;
+  const rows = r.answers || [];
+  // 规模门控（§6.1）：dlQuery 已回传 gate（六字段），直接展示，让用户看清「为什么查不到」。
+  // ⚠️ 不新增 IPC 字段：gate 早就在返回里，这里只是把它渲染出来。
+  // ⚠️ 不显示预算分母：上限（DL_LIMITS.aboxBudget）在主进程，前端硬编码一份必然漂移；
+  //    只报已用量 + 放行/超限结论，结论本身才是用户要的。
+  const gate = r.gate || null;
+  const gateHtml = gate ? `<div class="kg-reason-row"><span>规模门控</span><b>${Number(gate.classCount) || 0} 类 · ${Number(gate.individualCount) || 0} 个体 · 预算用量 ${Number(gate.budgetUsed) || 0} ${gate.allowABox ? '✅ 放行' : `❌ 超限（${escapeHtml(reasonSkipText(gate.reason))}）`}</b></div>` : '';
+  if (!rows.length) return `${gateHtml}<div class="gd-desc">无答案（${Number(r.elapsedMs) || 0} ms，Horn=${r.isHorn}）。</div>`;
+  const cols = (r.columns || []).map((c) => `<th>${escapeHtml(String(c))}</th>`).join('');
+  const body = rows.slice(0, 200).map((row) => `<tr>${(row || []).map((cell) => `<td>${escapeHtml(cell && cell.value != null ? String(cell.value) : String(cell == null ? '' : cell))}</td>`).join('')}</tr>`).join('');
+  return `${gateHtml}<div class="gd-desc">${rows.length} 条答案（显示前 ${Math.min(rows.length, 200)} 条 · ${Number(r.elapsedMs) || 0} ms）</div>
+    <table class="kg-dl-table"><thead><tr>${cols}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function renderDlHierarchyResult(r) {
+  if (!r) return '<div class="kg-issues-error"><b>无返回</b></div>';
+  if (r.ok === false) return `<div class="kg-issues-error"><b>分类不可用</b><span>${escapeHtml(reasonSkipText(r.reason) || r.reason || '')}${r.error ? '：' + escapeHtml(String(r.error).slice(0, 200)) : ''}</span></div>`;
+  const labels = r.labels || {};
+  const nameOf = (k) => labels[k] || k;
+  const cons = r.consistent === false ? '<b class="kg-dl-bad">❌ 不一致</b>' : (r.consistent === true ? '<b class="kg-dl-ok">✅ 一致</b>' : '<b>未知</b>');
+  const unsat = (r.unsatClasses || []);
+  // 不可满足类做成可点击（§6.1）：点了跳到图谱里该类型的实例节点 —— 因为「不可满足类还有实例」
+  // 正是不一致的成因，用户最需要看到的就是这些节点。绑定在 bindReasonDlActions 里（data-dl-unsat）。
+  const unsatHtml = unsat.length
+    ? `<div class="kg-reason-row"><span>不可满足类</span><b class="kg-dl-bad">${unsat.map((k) => `<button type="button" class="kg-dl-link" data-dl-unsat="${escapeHtml(String(k))}" title="在图谱中定位该类型的实例节点">${escapeHtml(nameOf(k))}</button>`).join('、')}</b></div>`
+    : '<div class="kg-reason-row"><span>不可满足类</span><b class="kg-dl-ok">无</b></div>';
+  // 类层级：只列有父/子的类，格式「子类 ⊑ 父类」（直接父类，R8 已过滤 owl:Thing/Nothing）
+  const hier = r.hierarchy || {};
+  const lines = Object.keys(hier).map((k) => {
+    const supers = (hier[k].supers || []).map(nameOf);
+    const subs = (hier[k].subs || []).map(nameOf);
+    return `<div class="kg-reason-row"><span>${escapeHtml(nameOf(k))}</span><b>${supers.length ? '⊑ ' + supers.map(escapeHtml).join('、') : ''}${supers.length && subs.length ? ' · ' : ''}${subs.length ? '⊒ ' + subs.map(escapeHtml).join('、') : ''}</b></div>`;
+  }).join('');
+  const tops = (r.topClasses || []).map(nameOf);
+  return `<div class="kg-reason-row"><span>一致性</span>${cons}</div>
+    ${unsatHtml}
+    ${tops.length ? `<div class="kg-reason-row"><span>顶层类</span><b>${tops.map(escapeHtml).join('、')}</b></div>` : ''}
+    ${lines ? `<div class="kg-dl-hier">${lines}</div>` : '<div class="gd-desc">类层级为空（各类之间无真包含关系）。</div>'}
+    <div class="gd-desc">耗时 ${Number(r.elapsedMs) || 0} ms${r.stats && r.stats.iterations != null ? ` · tableau 迭代 ${r.stats.iterations} 次` : ''}</div>`;
 }
 
 // ---- 冲突自动修复 UI（方案2/3）----
@@ -1605,9 +1923,10 @@ function reasonTimeText(ts) {
   return n > 0 ? formatDate(n) : '（未记录时间）';
 }
 
-// 推理跳过原因 → 中文。取值来自 graph.js:SKIP_REASON_TEXT（7 项）+ graph.js 顶层
+// 推理跳过原因 → 中文。取值来自 graph.js:SKIP_REASON_TEXT（15 项）+ graph.js 顶层
 // 追加的 'disabled' / 'unknown-profile' / 'exception'（infer.js 不产这三项）。
 // 前端独立一份而非跨进程引用：renderer 不能 require 主进程模块。
+// ⚠️ 8 个 dl-* 码来自 dl-js-reasoner 融合设计 §4.5，必须与主进程 SKIP_REASON_TEXT 同步。
 function reasonSkipText(code) {
   const M = {
     'reasoner-unavailable': 'protege-js 不可用，无法本地推理',
@@ -1617,6 +1936,17 @@ function reasonSkipText(code) {
     aborted: '已被用户中止',
     'materialize-failed': '物化过程出错',
     timeout: '推理超时（已保留原始图谱，可在设置中调大超时）',
+    'dl-too-large': '本体规模超出 DL 推理上限，已跳过深度推理',
+    'dl-abox-budget': 'ABox 规模超出 DL 预算，仅做 TBox 级推理',
+    'dl-non-horn': '本体非 Horn，合取查询不可用（一致性/分类仍可用）',
+    'dl-timeout': 'DL 推理超时，已中断（保留原始图谱）',
+    'dl-unavailable': 'dl-js-reasoner 未安装或加载失败',
+    'dl-irregular': '属性层级不正则（循环依赖），DL 推理不可用',
+    'dl-error': 'DL 推理出错（已保留原始图谱，详见推理日志）',
+    'dl-no-abox': '该体系无实例数据，DL 只做 TBox 级推理',
+    // 融合设计 §12：设置页总开关关闭。该码**刻意不进**主进程 SKIP_REASON_TEXT（15 键硬契约），
+    // 只在前端解释——它不是推理引擎产出的跳过原因，而是用户配置的显式结果。
+    'dl-disabled': 'DL 深度推理已在「设置 → 推理」中关闭',
     disabled: '推理功能已在设置中关闭',
     'unknown-profile': '体系无法解析',
     exception: '推理过程异常',
@@ -1680,10 +2010,21 @@ function showOwlPreviewModal(pv, { onConfirm, onCancel } = {}) {
     `<div class="owl-prof-row ${ok ? 'owl-prof-ok' : 'owl-prof-bad'}">${ok ? '✅' : '❌'} ${escapeHtml(label)}${extra ? `<em>${escapeHtml(extra)}</em>` : ''}</div>`;
   let profHtml;
   if (pc) {
+    // ⚠️ DL 裁决只挂在 preview.profileCheck 上（T1-a 有意扩展）；顶层 profileCheck 保持 8 键、无 dl。
+    //    两处都取一遍，谁有谁用，避免以后调用方换数据源时静默丢行。
+    const dlp = (prv.profileCheck && prv.profileCheck.dl) || pc.dl || null;
     profHtml =
       profRow(pc.rl && pc.rl.ok, 'OWL 2 RL（可本地推理）', pc.rl && pc.rl.ok ? '' : `${(pc.rl && pc.rl.total) || 0} 处违规`) +
       profRow(pc.ql && pc.ql.ok, 'OWL 2 QL', pc.ql && pc.ql.ok ? '' : `${(pc.ql && pc.ql.total) || 0} 处违规`) +
       profRow(pc.el && pc.el.ok, 'OWL 2 EL', pc.el && pc.el.ok ? '' : `${(pc.el && pc.el.total) || 0} 处违规`) +
+      (dlp ? profRow(dlp.available,
+        dlp.available
+          ? '完整 OWL 2 DL（dl-js-reasoner 本地推理）'
+          : '完整 OWL 2 DL（不可用）',
+        dlp.available
+          ? `${Number(dlp.dlAxiomCount) || 0} 条 DL 公理 · ${Number(dlp.classCount) || 0} 个类`
+          // reason 是码（dl-unavailable / dl-too-large / dl-irregular），与 SKIP_REASON_TEXT 同口径 → 查表出中文
+          : reasonSkipText(dlp.reason)) : '') +
       (pc.recommend ? `<div class="gd-desc">推荐使用子语言：<b>${escapeHtml(pc.recommend)}</b></div>` : '');
   } else {
     profHtml = '<div class="gd-desc">当前解析路径无法判定 OWL 2 子语言（不影响导入与推理）。</div>';
@@ -2635,7 +2976,9 @@ async function runGraphInference(opts) {
   try {
     // IPC graph:runInference 在主进程侧用 readSettingsSafe() 读设置（ipc.js:720 传 null），
     // 所以这里不需要、也不能靠传 settings 来影响开关/超时。
-    const r = await window.kb.graphRunInference({});
+    // deep:true（融合设计 §6.1「运行深度推理」）→ 主进程透传给 materializeGraph，
+    // 触发 dl.reasonABox 的 ABox 级深扫（受 gateScale 门控）；不传则 DL 只做 TBox 级。
+    const r = await window.kb.graphRunInference(o.deep ? { deep: true } : {});
     result = r;
     if (!o.noToast) {
       if (r && r.ok && !r.skipped) {

@@ -19,7 +19,7 @@
     "dist:mac": "bash build-mac.sh"
   },
   "author": "",
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "devDependencies": {
     "@highlightjs/cdn-assets": "^11.12.0",
     "dompurify": "^3.4.14",
@@ -37,6 +37,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "NOTICE.md",
       "src/**/*",
       "docs/**/*",
       "sample/**/*",
@@ -81,12 +82,13 @@
   },
   "dependencies": {
     "@skaterqiang/protege-js": "^0.1.0",
+    "dl-js-reasoner": "^0.3.0",
     "docx": "^9.7.1",
     "exceljs": "^4.4.0",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.0",
     "pdf-parse": "^2.4.5",
-    "pptxgenjs": "^4.0.1",
+    "pptxgenjs": "^4.0.0",
     "sql.js": "^1.14.1",
     "turndown": "^7.2.4",
     "xlsx": "^0.18.5"

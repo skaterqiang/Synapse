@@ -31,7 +31,18 @@ const https = require('https');
 const http = require('http');
 
 const owlImport = require('./owlImport');
-const { collectExternalRefs, MAX_CLASSES, MAX_PREDICATES, MAX_AXIOMS, MAX_CONSTRAINTS } = owlImport;
+const { collectExternalRefs, MAX_CLASSES, MAX_PREDICATES, MAX_AXIOMS, MAX_CONSTRAINTS, MAX_DL_AXIOMS, pruneDlAxioms, dlNoteLines } = owlImport;
+
+// dl-js-reasoner 适配层（惰性 + 静默降级，与 owlImport 同口径）：合并后重算 dlCapable。
+let _dl = null;
+let _dlTried = false;
+function dlMod() {
+  if (!_dlTried) {
+    _dlTried = true;
+    try { _dl = require('./dl'); } catch (_) { _dl = null; }
+  }
+  return _dl;
+}
 const { RELATION_ALIASES } = require('../../common/constants');
 
 const PURL_HOST = 'purl.obolibrary.org';   // 唯一允许的下载主机（OBO 官方 PURL）
@@ -281,14 +292,28 @@ function mergeProfiles(mainParsed, depParseds, opts = {}) {
   const predicates = []; const predKeys = new Set();
   const axioms = []; const axSeen = new Set();
   const constraints = []; const conSeen = new Set();
+  // DL 公理（融合设计 §3.5）：bundle 合并后的 profile 是 DL 的天然输入——
+  // dl-js-reasoner 不遍历 owl:imports，依赖合并必须在这里完成。
+  const dlAxioms = []; const dlSeen = new Set();
 
   const addClasses = (list) => { for (const c of (list || [])) { if (!c || !c.key || classKeys.has(c.key)) continue; classKeys.add(c.key); classes.push({ ...c }); } };
   const addPreds = (list) => { for (const p of (list || [])) { if (!p || !p.key || predKeys.has(p.key)) continue; predKeys.add(p.key); predicates.push({ ...p }); } };
   const addAxs = (list) => { for (const a of (list || [])) { if (!a || !a.type || !a.subject) continue; const sig = `${a.type}|${a.subject}|${a.object === undefined ? '' : a.object}`; if (axSeen.has(sig)) continue; axSeen.add(sig); axioms.push({ ...a }); } };
   const addCons = (list) => { for (const c of (list || [])) { const d = typeof c === 'string' ? c : (c && c.desc) || ''; if (!d || conSeen.has(d)) continue; conSeen.add(d); constraints.push({ desc: d }); } };
+  const addDlAxs = (list) => {
+    for (const a of (list || [])) {
+      if (!a || !a.type) continue;
+      let sig = '';
+      try { sig = JSON.stringify(a); } catch (_) { continue; }
+      if (dlSeen.has(sig)) continue;
+      dlSeen.add(sig);
+      dlAxioms.push(a);
+    }
+  };
 
   // 主本体先入（享有 key 冲突优先权）
   addClasses(mainProfile.classes); addPreds(mainProfile.predicates); addAxs(mainProfile.axioms); addCons(mainProfile.constraints);
+  addDlAxs(mainProfile.dlAxioms);
   const mainClassCount = classes.length;
   const mainPredCount = predicates.length;
   const sources = [{ name: mainProfile.name || opts.mainName || 'main', role: 'main', classes: mainClassCount, predicates: mainPredCount }];
@@ -298,6 +323,7 @@ function mergeProfiles(mainParsed, depParseds, opts = {}) {
     if (!d || !d.ok || !d.profile) continue;
     const bc = classes.length, bp = predicates.length;
     addClasses(d.profile.classes); addPreds(d.profile.predicates); addAxs(d.profile.axioms); addCons(d.profile.constraints);
+    addDlAxs(d.profile.dlAxioms);
     sources.push({ name: d.profile.name || d.prefix || 'dep', role: 'dep', classes: classes.length - bc, predicates: predicates.length - bp });
   }
 
@@ -315,6 +341,7 @@ function mergeProfiles(mainParsed, depParseds, opts = {}) {
   if (predicatesTruncated) predicates.length = MAX_PREDICATES;
   if (axioms.length > MAX_AXIOMS) axioms.length = MAX_AXIOMS;
   if (constraints.length > MAX_CONSTRAINTS) constraints.length = MAX_CONSTRAINTS;
+  if (dlAxioms.length > MAX_DL_AXIOMS) dlAxioms.length = MAX_DL_AXIOMS;
 
   // 中英对照：把 RO/BFO 谓词挂钩内置别名表（依赖若走 owl.js 降级则未挂过），并保留源文件中文 label
   for (const p of predicates) {
@@ -326,6 +353,10 @@ function mergeProfiles(mainParsed, depParseds, opts = {}) {
 
   const stats = {};
   enforceIntegrity(classes, predicates, axioms, stats);
+  // 合并/截断后回校 dlAxioms 引用完整性（跨文件引用此时已能解析，deferIntegrity 的欠账在这里还）
+  const dlKept = pruneDlAxioms(dlAxioms, classes, predicates);
+  dlAxioms.length = 0;
+  for (const a of dlKept) dlAxioms.push(a);
 
   // 兜底类型/谓词 + 提取模式
   const roots = classes.filter((c) => !c.parent);
@@ -347,7 +378,14 @@ function mergeProfiles(mainParsed, depParseds, opts = {}) {
     sourceFile: mainProfile.sourceFile || baseName,
     parser: (mainParsed && mainParsed.via) || 'protege-js',
     ontologyIri: mainProfile.ontologyIri || '',
+    // DL 增强（融合设计 §3.5/§4.3）：合并后的 dlAxioms + 重算 dlCapable
+    dlAxioms,
+    dlCapable: false,
   };
+  try {
+    const d = dlMod();
+    profile.dlCapable = !!(d && typeof d.dlAvailableFor === 'function' && d.dlAvailableFor(profile));
+  } catch (_) { profile.dlCapable = false; }
   const report = {
     classCount: classes.length,
     predicateCount: predicates.length,
@@ -388,6 +426,9 @@ function buildBundlePreview(profile, report, dependencies) {
   const zhClasses = profile.classes.filter((c) => /[\u4e00-\u9fa5]/.test(c.label || '')).length;
   const zhPreds = profile.predicates.filter((p) => /[\u4e00-\u9fa5]/.test(p.label || '')).length;
   notes.push(`中英对照：类 ${zhClasses}/${profile.classes.length}、谓词 ${zhPreds}/${profile.predicates.length} 带中文 label，其余按源文件为英文本地名（未臆造翻译）。`);
+  // DL 提示（融合设计 §3.5）：与单文件导入同口径（共用 owlImport.dlNoteLines）。
+  // bundle 路径没有 profileCheck（子语言判定需完整 OWLOntology），故只报 DL 公理/裁决。
+  for (const n of dlNoteLines(profile)) notes.push(n);
   const roots = profile.classes.filter((c) => !c.parent);
   return {
     kind: 'bundle',

@@ -56,6 +56,19 @@ try {
 const { detectProfile, explainProfile } = require('./profile');
 const { RELATION_ALIASES } = require('../../common/constants');
 
+// --- dl-js-reasoner 适配层（融合设计 §4.3 改动点 3：dlCapable 裁决） --------
+// 惰性 + 静默降级（I5/D6）：dl.js 自身已对 dl-js-reasoner 缺失兜底，这里再包一层
+// try/catch，保证 owlImport 在极端环境下仍可独立工作（导入功能不因 DL 缺失而挂）。
+let _dl = null;
+let _dlTried = false;
+function dlMod() {
+  if (!_dlTried) {
+    _dlTried = true;
+    try { _dl = require('./dl'); } catch (_) { _dl = null; }
+  }
+  return _dl;
+}
+
 /** protege-js 导入路径是否可用。 */
 function protegeAvailable() { return !!PJ; }
 function protegeError() { return pjError; }
@@ -65,6 +78,42 @@ const MAX_PREDICATES = 120;
 const MAX_AXIOMS = 400;
 const MAX_CONSTRAINTS = 60;
 const MAX_EXAMPLES_PER_CLASS = 3;
+const MAX_DL_AXIOMS = 600;        // dlAxioms 采集上限（融合设计 §4.3 改动点 2）
+
+// 由 dl-js-reasoner 完整支持的公理类型（融合设计 §4.3 改动点 1）：
+// 这 12 类不再计入「Synapse 体系结构不支持」，而是保留为 profile.dlAxioms 供 DL tableau 使用。
+// 元素为 [protege-js 的 AxiomType 常量名, 中文标签]；数组顺序即 report.unsupportedAxioms 的上报顺序。
+const DL_KEPT_AXIOMS = [
+  ['EQUIVALENT_CLASSES', '等价类'],
+  ['DISJOINT_UNION', '不相交并'],
+  ['SUB_OBJECT_PROPERTY_OF', '子属性'],
+  ['SUB_PROPERTY_CHAIN_OF', '属性链'],
+  ['EQUIVALENT_OBJECT_PROPERTIES', '等价属性'],
+  ['DISJOINT_OBJECT_PROPERTIES', '不相交属性'],
+  ['HAS_KEY', '键约束'],
+  ['SAME_INDIVIDUAL', '相同个体'],
+  ['DIFFERENT_INDIVIDUALS', '不同个体'],
+  ['DATATYPE_DEFINITION', '自定义数据类型'],
+  ['NEGATIVE_OBJECT_PROPERTY_ASSERTION', '否定属性断言'],
+  ['SUB_DATA_PROPERTY_OF', '子数据属性'],
+];
+// dlAxioms 中立 type → 中文标签（buildPreview 的 DL 公理直方图用，§4.3 改动点 4）。
+// ⚠️ 键是 dl.js 消费的中立形态名（非 protege-js 的 AxiomType 常量名）。
+const DL_AXIOM_LABEL = {
+  EquivalentClasses: '等价类',
+  DisjointUnion: '不相交并',
+  SubClassOfExpression: '匿名类子类',
+  SubObjectPropertyOf: '子属性',
+  SubPropertyChainOf: '属性链',
+  EquivalentObjectProperties: '等价属性',
+  DisjointObjectProperties: '不相交属性',
+  HasKey: '键约束',
+  SameIndividual: '相同个体',
+  DifferentIndividuals: '不同个体',
+  DatatypeDefinition: '自定义数据类型',
+  NegativeObjectPropertyAssertion: '否定属性断言',
+  SubDataPropertyOf: '子数据属性',
+};
 
 // Synapse 体系只支持这 12 种公理（与 renderer/graph.js:691 的 typeNames 一致）
 const SUPPORTED_AXIOM_TYPES = new Set([
@@ -274,6 +323,177 @@ function iriToKey(iri, usedKeys) {
   while (usedKeys && usedKeys.has(k)) k = `${base}_${i++}`;
   if (usedKeys) usedKeys.add(k);
   return k;
+}
+
+// ---------------------------------------------------------------------------
+// DL 公理采集（融合设计 §3.4 / §4.3 改动点 2）
+//
+// protege-js 解析出的公理对象 → **结构化中立形态**（不绑定 protege-js 对象），
+// 存进 profile.dlAxioms，由 dl.js 的 buildDLOntology 逐条转成 DL 公理。
+// 这样做的动机（D3）：dl-js-reasoner 虽能 duck-type protege-js 对象，但 Synapse
+// 的推理入口是 profile + 图谱，统一走 profile 合成可规避空前缀 IRI 陷阱（R5）。
+// ---------------------------------------------------------------------------
+
+/** 个体 IRI → 图谱节点 id 的近似映射。
+ *  ⚠️ 导入期拿不到图谱，故用 IRI 本地名做稳定近似；DL 的 ABox 实际由图谱节点/边
+ *  合成（§3.3），SameIndividual/DifferentIndividuals/NegativeObjectPropertyAssertion
+ *  在图谱 id 与本地名不一致时会被 dl.js 当作新个体声明——语义仍正确（只是不与图谱
+ *  节点共享身份），故保留。 */
+function individualIdOf(x) {
+  const iri = iriOf(x);
+  if (!iri) return '';
+  const nm = localName(iri);
+  return nm ? nm.replace(/[^\w\u4e00-\u9fa5.-]/g, '_') : '';
+}
+
+/**
+ * protege-js 类表达式 → dl.js 的结构树（§3.4 最后一行 AnonymousClassExpression）。
+ * 具名类返回字符串 key（dl.js 的简写形态）；匿名表达式返回 {kind,…} 树；
+ * 数据侧/未知类型返回 null（dl.js 会跳过）。
+ * @param {*} expr protege-js 类表达式
+ * @param {(x:any)=>string} keyOf IRI/实体 → Synapse key
+ * @param {number} [depth] 递归深度保护
+ */
+function classExprToTree(expr, keyOf, depth = 0) {
+  if (!expr || depth > 12) return null;
+  if (typeof expr === 'string') { const k = keyOf(expr); return k || null; }
+  if (isNamed(expr)) { const k = keyOf(expr); return k || null; }
+  const t = expr.type;
+  const sub = (x) => classExprToTree(x, keyOf, depth + 1);
+  switch (t) {
+    case 'ObjectIntersectionOf':
+    case 'ObjectUnionOf': {
+      const ops = (Array.isArray(expr.operands) ? expr.operands : []).map(sub).filter(Boolean);
+      return ops.length ? { kind: t === 'ObjectIntersectionOf' ? 'and' : 'or', operands: ops } : null;
+    }
+    case 'ObjectComplementOf': {
+      const op = sub(expr.operand);
+      return op ? { kind: 'not', operand: op } : null;
+    }
+    case 'ObjectSomeValuesFrom':
+    case 'ObjectAllValuesFrom': {
+      const p = keyOf(expr.property);
+      const f = sub(expr.filler);
+      return (p && f) ? { kind: t === 'ObjectSomeValuesFrom' ? 'some' : 'only', property: p, filler: f } : null;
+    }
+    case 'ObjectHasValue': {
+      const p = keyOf(expr.property);
+      const ind = individualIdOf(expr.value);
+      return (p && ind) ? { kind: 'value', property: p, individual: ind } : null;
+    }
+    case 'ObjectHasSelf': {
+      const p = keyOf(expr.property);
+      return p ? { kind: 'self', property: p } : null;
+    }
+    case 'ObjectOneOf': {
+      // ⚠️ protege-js 的 OWLObjectOneOf 字段名是 operands（不是 individuals）
+      const inds = (Array.isArray(expr.operands) ? expr.operands : []).map(individualIdOf).filter(Boolean);
+      return inds.length ? { kind: 'oneOf', individuals: inds } : null;
+    }
+    case 'ObjectMinCardinality':
+    case 'ObjectMaxCardinality':
+    case 'ObjectExactCardinality':
+    case 'ObjectMinQualifiedCardinality':
+    case 'ObjectMaxQualifiedCardinality':
+    case 'ObjectExactQualifiedCardinality': {
+      const p = keyOf(expr.property);
+      if (!p) return null;
+      const kind = /Min/.test(t) ? 'min' : (/Max/.test(t) ? 'max' : 'exact');
+      const n = Math.max(0, Math.round(Number(expr.cardinality) || 0));
+      const f = sub(expr.filler);
+      return f ? { kind, n, property: p, filler: f } : { kind, n, property: p };
+    }
+    default:
+      return null;   // 数据侧表达式（DataSomeValuesFrom 等）与未知类型：DL 侧跳过
+  }
+}
+
+/**
+ * protege-js 数据范围 → dl.js 的 dataRange 树（DatatypeDefinition 用）。
+ * 仅支持具名 datatype（dl.js 的 dataRangeFromTree 只认这两种形态）。
+ */
+function dataRangeToTree(dr) {
+  if (!dr) return null;
+  if (typeof dr === 'string') return dr;
+  const iri = iriOf(dr);
+  return iri || null;
+}
+
+/** dlAxioms 的类表达式树是否只引用**仍存在**的类/谓词 key（截断后回校用）。 */
+function treeRefsOk(t, classOk, propOk) {
+  if (t == null) return false;
+  if (typeof t === 'string') return classOk.has(t);
+  if (typeof t !== 'object') return false;
+  switch (t.kind) {
+    case 'class': return classOk.has(t.key);
+    case 'and': case 'or':
+      return Array.isArray(t.operands) && t.operands.length > 0
+        && t.operands.every((x) => treeRefsOk(x, classOk, propOk));
+    case 'not': return treeRefsOk(t.operand, classOk, propOk);
+    case 'some': case 'only':
+      return propOk.has(t.property) && treeRefsOk(t.filler, classOk, propOk);
+    case 'value': return propOk.has(t.property) && !!t.individual;
+    case 'self': return propOk.has(t.property);
+    case 'oneOf': return Array.isArray(t.individuals) && t.individuals.length > 0;
+    case 'min': case 'max': case 'exact':
+      return propOk.has(t.property)
+        && (t.filler === undefined || treeRefsOk(t.filler, classOk, propOk));
+    default: return false;
+  }
+}
+
+/** 单条 dlAxiom 的引用是否完整（个体 id / datatype IRI 不参与校验：它们不来自体系）。 */
+function dlAxiomRefsOk(a, classOk, propOk) {
+  if (!a || !a.type) return false;
+  switch (a.type) {
+    case 'EquivalentClasses':
+      return Array.isArray(a.classExpressions) && a.classExpressions.length >= 2
+        && a.classExpressions.every((x) => treeRefsOk(x, classOk, propOk));
+    case 'DisjointUnion':
+      return classOk.has(a.owlClass) && Array.isArray(a.classExpressions) && a.classExpressions.length >= 2
+        && a.classExpressions.every((x) => treeRefsOk(x, classOk, propOk));
+    case 'SubClassOfExpression':
+      return treeRefsOk(a.sub, classOk, propOk) && treeRefsOk(a.super, classOk, propOk);
+    case 'SubObjectPropertyOf':
+    case 'SubDataPropertyOf':
+      return propOk.has(a.subProperty) && propOk.has(a.superProperty);
+    case 'SubPropertyChainOf':
+      return propOk.has(a.superProperty) && Array.isArray(a.propertyChain) && a.propertyChain.length >= 2
+        && a.propertyChain.every((p) => propOk.has(p));
+    case 'EquivalentObjectProperties':
+    case 'DisjointObjectProperties':
+      return Array.isArray(a.properties) && a.properties.length >= 2 && a.properties.every((p) => propOk.has(p));
+    case 'HasKey':
+      return treeRefsOk(a.classExpression, classOk, propOk)
+        && Array.isArray(a.propertyExpressions) && a.propertyExpressions.length > 0
+        && a.propertyExpressions.every((p) => propOk.has(p));
+    case 'SameIndividual':
+    case 'DifferentIndividuals':
+      return Array.isArray(a.individuals) && a.individuals.length >= 2 && a.individuals.every(Boolean);
+    case 'DatatypeDefinition':
+      return !!a.datatype && !!a.dataRange;
+    case 'NegativeObjectPropertyAssertion':
+      return !!a.subject && propOk.has(a.property) && !!a.object;
+    default:
+      return false;
+  }
+}
+
+/**
+ * 截断/合并后回校 dlAxioms 的引用完整性（与 §8「引用完整性」对普通公理的处理同口径）。
+ * 类或谓词被截断掉后，引用它们的 DL 公理会让 dl-js-reasoner 凭空声明出体系里不存在的
+ * 实体（表现为 dlHierarchy 返回 UI 看不到的类），故一律丢弃。
+ * @param {Array} dlAxioms
+ * @param {Array} classes    最终类集
+ * @param {Array} predicates 最终谓词集
+ * @returns {Array} 引用完整的 dlAxioms（新数组）
+ */
+function pruneDlAxioms(dlAxioms, classes, predicates) {
+  const list = Array.isArray(dlAxioms) ? dlAxioms : [];
+  if (!list.length) return [];
+  const classOk = new Set((classes || []).map((c) => c && c.key).filter(Boolean));
+  const propOk = new Set((predicates || []).map((p) => p && p.key).filter(Boolean));
+  return list.filter((a) => dlAxiomRefsOk(a, classOk, propOk));
 }
 
 // ---------------------------------------------------------------------------
@@ -521,6 +741,88 @@ function ontologyToProfile(ontology, opts = {}) {
     if (pk && rk) pushAx('PropertyRange', pk, rk, `${pk} 的值域为 ${rk}`);
   }
 
+  // --- 4b) DL 公理采集（融合设计 §4.3 改动点 2） -------------------------
+  // 上面 pushAx 只收 Synapse 体系结构能表达的 12 类；这里把 dl-js-reasoner 能完整
+  // 推理的 12 类公理 + 匿名类表达式 SubClassOf 以中立形态收进 profile.dlAxioms，
+  // 使「导入即带完整 DL 表达力」（设计 §8 P3 的验收目标）。
+  const dlAxioms = [];
+  const dlSeen = new Set();          // 同签名去重（protege-js 可能重复给出等价公理）
+  const dlStats = { converted: 0, skipped: 0 };
+  const pushDlAx = (a) => {
+    if (!a || !a.type) { dlStats.skipped++; return; }
+    if (dlAxioms.length >= MAX_DL_AXIOMS) { dlStats.skipped++; return; }
+    let sig = '';
+    try { sig = a.type + '\u0001' + JSON.stringify(a); } catch (_) { sig = a.type + '\u0001' + Math.random(); }
+    if (dlSeen.has(sig)) return;     // 完全重复的公理不重复计数
+    dlSeen.add(sig);
+    dlAxioms.push(a);
+    dlStats.converted++;
+  };
+  // 匿名类表达式 SubClassOf（含两端至少一侧匿名的情况）→ SubClassOfExpression
+  for (const ax of subClassAxioms) {
+    const subT = classExprToTree(ax && ax.subClass, keyOf);
+    const supT = classExprToTree(ax && ax.superClass, keyOf);
+    if (!subT || !supT) continue;
+    // 两端都是具名类的已由 pushAx('SubClassOf') 收进体系公理，DL 侧从 parentsOf 合成，
+    // 此处只补「至少一侧是匿名表达式」的，避免重复发同一条 ⊑。
+    if (typeof subT === 'string' && typeof supT === 'string') continue;
+    pushDlAx({ type: 'SubClassOfExpression', sub: subT, super: supT });
+  }
+  for (const ax of axiomsOf('EQUIVALENT_CLASSES')) {
+    const ces = (Array.isArray(ax.classExpressions) ? ax.classExpressions : [])
+      .map((e) => classExprToTree(e, keyOf)).filter(Boolean);
+    if (ces.length >= 2) pushDlAx({ type: 'EquivalentClasses', classExpressions: ces });
+  }
+  for (const ax of axiomsOf('DISJOINT_UNION')) {
+    const ck = keyOf(ax && ax.owlClass);
+    const ces = (Array.isArray(ax && ax.classExpressions) ? ax.classExpressions : [])
+      .map((e) => classExprToTree(e, keyOf)).filter(Boolean);
+    if (ck && ces.length >= 2) pushDlAx({ type: 'DisjointUnion', owlClass: ck, classExpressions: ces });
+  }
+  for (const ax of axiomsOf('SUB_OBJECT_PROPERTY_OF')) {
+    const s = keyOf(ax && ax.subProperty), o = keyOf(ax && ax.superProperty);
+    if (s && o && s !== o) pushDlAx({ type: 'SubObjectPropertyOf', subProperty: s, superProperty: o });
+  }
+  for (const ax of axiomsOf('SUB_PROPERTY_CHAIN_OF')) {
+    const chain = (Array.isArray(ax && ax.propertyChain) ? ax.propertyChain : []).map((p) => keyOf(p)).filter(Boolean);
+    const sp = keyOf(ax && ax.superProperty);
+    if (chain.length >= 2 && sp) pushDlAx({ type: 'SubPropertyChainOf', propertyChain: chain, superProperty: sp });
+  }
+  for (const ax of axiomsOf('EQUIVALENT_OBJECT_PROPERTIES')) {
+    const ps = (Array.isArray(ax && ax.properties) ? ax.properties : []).map((p) => keyOf(p)).filter(Boolean);
+    if (ps.length >= 2) pushDlAx({ type: 'EquivalentObjectProperties', properties: [...new Set(ps)] });
+  }
+  for (const ax of axiomsOf('DISJOINT_OBJECT_PROPERTIES')) {
+    const ps = (Array.isArray(ax && ax.properties) ? ax.properties : []).map((p) => keyOf(p)).filter(Boolean);
+    if (ps.length >= 2) pushDlAx({ type: 'DisjointObjectProperties', properties: [...new Set(ps)] });
+  }
+  for (const ax of axiomsOf('HAS_KEY')) {
+    const ce = classExprToTree(ax && ax.classExpression, keyOf);
+    const ps = (Array.isArray(ax && ax.propertyExpressions) ? ax.propertyExpressions : []).map((p) => keyOf(p)).filter(Boolean);
+    if (ce && ps.length) pushDlAx({ type: 'HasKey', classExpression: ce, propertyExpressions: [...new Set(ps)] });
+  }
+  for (const ax of axiomsOf('SAME_INDIVIDUAL')) {
+    const inds = (Array.isArray(ax && ax.individuals) ? ax.individuals : []).map(individualIdOf).filter(Boolean);
+    if (inds.length >= 2) pushDlAx({ type: 'SameIndividual', individuals: [...new Set(inds)] });
+  }
+  for (const ax of axiomsOf('DIFFERENT_INDIVIDUALS')) {
+    const inds = (Array.isArray(ax && ax.individuals) ? ax.individuals : []).map(individualIdOf).filter(Boolean);
+    if (inds.length >= 2) pushDlAx({ type: 'DifferentIndividuals', individuals: [...new Set(inds)] });
+  }
+  for (const ax of axiomsOf('DATATYPE_DEFINITION')) {
+    const dt = iriOf(ax && ax.datatype);
+    const dr = dataRangeToTree(ax && ax.dataRange);
+    if (dt && dr) pushDlAx({ type: 'DatatypeDefinition', datatype: dt, dataRange: dr });
+  }
+  for (const ax of axiomsOf('NEGATIVE_OBJECT_PROPERTY_ASSERTION')) {
+    const s = individualIdOf(ax && ax.subject), p = keyOf(ax && ax.property), o = individualIdOf(ax && ax.object);
+    if (s && p && o) pushDlAx({ type: 'NegativeObjectPropertyAssertion', subject: s, property: p, object: o });
+  }
+  for (const ax of axiomsOf('SUB_DATA_PROPERTY_OF')) {
+    const s = keyOf(ax && ax.subProperty), o = keyOf(ax && ax.superProperty);
+    if (s && o && s !== o) pushDlAx({ type: 'SubDataPropertyOf', subProperty: s, superProperty: o });
+  }
+
   // --- 5) 个体 → 类示例（ABox） -----------------------------------------
   // 注意：Turtle 路径经 triplesToOntology 后个体恒为 0（该转换器只还原 TBox），
   // RDF/XML 路径才可能带个体。拿不到就是空，不影响体系可用性。
@@ -601,6 +903,16 @@ function ontologyToProfile(ontology, opts = {}) {
     report.predicatesTruncated = true;
   }
 
+  // 截断后回校 dlAxioms 的引用完整性（类/谓词被截掉 → 引用它们的 DL 公理丢弃，
+  // 否则 dl-js-reasoner 会凭空声明体系里不存在的实体）。
+  // deferIntegrity（体系化导入）时**不**回校：跨文件引用要等 ontologyBundle
+  // 合并出完整类集后统一 prune（与普通公理同口径，见 mergeProfiles）。
+  if (!opts.deferIntegrity && dlAxioms.length) {
+    const pruned = pruneDlAxioms(dlAxioms, classes, predicates);
+    dlAxioms.length = 0;
+    for (const a of pruned) dlAxioms.push(a);
+  }
+
   // --- 8) 引用完整性 ----------------------------------------------------
   // deferIntegrity（体系化导入用）：合并前**不**清空跨文件的 parent/domain/range、不丢弃悬挂公理，
   // 交由 ontologyBundle 在所有文件合并出完整类集后统一回校——否则 RO 谓词指向 BFO 类的
@@ -630,35 +942,42 @@ function ontologyToProfile(ontology, opts = {}) {
     report.axiomCount = axioms.length;
   }
 
-  // 被跳过的公理类型（让用户知道有多少表达力没保留下来）
-  const SKIPPED = [
-    ['EQUIVALENT_CLASSES', '等价类'],
-    ['DISJOINT_UNION', '不相交并'],
-    ['SUB_OBJECT_PROPERTY_OF', '子属性'],
-    ['SUB_PROPERTY_CHAIN_OF', '属性链'],
-    ['EQUIVALENT_OBJECT_PROPERTIES', '等价属性'],
-    ['DISJOINT_OBJECT_PROPERTIES', '不相交属性'],
-    ['HAS_KEY', '键约束'],
-    ['SAME_INDIVIDUAL', '相同个体'],
-    ['DIFFERENT_INDIVIDUALS', '不同个体'],
-    ['DATATYPE_DEFINITION', '自定义数据类型'],
-    ['NEGATIVE_OBJECT_PROPERTY_ASSERTION', '否定属性断言'],
-    ['SUB_DATA_PROPERTY_OF', '子数据属性'],
-  ];
-  for (const [t, zh] of SKIPPED) {
+  // 被保留/跳过的公理类型（融合设计 §4.3 改动点 1）：
+  // 原 SKIPPED 12 类已全部由 dl-js-reasoner 支持 → 改以「保留」口径上报（preserved:true），
+  // 不再计入「Synapse 体系结构不支持」。真正不支持的只剩 SWRL 规则、注解推理与
+  // description graph（protege-js 本身也不解析这些，无从上报）。
+  for (const [t, zh] of DL_KEPT_AXIOMS) {
     const n = axiomsOf(t).length;
-    if (n) report.unsupportedAxioms.push({ type: t, label: zh, count: n, note: 'Synapse 体系结构不支持，已跳过（不影响类层级与谓词导入）' });
+    if (n) {
+      report.unsupportedAxioms.push({
+        type: t, label: zh, count: n, preserved: true,
+        note: 'Synapse 体系结构不直接使用，但已保留为 DL 公理（dl-js-reasoner 完整 OWL 2 DL 推理可用，不影响类层级与谓词导入）',
+      });
+    }
+  }
+  // dlStats 的唯一出口：采集阶段被上限截断/形态不完整的条数（正常本体恒为 0，
+  // 故既有的 unsupportedAxioms 断言不受影响）。report 的 18 键是硬契约，只能挂在这个自由数组里。
+  if (dlStats.skipped > 0) {
+    report.unsupportedAxioms.push({
+      type: 'DlAxiomsDropped', label: 'DL 公理', count: dlStats.skipped, preserved: false,
+      note: `有 ${dlStats.skipped} 条 DL 公理因超出 ${MAX_DL_AXIOMS} 条上限或形态不完整被丢弃（已保留 ${dlAxioms.length} 条交 dl-js-reasoner 推理）`,
+    });
   }
   if (anonSubClass) {
+    const anonKept = dlAxioms.filter((a) => a.type === 'SubClassOfExpression'
+      || a.type === 'EquivalentClasses' || a.type === 'DisjointUnion' || a.type === 'HasKey').length;
     report.unsupportedAxioms.push({
       type: 'AnonymousClassExpression', label: '匿名类表达式', count: anonSubClass,
-      note: '交/并/补/存在限定等匿名类表达式无法映射为 Synapse 具名类，已跳过',
+      preserved: anonKept > 0,
+      note: anonKept > 0
+        ? `交/并/补/存在限定等匿名类表达式无法映射为 Synapse 具名类（类层级/护栏仍按具名类生效），但已序列化为类表达式树保留给 dl-js-reasoner 推理`
+        : '交/并/补/存在限定等匿名类表达式无法映射为 Synapse 具名类，已跳过',
     });
   }
   if (individualCount === 0 && opts.format === 'Turtle') {
     report.unsupportedAxioms.push({
       type: 'ABoxDropped', label: '个体断言', count: 0,
-      note: 'protege-js 的 Turtle 路径（TurtleParser → TripleStore → triplesToOntology）只还原 TBox，个体与个体间断言会丢失，故无「类示例」',
+      note: 'protege-js 的 Turtle 路径（TurtleParser → TripleStore → triplesToOntology）只还原 TBox，个体与个体间断言会丢失，故无「类示例」；DL 推理的 ABox 由图谱节点/边提供，不受影响',
     });
   }
 
@@ -714,7 +1033,21 @@ function ontologyToProfile(ontology, opts = {}) {
     sourceFile: String(src),
     parser: 'protege-js',
     ontologyIri: report.ontologyIri,
+    // --- DL 增强（融合设计 §4.3 改动点 3）---
+    // dlAxioms：中立形态的完整 DL 公理（12 类 + 匿名类表达式树），由 dl.js 消费。
+    // dlCapable：DL 裁决结果（模块可用 && 类数 ≤ 上限 && 属性层级近似正则）。
+    // 两者对旧数据向后兼容：读取侧一律 `|| []` / `|| false`。
+    dlAxioms,
+    dlCapable: false,
   };
+
+  // dlCapable 裁决：dl.js 缺失时静默降级为 false（I5/D6），不影响导入本身。
+  // ⚠️ 不往 report 里加键：report 的 18 键是硬契约（graph-reason-integration.test.js:590），
+  //    DL 计数由 buildPreview 从 profile.dlAxioms 自行统计，嵌进 preview.profileCheck.dl。
+  try {
+    const d = dlMod();
+    profile.dlCapable = !!(d && typeof d.dlAvailableFor === 'function' && d.dlAvailableFor(profile, opts));
+  } catch (_) { profile.dlCapable = false; }
 
   return { profile, report };
 }
@@ -849,6 +1182,23 @@ function tryLegacy(filePath, opts, displayName, detected) {
 }
 
 /**
+ * DL 裁决的预览信息（融合设计 §4.3 改动点 4）。
+ * 嵌进 preview.profileCheck.dl —— preview 顶层 18 键是硬契约，禁止新增顶层键。
+ * @returns {{available:boolean, reason:string, classCount:number, dlAxiomCount:number}}
+ *   reason ∈ '' | 'dl-unavailable' | 'dl-too-large' | 'dl-irregular'（与 graph.js 的
+ *   SKIP_REASON_TEXT 同口径，前端可直接查表出中文）
+ */
+function dlPreviewInfo(profile, classCount, dlAxiomCount, available) {
+  const base = { available: !!available, reason: '', classCount: classCount || 0, dlAxiomCount: dlAxiomCount || 0 };
+  if (base.available) return base;
+  const d = dlMod();
+  if (!d || typeof d.dlAvailable !== 'function' || !d.dlAvailable()) return { ...base, reason: 'dl-unavailable' };
+  const maxClasses = (d.DL_LIMITS && d.DL_LIMITS.maxClasses) || 2000;
+  if (base.classCount > maxClasses) return { ...base, reason: 'dl-too-large' };
+  return { ...base, reason: 'dl-irregular' };
+}
+
+/**
  * 构造导入预览（设计文档 §6.9「OWL 导入预览弹窗」的数据源）。
  * 纯数据，不含 HTML —— 渲染在 renderer 侧做。
  */
@@ -890,7 +1240,8 @@ function buildPreview(profile, report, profileCheck, detected) {
     warnings.push(`${report.clearedRefs} 处 domain/range 引用指向了被截断的类，已清空以免护栏误拦。`);
   }
   for (const u of (report.unsupportedAxioms || [])) {
-    notes.push(`跳过 ${u.count} 条${u.label || u.type}：${u.note}`);
+    // preserved:true → 已由 dl-js-reasoner 保留（融合设计 §4.3 改动点 1），措辞用「保留」而非「跳过」
+    notes.push(`${u.preserved ? '保留' : '跳过'} ${u.count} 条${u.label || u.type}：${u.note}`);
   }
   if (!classes.length) warnings.push('未提取到任何类，该体系不可用。');
 
@@ -906,16 +1257,24 @@ function buildPreview(profile, report, profileCheck, detected) {
   }
 
   // 子语言判定
+  // DL 裁决（融合设计 §4.3 改动点 4）：以 profile.dlCapable 为准（owlImport 在
+  // ontologyToProfile 末尾裁决），dlAxioms 直方图供用户看清「哪些表达力被 DL 接住了」。
+  const dlAxioms = Array.isArray(profile.dlAxioms) ? profile.dlAxioms : [];
+  const dlCapable = !!profile.dlCapable;
   if (profileCheck && profileCheck.available) {
     const ex = explainProfile(profileCheck);
     notes.push(ex.headline);
     for (const l of ex.lines) notes.push(l);
-    if (!profileCheck.reasonerAvailable) {
+    if (!profileCheck.reasonerAvailable && dlCapable) {
+      // 超出 RL 但 DL 接得住：不再报「无法本地推理」，改报 DL 可用（改动点 4）
+      notes.push('该本体超出 OWL 2 RL，但可由 dl-js-reasoner 做完整 OWL 2 DL 本地推理（一致性、不可满足类、分类、蕴含与合取查询）。');
+    } else if (!profileCheck.reasonerAvailable) {
       warnings.push('该本体不属于 OWL 2 RL，Synapse 内置推理机无法对其做完整本地推理；导入后类层级与谓词受控词表仍生效。');
     }
   } else if (profileCheck && profileCheck.error) {
     notes.push('子语言判定：' + profileCheck.error);
   }
+  for (const n of dlNoteLines(profile)) notes.push(n);
 
   // 护栏覆盖度 —— 显式回应「导入了但护栏不生效」的困惑，而不是静默失效
   const withDomain = predicates.filter((p) => p.domain).length;
@@ -969,10 +1328,37 @@ function buildPreview(profile, report, profileCheck, detected) {
       rl: { ok: profileCheck.rl.ok, total: profileCheck.rl.total, sample: profileCheck.rl.violations.slice(0, 5) },
       ql: { ok: profileCheck.ql.ok, total: profileCheck.ql.total },
       el: { ok: profileCheck.el.ok, total: profileCheck.el.total },
+      // DL 裁决（融合设计 §4.3 改动点 4 / §9 T1-a）：嵌进既有子对象，不增 preview 顶层键
+      dl: dlPreviewInfo(profile, classes.length, dlAxioms.length, dlCapable),
     } : null,
     warnings,
     notes,
   };
+}
+
+/**
+ * DL 相关的预览提示行（融合设计 §4.3 改动点 4）。
+ * 单文件导入（buildPreview）与体系化导入（ontologyBundle.buildBundlePreview）共用，
+ * 保证两条导入路径的 DL 口径一致。子语言判定（profileCheck）的文案不在此处：
+ * bundle 路径没有 profileCheck，只有单文件路径有。
+ * @param {object} profile 已带 dlAxioms / dlCapable 的体系
+ * @returns {string[]} 0–1 行提示（无 DL 公理且 dlCapable=false 时为空数组）
+ */
+function dlNoteLines(profile) {
+  const dlAxioms = Array.isArray(profile && profile.dlAxioms) ? profile.dlAxioms : [];
+  const dlCapable = !!(profile && profile.dlCapable);
+  const hist = axiomHistogram(dlAxioms).map((h) => ({
+    type: h.type,
+    count: h.count,
+    label: DL_AXIOM_LABEL[h.type] || h.type,
+  }));
+  if (hist.length) {
+    return [`DL 公理保留：${hist.map((h) => `${h.label}×${h.count}`).join('、')}（共 ${dlAxioms.length} 条，交 dl-js-reasoner 推理）。`];
+  }
+  if (dlCapable) {
+    return ['DL 推理可用：该本体无超出 Synapse 体系结构的公理，dl-js-reasoner 仍可提供一致性判定、类分类与合取查询。'];
+  }
+  return [];
 }
 
 /** 公理类型直方图（按数量降序）。 */
@@ -993,11 +1379,14 @@ module.exports = {
   importOwlExtended,
   buildPreview,
   axiomHistogram,
+  dlNoteLines,
   localName,
   iriOf,
   literalOf,
   isNamed,
   iriToKey,
+  classExprToTree,
+  pruneDlAxioms,
   SUPPORTED_AXIOM_TYPES,
   KNOWN_FORMATS,
   FORMAT_LABEL,
@@ -1005,4 +1394,5 @@ module.exports = {
   MAX_PREDICATES,
   MAX_AXIOMS,
   MAX_CONSTRAINTS,
+  MAX_DL_AXIOMS,
 };

@@ -271,10 +271,16 @@ SubClassOf(:A ObjectComplementOf(:B))
   // ======================================================================
   const matT = await infer.materializeGraph(g3, BL, {});
   check('传递链未被跳过', matT.skipped === false);
-  check('stats 13 个字段齐全（elapsedMs 除外）', (() => {
-    const { elapsedMs, ...rest } = matT.stats;
+  // dl-js-reasoner 融合设计 §9.2.1 T2-a：stats 恒带第 14 键 `dl`（DL 未跑时 ran:false）。
+  // 13 个 RL 键的完整 JSON 断言保留，`dl` 子对象单独断言（DG6：新信息只嵌进自由形态子对象）。
+  check('stats 13 个 RL 字段齐全（elapsedMs / dl 除外）', (() => {
+    const { elapsedMs, dl, ...rest } = matT.stats;
     return J(rest) === '{"inputTriples":2,"inputNodes":3,"skippedEdges":0,"staleInferred":0,"classes":11,"predicates":8,"triplesBefore":46,"triplesAfter":305,"inferredCount":259,"inferredEdges":1,"unjustified":0,"rounds":3}';
   })(), J(matT.stats));
+  check('stats.dl 存在且 bfo-lite（非 DL 体系）未触发 DL 推理', (() => {
+    const d = matT.stats.dl;
+    return !!d && d.ran === false && d.consistent === null && d.dlInferred === 0 && d.skipReason !== undefined;
+  })(), J(matT.stats.dl));
   check('成功结果的字段名是 inferredEdges（不是 edges）', Array.isArray(matT.inferredEdges) && matT.edges === undefined);
   check('传递闭包只回收 1 条图内新边（n0→n2）', matT.inferredEdges.length === 1 && matT.inferredEdges[0].from === 'bfo-lite:n0' && matT.inferredEdges[0].to === 'bfo-lite:n2');
   check('推理边带完整溯源字段', (() => {
@@ -659,13 +665,15 @@ SubClassOf(:A ObjectComplementOf(:B))
   section('§4.6 profile：OWL 2 子语言判别');
   // ======================================================================
   check('profileCheckAvailable() 为真', prof.profileCheckAvailable() === true);
-  check('PROFILE_META 覆盖 RL/QL/EL', J(Object.keys(prof.PROFILE_META)) === '["RL","QL","EL"]');
-  check('只有 RL 标记为可本地推理', prof.PROFILE_META.RL.localReasoning === true && prof.PROFILE_META.QL.localReasoning === false && prof.PROFILE_META.EL.localReasoning === false);
+  // dl-js-reasoner 融合设计 §9.2.1 T2-b/T2-c：PROFILE_META 新增 DL 条目（键序 RL/DL/QL/EL）。
+  check('PROFILE_META 覆盖 RL/DL/QL/EL', J(Object.keys(prof.PROFILE_META)) === '["RL","DL","QL","EL"]', J(Object.keys(prof.PROFILE_META)));
+  check('只有 RL 与 DL 标记为可本地推理', prof.PROFILE_META.RL.localReasoning === true && prof.PROFILE_META.DL.localReasoning === true && prof.PROFILE_META.QL.localReasoning === false && prof.PROFILE_META.EL.localReasoning === false);
   check('RL 元信息指明使用 OWL2RLReasoner', /OWL2RLReasoner/.test(prof.PROFILE_META.RL.reasoner));
+  check('DL 元信息指明使用 dl-js-reasoner', /dl-js-reasoner/.test(prof.PROFILE_META.DL.reasoner) && prof.PROFILE_META.DL.name === 'OWL 2 DL', J(prof.PROFILE_META.DL));
   const pNull = prof.detectProfile(null);
   check('detectProfile(null) → available:false 且给出中文原因', pNull.available === false && pNull.error === '需要 OWLOntology 实例（含 getAxiomsOfType）', J(pNull.error));
   check('detectProfile(null) 的 rl/ql/el 均为空壳', pNull.rl.ok === false && pNull.rl.total === 0 && pNull.recommend === null && J(pNull.profiles) === '[]');
-  check('detectProfile(null) 仍带 PROFILE_META 供 UI 渲染', J(Object.keys(pNull.meta)) === '["RL","QL","EL"]');
+  check('detectProfile(null) 仍带 PROFILE_META 供 UI 渲染', J(Object.keys(pNull.meta)) === '["RL","DL","QL","EL"]', J(Object.keys(pNull.meta)));
   check('detectProfile({}) 同样降级而不抛', prof.detectProfile({}).available === false);
   check('explainProfile(null) → 「子语言判定不可用」', J(prof.explainProfile(null)) === '{"headline":"子语言判定不可用","lines":["protege-js 的 OWL2Profiles 模块未能加载"],"canReasonLocally":false,"recommend":null}');
   check('explainProfile(undefined) 同样降级', prof.explainProfile(undefined).canReasonLocally === false);
@@ -694,12 +702,27 @@ SubClassOf(:A ObjectComplementOf(:B))
 
   const nrlParsed = owlImport.parseWithProtege(NON_RL_OFN, 'Functional', {});
   const nrlD = prof.detectProfile(nrlParsed.ontology);
-  check('含 ObjectUnionOf/ObjectComplementOf 的本体三个子语言全不符合', nrlD.available === true && nrlD.recommend === null && nrlD.reasonerAvailable === false && J(nrlD.profiles) === '[]', J({ r: nrlD.recommend, p: nrlD.profiles, rl: nrlD.rl.total }));
+  // dl-js-reasoner 融合设计 §9.2.1 T2-d：三个子语言仍全不符合，但 DL 裁决通过后
+  // recommend 不再是 null（而是 'DL'）、reasonerAvailable 不再是 false。
+  // profiles 仍只列 RL/QL/EL（DL 不是 OWL 2 Profile，不参与 profiles 数组）。
+  check('含 ObjectUnionOf/ObjectComplementOf 的本体三个子语言全不符合，但 DL 接得住', nrlD.available === true && nrlD.recommend === 'DL' && nrlD.reasonerAvailable === true && J(nrlD.profiles) === '[]', J({ r: nrlD.recommend, ra: nrlD.reasonerAvailable, p: nrlD.profiles, rl: nrlD.rl.total }));
   check('RL 违规命中 RL-subclass 与 RL-superclass 两条规则', J(nrlD.rl.violations.map((v) => v.rule)) === '["RL-subclass","RL-superclass"]', J(nrlD.rl.violations.map((v) => v.rule)));
   check('违规 axiom 字段是可读的功能语法串且被截断到 300 字内', nrlD.rl.violations.every((v) => typeof v.axiom === 'string' && v.axiom.length <= 300 && v.axiom.length > 0));
   const nrlExp = prof.explainProfile(nrlD);
-  check('explainProfile 对全不符合的本体给出「OWL 2 Full」标题', nrlExp.headline === '该本体不属于 RL / QL / EL 任一子语言（OWL 2 Full 或 DL 完整表达力）' && nrlExp.canReasonLocally === false, J(nrlExp));
-  check('explainProfile 说明需外部推理机但仍可导入词表', nrlExp.lines.some((l) => /HermiT|Pellet|ELK/.test(l)) && nrlExp.lines.some((l) => /受控词表/.test(l)), J(nrlExp.lines));
+  // T2-e/T2-f：DL 可用时 headline 变为「属于 OWL 2 DL」、canReasonLocally 为 true，
+  // 且不再输出「需外部推理机（HermiT/Pellet/ELK）」文案，改为 dl-js-reasoner 本地推理说明。
+  check('explainProfile 对非 RL 但 DL 可推理的本体给出「属于 OWL 2 DL」标题', nrlExp.headline === '该本体属于 OWL 2 DL' && nrlExp.canReasonLocally === true && nrlExp.recommend === 'DL', J(nrlExp));
+  check('explainProfile 说明可由 dl-js-reasoner 本地推理（含 ABox 门控提示）', nrlExp.lines.some((l) => /dl-js-reasoner/.test(l) && /OWL 2 DL tableau/.test(l)) && nrlExp.lines.some((l) => /ABox 级深度推理/.test(l)), J(nrlExp.lines));
+  check('explainProfile 不再声称需外部推理机', !nrlExp.lines.some((l) => /HermiT|Pellet|ELK/.test(l)), J(nrlExp.lines));
+  // DL 不可用（未安装 / 规模超限 / 属性层级不正则）时的降级文案：用合成结果驱动 else 分支。
+  const noDlExp = prof.explainProfile({
+    available: true, recommend: null, reasonerAvailable: false, profiles: [],
+    rl: { ok: false, total: 2, shown: 2, violations: [] },
+    ql: { ok: false, total: 1, shown: 1, violations: [] },
+    el: { ok: false, total: 1, shown: 1, violations: [] },
+  });
+  check('DL 不可用时 headline 仍为「OWL 2 Full」且 canReasonLocally=false', noDlExp.headline === '该本体不属于 RL / QL / EL 任一子语言（OWL 2 Full 或 DL 完整表达力）' && noDlExp.canReasonLocally === false, J(noDlExp.headline));
+  check('DL 不可用时说明仍可导入受控词表', noDlExp.lines.some((l) => /受控词表/.test(l)) && noDlExp.lines.some((l) => /dl-js-reasoner 未安装/.test(l)), J(noDlExp.lines));
 
   // ======================================================================
   section('§4.5 owlImport：格式判定');
@@ -821,7 +844,9 @@ SubClassOf(:A ObjectComplementOf(:B))
   // 显式传入的 id 原样使用（不补 owl: 前缀）；只有自动生成时才加 owl: 前缀。
   check('显式 id 原样使用，不补 owl: 前缀', rNamed.profile.id === 'custom-id', rNamed.profile.id);
   check('已带 owl: 前缀的显式 id 不会重复加前缀', (await owlImport.importOwlExtended(fTtl, { previewOnly: true, id: 'owl:already' })).profile.id === 'owl:already');
-  check('owlImport 导出 22 个成员', Object.keys(owlImport).length === 22, J(Object.keys(owlImport)));
+  // dl-js-reasoner 融合设计 §9.2.1 T2-g：新增 MAX_DL_AXIOMS / classExprToTree / pruneDlAxioms / dlNoteLines → 26
+  check('owlImport 导出 26 个成员', Object.keys(owlImport).length === 26, J(Object.keys(owlImport)));
+  check('导出 DL 相关工具（classExprToTree/pruneDlAxioms/dlNoteLines/MAX_DL_AXIOMS）', typeof owlImport.classExprToTree === 'function' && typeof owlImport.pruneDlAxioms === 'function' && typeof owlImport.dlNoteLines === 'function' && owlImport.MAX_DL_AXIOMS === 600);
   check('localName/iriOf/literalOf/isNamed/iriToKey 工具可用', owlImport.localName('http://ex.org/o#Thing') === 'Thing' && typeof owlImport.iriToKey === 'function');
   check('导出 collectExternalRefs（体系化导入依赖推断复用）', typeof owlImport.collectExternalRefs === 'function');
   check('导出 MAX_CONSTRAINTS 常量', typeof owlImport.MAX_CONSTRAINTS === 'number' && owlImport.MAX_CONSTRAINTS > 0, J(owlImport.MAX_CONSTRAINTS));
@@ -869,11 +894,17 @@ SubClassOf(:A ObjectComplementOf(:B))
   check('ro-core 未被截断', rRo.report.truncated === false && rRo.report.originalClassCount === 14 && rRo.report.predicatesTruncated === false);
   check('ro-core 解析出真实本体 IRI', rRo.report.ontologyIri === 'http://purl.obolibrary.org/obo/ro/core.owl', rRo.report.ontologyIri);
   check('ro-core 判定为 RL（可本地推理），QL 5 处 / EL 3 处违规', rRo.profileCheck.recommend === 'RL' && rRo.profileCheck.ql.total === 5 && rRo.profileCheck.el.total === 3, J({ r: rRo.profileCheck.recommend, ql: rRo.profileCheck.ql.total, el: rRo.profileCheck.el.total }));
-  check('ro-core 跳过 10 条 Synapse 不支持的子属性公理并说明原因', (() => {
+  // dl-js-reasoner 融合设计 §9.2.1 T2-h/T2-i：子属性公理不再「跳过」，而是「保留为 DL 公理」。
+  check('ro-core 保留 10 条子属性公理为 DL 公理并说明原因', (() => {
     const u = rRo.report.unsupportedAxioms.find((x) => x.type === 'SUB_OBJECT_PROPERTY_OF');
-    return !!u && u.count === 10 && /Synapse 体系结构不支持/.test(u.note);
+    return !!u && u.count === 10 && u.preserved === true && /已保留为 DL 公理/.test(u.note);
   })(), J(rRo.report.unsupportedAxioms));
-  check('ro-core 的 preview.notes 把跳过的子属性告知用户', rRo.preview.notes.some((n) => /跳过 10 条子属性/.test(n)), J(rRo.preview.notes[0]));
+  check('ro-core 的 preview.notes 把保留的子属性告知用户', rRo.preview.notes.some((n) => /保留 10 条子属性/.test(n)), J(rRo.preview.notes[0]));
+  check('ro-core 的 dlAxioms 收下了 10 条 SubObjectPropertyOf 且 dlCapable=true', (() => {
+    const dl = rRo.profile.dlAxioms || [];
+    return dl.filter((a) => a.type === 'SubObjectPropertyOf').length === 10 && rRo.profile.dlCapable === true;
+  })(), J({ n: (rRo.profile.dlAxioms || []).length, cap: rRo.profile.dlCapable }));
+  check('ro-core 的 preview.profileCheck.dl 报 available=true', rRo.preview.profileCheck.dl.available === true && rRo.preview.profileCheck.dl.dlAxiomCount === 10, J(rRo.preview.profileCheck.dl));
   check('ro-core 类数 >12 → promptMode 切到 two-stage', rRo.profile.promptMode === 'two-stage');
   check('ro-core 的类 key 用 IRI 本地名、label 用 rdfs:label', rRo.profile.classes[0].key === 'BFO_0000002' && rRo.profile.classes[0].label === 'continuant', J(rRo.profile.classes[0]));
   check('ro-core 的 part_of/has_part 被识别为传递', J(rRo.profile.predicates.slice(0, 2).map((p) => `${p.key}(${p.label}|f=${(p.features || []).join('+')})`)) === '["BFO_0000050(part of|f=transitive)","BFO_0000051(has part|f=transitive)"]', J(rRo.profile.predicates.slice(0, 2)));

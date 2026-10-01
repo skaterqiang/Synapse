@@ -40,24 +40,42 @@ function serializeNote(n) {
   return `${fm.join('\n')}\n\n${n.content || ''}`;
 }
 
+// frontmatter 整块匹配：起始 `---` 行 + 中间内容 + 结束 `---` 行。
+// 换行一律写成 (?:\r\n|\n|\r)：CRLF（git autocrlf 检出、记事本另存）与 CR-only 都要认，
+// 否则整段 frontmatter 会被当成正文（详见 parseNoteFile 内的说明）。
+// 结束分隔符用**前瞻**而非消费：让 blk[0].length 停在「结束 --- 之后的那个换行」之前，
+// 与旧实现 text.slice(end + 4) 的切点完全一致，正文前导空行的剥离语义因此保持不变。
+// 中间用惰性 [\s\S]*? 取**第一个**行首 `---` 作为结束符（正文里的 markdown 分隔线不受影响）。
+const FM_BLOCK_RE = /^---[ \t]*(?:\r\n|\n|\r)([\s\S]*?)(?:\r\n|\n|\r)---[ \t]*(?=\r\n|\n|\r|$)/;
+
 function parseNoteFile(file) {
   const text = fs.readFileSync(file, 'utf-8');
   const fm = {};
   let body = text;
-  if (text.startsWith('---\n')) {
-    const end = text.indexOf('\n---', 4);
-    if (end !== -1) {
-      for (const line of text.slice(4, end).split('\n')) {
-        const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/);
-        if (m) fm[m[1]] = m[2].trim();
-      }
-      // serializeNote 的分隔是「--- + 空行 + 正文」，即结尾 --- 后跟两个换行；
-      // 只剥一个会让正文每轮存/读都多出一个前导空行并逐次累积（笔记越存越“空”）。
-      // 因此优先按写盘格式剥掉整段分隔，兼容手写单换行的旧文件。
-      body = text.slice(end + 4);
-      if (body.startsWith('\n\n')) body = body.slice(2);
-      else body = body.replace(/^\n/, '');
+  // ⚠️ frontmatter 的起止分隔符必须对换行风格无感（\r\n / \n / \r 都要认）。
+  // 旧写法是「`text.startsWith('---\n')` + `indexOf('\n---')`」两步硬编码 LF，
+  // 对 CRLF 文件**第一步就失配** → 整段 frontmatter 被当成正文，
+  // id/title/tags/pinned/createdAt 全部解析为空；loadNotesFromDisk 随后用兜底 id
+  // （'file:'+相对路径）与文件名标题补齐，于是**下一次存盘就会把真 id 覆盖掉、清空标签与
+  // 置顶、createdAt 归零，并把原 frontmatter 原样复制进正文**（实测：欢迎笔记 1184 → 1314
+  // 字节，元数据全毁且不可逆——真 id 一旦被 'file:…' 顶掉就再也找不回来）。
+  // CRLF 的两个来源：① git core.autocrlf=true 的 Windows 检出（仓库 data/note 是被跟踪的，
+  // 检出即 CRLF）；② 用户用记事本等编辑器另存笔记。两者都不该导致数据损坏。
+  const blk = text.match(FM_BLOCK_RE);
+  if (blk) {
+    // ⚠️ 必须按 /\r\n|\n|\r/ 切行，不能按 '\n'：
+    // JS 正则的 `.` 不匹配 \r，且非 multiline 的 `$` 只认字符串末尾，
+    // 所以「id: xxx\r」这种 CRLF 行会让 `^(\w+):\s*(.*)$` **整体失配**（不是值带 \r，
+    // 而是压根匹配不上）——只靠 .trim() 兜底是无效的，必须在切行时就把 \r 去掉。
+    for (const line of blk[1].split(/\r\n|\n|\r/)) {
+      const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/);
+      if (m) fm[m[1]] = m[2].trim();
     }
+    // serializeNote 的分隔是「--- + 空行 + 正文」，即结尾 --- 后跟两个换行；
+    // 只剥一个会让正文每轮存/读都多出一个前导空行并逐次累积（笔记越存越“空”）。
+    // 因此按写盘格式剥掉最多两个前导空行，同时兼容手写单换行的旧文件。
+    // 正文其余字节原样保留，不做换行改写（避免无谓地重写用户文件）。
+    body = text.slice(blk[0].length).replace(/^(?:\r\n|\n|\r){1,2}/, '');
   }
   let tags = [];
   try { tags = JSON.parse(fm.tags || '[]'); } catch (_) {}

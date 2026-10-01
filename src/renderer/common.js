@@ -912,6 +912,7 @@ function modelEntryList() {
     model: (s.model || '').trim() || D.model || '',
     baseUrl: (s.apiBaseUrl || '').trim() || D.apiBaseUrl || '',
     apiKey: s.apiKey || '',
+    thinking: s.thinkingEnabled !== false,
   };
   return [primary, ...extraModels()];
 }
@@ -931,6 +932,8 @@ function fillPrimaryModelFields() {
   $('set-model').value = window.kb.normalizeModel ? window.kb.normalizeModel(modelVal) : (modelVal || D.model || '');
   $('set-model').placeholder = D.model || '';
   $('set-baseurl').placeholder = D.apiBaseUrl || '';
+  const thinkEl = $('set-thinking');
+  if (thinkEl) thinkEl.checked = s.thinkingEnabled !== false;
 }
 
 // 把某个“更多模型”提升为默认模型（写入 settings 的标量字段）。
@@ -947,12 +950,15 @@ function promoteModel(id, opts = {}) {
     model: (s.model || '').trim(),
     baseUrl: (s.apiBaseUrl || '').trim(),
     apiKey: s.apiKey || '',
+    thinking: s.thinkingEnabled !== false,
   };
   if (opts.keepOld && (old.model || old.baseUrl)) list.splice(i, 1, old); else list.splice(i, 1);
   s.apiProvider = normalizeProvider(picked.provider);
   s.apiBaseUrl = picked.baseUrl || '';
   s.apiKey = picked.apiKey || '';
   s.model = picked.model || '';
+  // 思考开关随模型走：提升后主模型沿用该卡片的勾选状态（未设置过视为开启）
+  if (picked.thinking === false) s.thinkingEnabled = false; else delete s.thinkingEnabled;
   state.settings.extraModels = list;
   // 被提升的条目 id 已不存在，若正被选中则改指默认模型
   if (state.aiModelId === id) setAiModel('__primary__');
@@ -980,6 +986,29 @@ function renderModelList() {
   renderMineruModelOptions();
 }
 
+// 默认模型卡的「无思考」徽标即时同步：勾选 #set-thinking 变化时不整体重渲染
+//（字段节点在卡片间复用，重渲染会打断输入焦点），只增删卡头徽标
+function syncPrimaryThinkBadge() {
+  const box = $('model-cards');
+  if (!box) return;
+  const card = box.querySelector('.mcp-card');
+  if (!card) return;
+  const keyBadge = card.querySelector('[data-keybadge]');
+  if (!keyBadge) return;
+  const on = $('set-thinking') ? $('set-thinking').checked : true;
+  let thinkBadge = card.querySelector('[data-thinkbadge]');
+  if (!on) {
+    if (!thinkBadge) {
+      thinkBadge = document.createElement('span');
+      thinkBadge.className = 'model-badge';
+      thinkBadge.setAttribute('data-thinkbadge', '');
+      keyBadge.after(thinkBadge);
+    }
+    thinkBadge.textContent = '无思考';
+    thinkBadge.title = '该模型已关闭思考（thinking）';
+  } else if (thinkBadge) thinkBadge.remove();
+}
+
 // entry: modelEntryList() 的一项（primary 为 true 时为默认模型）
 function modelCard(entry, primaryFields) {
   const isPrimary = !!entry.primary;
@@ -998,6 +1027,7 @@ function modelCard(entry, primaryFields) {
     + '<span class="mcp-test-name" data-modelname>' + escapeHtml(entry.model || '(未填模型名)') + '</span>'
     + (isPrimary ? '<span class="model-badge cur">默认</span>' : '')
     + keyTag
+    + (entry.thinking === false ? '<span class="model-badge" data-thinkbadge title="该模型已关闭思考（thinking）">无思考</span>' : '')
     + '<span class="mcp-test-target" data-baseurl title="' + escapeHtml(entry.baseUrl || '') + '">' + escapeHtml(entry.baseUrl || '') + '</span>'
     + '<span class="mcp-head-acts">'
     + (isPrimary
@@ -1089,6 +1119,7 @@ function extraModelForm(m) {
     + '<button type="button" class="btn btn-ghost" data-fetch>获取模型</button>'
     + '</div>'
     + '<p class="modal-tip" data-fetchtip></p>'
+    + '<label class="model-think-row"><input type="checkbox" data-f="thinking" /><span>开启思考（thinking）：思考型模型输出推理过程；取消可显著加快抽取/问答</span></label>'
     + '<div class="model-save-row">'
     + '<button type="button" class="btn btn-primary" data-saveform>保存修改</button>'
     + '<span class="modal-tip">修改上方配置后点「保存修改」写入，保存后立即生效</span>'
@@ -1101,6 +1132,8 @@ function extraModelForm(m) {
   url.value = m.baseUrl || '';
   keyEl.value = m.apiKey || '';
   nameEl.value = m.model || '';
+  const thinkEl = box.querySelector('[data-f="thinking"]');
+  thinkEl.checked = m.thinking !== false;
   const keyTip = box.querySelector('[data-keytip]');
   const syncKeyTip = () => {
     keyTip.textContent = providerNeedsKey(prov.value)
@@ -1140,7 +1173,20 @@ function extraModelForm(m) {
       else if (providerNeedsKey(p)) { keyBadge.className = 'model-badge warn'; keyBadge.textContent = '无 Key'; keyBadge.title = '该 provider 通常需要 API Key'; }
       else { keyBadge.className = 'model-badge'; keyBadge.textContent = '无需 Key'; keyBadge.removeAttribute('title'); }
     }
+    // 思考开关徽章：仅关闭时显示，便于一眼看出哪张卡是「无思考」快模式
+    let thinkBadge = card.querySelector('[data-thinkbadge]');
+    if (e.thinking === false) {
+      if (!thinkBadge) {
+        thinkBadge = document.createElement('span');
+        thinkBadge.className = 'model-badge';
+        thinkBadge.setAttribute('data-thinkbadge', '');
+        keyBadge.after(thinkBadge);
+      }
+      thinkBadge.textContent = '无思考';
+      thinkBadge.title = '该模型已关闭思考（thinking）';
+    } else if (thinkBadge) thinkBadge.remove();
   };
+  thinkEl.addEventListener('change', () => { save({ thinking: thinkEl.checked }); syncCardHead(); });
   prov.addEventListener('change', () => {
     const preset = PROVIDER_PRESETS[prov.value] || PROVIDER_PRESETS[DEFAULT_PROVIDER];
     if (preset.url) url.value = preset.url;
@@ -1160,6 +1206,7 @@ function extraModelForm(m) {
       baseUrl: url.value.trim(),
       apiKey: keyEl.value.trim(),
       model: nameEl.value.trim(),
+      thinking: thinkEl.checked,
     }, { rerender: true });
     toast('已保存模型修改', 2500);
   });
@@ -2114,6 +2161,12 @@ function showSettingsView() {
     // 修复 LLM 仲裁（冲突自动处理方案3）：默认关，勾选才落 true（与 reasonEnabled 的反向口径）
     $('set-repair-llm').checked = !!s.graphRepairLlm;
     fillReasonStatusTip(reasonOn);
+    // DL 深度推理（dl-js-reasoner 融合设计 §12）：开关口径与 reasonEnabled 一致（未显式关闭即开启），
+    // 深度扫描默认关（D4 成本控制）。5 个数值项由上面的 NUM_SETTING_FIELDS 循环统一填充。
+    const dlOn = s.dlEnabled !== false;
+    $('set-dl-enabled').checked = dlOn;
+    $('set-dl-deep').checked = !!s.dlDeep;
+    fillDlStatusTip(dlOn);
     applyMineruModeUI();
     renderMineruModelOptions();
     $('set-editormode').value = EDITOR_MODES.includes(s.defaultEditorMode) ? s.defaultEditorMode : 'preview';
@@ -2147,6 +2200,8 @@ function hideSettingsView() {
 
 // Tab 切换：记录当前分类，仅显示对应表单区
 function switchSettingsTab(tab) {
+  // RL/DL 设置已合并进「推理」页（pane 键为 dl）；历史会话存的 'graph' 迁移过去
+  if (tab === 'graph') tab = 'dl';
   // 若目标 tab 无对应面板（如历史遗留值），回退模型配置
   if (!document.querySelector(`.settings-pane[data-pane="${tab}"]`)) tab = 'ai';
   state.settingsTab = tab;
@@ -2160,6 +2215,31 @@ function switchSettingsTab(tab) {
   const form = document.querySelector('.settings-form');
   if (form) form.classList.toggle('is-wide', tab === 'skills');
   if (tab === 'pipeline') renderPipelinePreview();
+  if (tab === 'dl') renderProfileMatrix();
+}
+
+// 推理设置页底部的 OWL 2 子语言支持矩阵（只读）：数据源是主进程 profile.js 的 PROFILE_META，
+// 前端不抄一份（与 DL_LIMITS 同口径原则），避免 RL/QL/EL 的描述与主进程漂移。
+async function renderProfileMatrix() {
+  const box = $('set-profile-matrix');
+  if (!box) return;
+  box.textContent = '加载中…';
+  let meta = null;
+  try {
+    const res = (typeof window.kb.reasonProfileMeta === 'function') ? await window.kb.reasonProfileMeta() : null;
+    if (res && res.ok && res.meta) meta = res.meta;
+  } catch (_) { meta = null; }
+  if (!meta) { box.textContent = '子语言信息不可用（protege-js 的 OWL2Profiles 模块未加载）'; return; }
+  const ORDER = ['RL', 'DL', 'QL', 'EL'];
+  box.innerHTML = ORDER.filter((k) => meta[k]).map((k) => {
+    const m = meta[k];
+    const badge = m.localReasoning
+      ? '<i class="pm-badge pm-ok">已内置本地推理</i>'
+      : '<i class="pm-badge">未内置本地推理</i>';
+    return `<div class="pm-row"><div class="pm-head"><b>${escapeHtml(m.name || k)}</b>${badge}</div>`
+      + `<div class="pm-desc">${escapeHtml(m.desc || '')}</div>`
+      + `<div class="pm-meta">推理机：${escapeHtml(m.reasoner || '-')} · 复杂度：${escapeHtml(m.complexity || '-')}</div></div>`;
+  }).join('');
 }
 
 // 「当前解析链」只读预览（§16.3）：不执行解析，只展示配方将启用的装饰器层序。
@@ -2560,7 +2640,18 @@ function saveSettingsFields() {
   if (reasonOn) delete s.reasonEnabled; else s.reasonEnabled = false;
   // 修复 LLM 仲裁（方案3）：默认关 → 勾选落 true，取消勾选删键（主进程按 !!settings.graphRepairLlm 读）
   if ($('set-repair-llm').checked) s.graphRepairLlm = true; else delete s.graphRepairLlm;
+  // 思考开关（模型级，默认模型卡）：默认开 → 勾选即删键回退默认开启，取消勾选落 false
+  // 与 chat.js aiSettings() 的 thinkingEnabled 口径一致，主进程 thinkingWanted 据此下发 think/enable_thinking
+  const thinkEl = $('set-thinking');
+  if (thinkEl) { if (thinkEl.checked) delete s.thinkingEnabled; else s.thinkingEnabled = false; }
+  syncPrimaryThinkBadge(); // 卡头「无思考」徽标随勾选即时更新（默认模型卡不整体重渲染）
   fillReasonStatusTip(reasonOn);
+  // DL 深度推理（融合设计 §12）：开关口径同 reasonEnabled（勾选即删键回退默认开启）；
+  // 深度扫描默认关 → 勾选落 true，取消删键。5 个数值项已由上面的 NUM_SETTING_FIELDS 循环处理。
+  const dlOn = $('set-dl-enabled').checked;
+  if (dlOn) delete s.dlEnabled; else s.dlEnabled = false;
+  if ($('set-dl-deep').checked) s.dlDeep = true; else delete s.dlDeep;
+  fillDlStatusTip(dlOn);
   // 开关变化要立刻反映到知识图谱各页的置灰态（F10）；以主进程 reasonStatus 为准
   // （它同时反映「模块是否可用」与「开关是否打开」，比前端乐观值可靠）
   refreshReasonAvailability();
@@ -2642,6 +2733,9 @@ function applyReasonAvailability(on) {
     }
   }
   fillReasonStatusTip(state.reasonAvailable);
+  // DL 状态行同样依赖 state.reasonStatus.coverage.dl（主进程回传的生效上限），
+  // 异步状态到达后必须重刷一次，否则设置页会一直显示「默认」占位。
+  fillDlStatusTip();
 }
 
 // 设置页那行状态提示：区分「用户关掉了」与「模块没装上」两种不可用原因
@@ -2656,6 +2750,52 @@ function fillReasonStatusTip(on) {
   el.textContent = on
     ? `✓ 推理已启用 · 超时 ${st && st.timeoutSec ? st.timeoutSec : ($('set-reason-timeout').value || 30)} 秒`
     : '推理已在设置中关闭：提取时不自动推理，影响面/推理 Tab/问答影响面 stage 均置灰';
+}
+
+// DL 设置页状态行（dl-js-reasoner 融合设计 §12）：区分「模块没装上」「用户关掉了」「已启用」三态。
+//
+// ⚠️ 生效上限**不在前端硬编码默认值**：DL_LIMITS 的唯一真源是主进程 dl.js，前端抄一份必然漂移
+//    （这正是「推理」Tab 的 DL 区块此前刻意不显示预算分母的原因）。这里改为：
+//      · 用户填了 → 显示表单当前值（即时反映未保存的输入）；
+//      · 留空     → 显示「默认」，具体数值由主进程回传的 coverage.dl.limits 兜底展示。
+//    主进程不可达（降级态）时只显示开关状态，不编造数字。
+// on 省略时从 DOM 读，便于 applyReasonAvailability() 在异步状态到达后无参重刷。
+function fillDlStatusTip(on) {
+  const el = $('set-dl-status');
+  if (!el) return;
+  const st = state.reasonStatus || null;
+  const cfg = (st && st.coverage && st.coverage.dl) || null;
+  const dlOn = on !== undefined ? !!on : !!($('set-dl-enabled') && $('set-dl-enabled').checked);
+
+  if (cfg && cfg.ready === false) {
+    el.textContent = `⚠ DL 推理不可用：${cfg.unavailableReason || '未知原因'}（OWL 2 RL 前向链推理不受影响，下方上限设置暂不生效）`;
+    return;
+  }
+  if (!dlOn) {
+    el.textContent = 'DL 深度推理已关闭：一致性判定、类层级分类、合取查询与问答的 DL 召回全部停用；OWL 2 RL 前向链推理照常工作';
+    return;
+  }
+
+  // 已启用：回显五项生效上限（表单值优先，留空则取主进程回传的默认值）
+  const ROWS = [
+    ['dlMaxClasses', 'set-dl-maxclasses', 'maxClasses', '类数'],
+    ['dlAboxBudget', 'set-dl-aboxbudget', 'aboxBudget', 'ABox 预算'],
+    ['dlTransitiveCap', 'set-dl-transcap', 'transitiveIndividualCap', '传递个体'],
+    ['dlMaxAxioms', 'set-dl-maxaxioms', 'maxDlAxioms', '公理条数'],
+    ['dlMaxEdges', 'set-dl-maxedges', 'maxInferredEdges', '推理边'],
+  ];
+  const limits = (cfg && cfg.limits) || null;
+  const parts = [];
+  for (const [, id, lk, label] of ROWS) {
+    const inp = $(id);
+    const raw = inp ? String(inp.value || '').trim() : '';
+    let v = null;
+    if (raw) { const n = Number(raw); if (Number.isFinite(n)) v = Math.round(n); }
+    else if (limits && Number.isFinite(Number(limits[lk]))) v = Number(limits[lk]);
+    parts.push(`${label} ${v === null ? '默认' : v}`);
+  }
+  const deep = $('set-dl-deep') && $('set-dl-deep').checked;
+  el.textContent = `✓ DL 已启用 · ${deep ? '默认做 ABox 深度扫描' : '默认仅 TBox 判定（深度扫描需手动触发）'} · 生效上限：${parts.join(' / ')}`;
 }
 
 // 生成图谱前的「已生成过则确认重新生成」守卫

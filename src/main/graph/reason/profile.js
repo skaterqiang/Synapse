@@ -59,6 +59,13 @@ const PROFILE_META = {
     reasoner: 'OWL2RLReasoner（Synapse 默认走这条）',
     complexity: '多项式时间',
   },
+  DL: {
+    id: 'DL', name: 'OWL 2 DL',
+    desc: '完整描述逻辑，dl-js-reasoner 本地 tableau 推理',
+    localReasoning: true,
+    reasoner: 'dl-js-reasoner（HermiT JS 移植）',
+    complexity: '最坏 2-ExpTime，实测 TBox 毫秒级',
+  },
   QL: {
     id: 'QL', name: 'OWL 2 QL',
     desc: '面向数据库查询改写的子语言',
@@ -125,16 +132,25 @@ function detectProfile(ontology, opts = {}) {
   const ql = wrap(run(checkQL));
   const el = wrap(run(checkEL));
 
-  // 推荐顺序：RL 优先（Synapse 本地能推）→ QL → EL
-  const recommend = rl.ok ? 'RL' : (ql.ok ? 'QL' : (el.ok ? 'EL' : null));
+  // DL 裁决（dl-js-reasoner 融合设计 §4.2 改动点 2）：
+  // 模块可加载 && 类数 ≤ DL_MAX_CLASSES && 属性层级近似正则。
+  // 惰性 require：dl.js 自身对 dl-js-reasoner 缺失静默降级（I5/D6）。
+  let dlOk = false;
+  try {
+    const dl = require('./dl');
+    dlOk = !!(dl && typeof dl.dlAvailableFor === 'function' && dl.dlAvailableFor(ontology, opts));
+  } catch (_) { dlOk = false; }
+
+  // 推荐顺序：RL 优先（多项式、已验证）→ DL（完整表达力本地可推）→ QL → EL
+  const recommend = rl.ok ? 'RL' : (dlOk ? 'DL' : (ql.ok ? 'QL' : (el.ok ? 'EL' : null)));
   const profiles = [rl.ok && 'RL', ql.ok && 'QL', el.ok && 'EL'].filter(Boolean);
 
   return {
     available: true,
     rl, ql, el,
     recommend,
-    // 只有 RL 能在 Synapse 本地物化推理；QL/EL 需要外部推理机
-    reasonerAvailable: rl.ok,
+    // RL 能本地物化推理；非 RL 时若 DL 门控通过，dl-js-reasoner 也能本地推理
+    reasonerAvailable: rl.ok || dlOk,
     profiles,
     meta: PROFILE_META,
   };
@@ -180,13 +196,19 @@ function explainProfile(result) {
   const headline = result.recommend
     ? `该本体属于 OWL 2 ${result.recommend}`
       : '该本体不属于 RL / QL / EL 任一子语言（OWL 2 Full 或 DL 完整表达力）';
-  if (result.reasonerAvailable) {
+  // DL 可用性（dl-js-reasoner 融合设计 §4.2 改动点 3）：
+  // reasonerAvailable 已含 DL 裁决；recommend==='DL' 或（非 RL 且 reasonerAvailable）都走 DL 文案。
+  const dlAvailable = !!result.reasonerAvailable && !(result.rl && result.rl.ok);
+  if (result.reasonerAvailable && !dlAvailable) {
     lines.push('→ Synapse 可用内置 OWL 2 RL 推理机做本地物化推理。');
+  } else if (dlAvailable) {
+    lines.push('→ 可本地推理：dl-js-reasoner（OWL 2 DL tableau）支持一致性、不可满足类、分类、蕴含与合取查询。');
+    lines.push('  ABox 级深度推理（实例类型/属性值）按规模门控，超大规模仅做 TBox 级。');
   } else if (result.recommend) {
     lines.push(`→ 属于 ${PROFILE_META[result.recommend].name}，但 Synapse 只内置 RL 推理机：${PROFILE_META[result.recommend].reasoner}。`);
   } else {
-    lines.push('→ 无法本地推理：完整 OWL 2 DL 需要 HermiT / Pellet / ELK 等外部推理机。');
-    lines.push('  仍可导入类层级与谓词作为受控词表，只是不产生推理边。');
+    lines.push('→ 暂无法本地推理：dl-js-reasoner 未安装，或本体规模/属性层级超出 DL 门控。');
+    lines.push('  仍可导入类层级与谓词作为受控词表。');
   }
   return { headline, lines, canReasonLocally: !!result.reasonerAvailable, recommend: result.recommend };
 }

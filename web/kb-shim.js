@@ -190,6 +190,12 @@
     graphDeleteNode: (nodeId) => call('graph:deleteNode', nodeId),
     graphImpactClosure: (nodeId, opts) => call('graph:impactClosure', { nodeId, opts }),
     graphPredicateFeatures: (profileId) => call('graph:predicateFeatures', profileId),
+    // DL 深度推理（dl-js-reasoner 融合设计 §4.6：三处同步登记之三）
+    reasonProfileMeta: () => call('reason:profileMeta'),
+    // web 端 call 只传单 body → 主进程 ipc.js 已兼容 {profileId, spec|axiom} 形态
+    graphDlQuery: (profileId, spec) => call('graph:dlQuery', { profileId, spec: spec || {} }),
+    graphDlEntail: (profileId, axiom) => call('graph:dlEntail', { profileId, axiom: axiom || {} }),
+    graphDlHierarchy: (profileId) => call('graph:dlHierarchy', { profileId }),
     graphPreviewOwl: (body) => call('graph:previewOwl', body),
     onKgFacts: on('kg:facts'),
     onKgStage: on('kg:stage'),

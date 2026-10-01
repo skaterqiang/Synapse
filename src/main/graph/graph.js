@@ -146,6 +146,7 @@ function reason() {
       profile: require('./reason/profile'),
       validate: require('./reason/validate'),
       repair: require('./reason/repair'),
+      dl: require('./reason/dl'),   // dl-js-reasoner 适配层（融合设计 §4.5 改动点 1）
     };
   } catch (err) {
     _reasonError = String((err && err.message) || err);
@@ -167,8 +168,30 @@ function reasonUnavailableReason() {
   if (!r.infer.reasonerAvailable()) return 'protege-js 未安装或加载失败，本地推理不可用';
   return '';
 }
+/**
+ * DL 推理层（dl-js-reasoner）是否可用（融合设计 §4.5 改动点 1）。
+ * 与 reasonReady 独立：DL 缺失不影响 RL 主链路（I5/D6），仅供 UI 区分展示。
+ */
+function reasonDlReady() {
+  const r = reason();
+  return !!(r && r.dl && typeof r.dl.dlAvailable === 'function' && r.dl.dlAvailable());
+}
+/** DL 推理层不可用的原因（供 UI 显示）。 */
+function reasonDlUnavailableReason() {
+  const r = reason();
+  if (!r) return '推理模块不可用';
+  if (!r.dl || typeof r.dl.dlAvailable !== 'function') return 'DL 适配层接口不完整';
+  if (!r.dl.dlAvailable()) {
+    const e = typeof r.dl.dlError === 'function' ? r.dl.dlError() : '';
+    return `dl-js-reasoner 未安装或加载失败${e ? `：${e}` : ''}`;
+  }
+  return '';
+}
 
 // materializeGraph 的 skipReason → 面向用户的人话（作业阶段行/推理 Tab 共用）
+// 8 个 dl-* 码来自 dl-js-reasoner 融合设计 §4.5 改动点 2（T1-b：7 → 15 键）。
+// ⚠️ 这里必须覆盖 dl.js 能产出的**全部**码（gateScale 2 个 + classifyError 4 个 +
+//    reasonABox 的 dl-no-abox + 适配层的 dl-unavailable），漏一个就会把英文码直接展示给用户。
 const SKIP_REASON_TEXT = {
   'reasoner-unavailable': 'protege-js 不可用，无法本地推理',
   'empty-graph': '图谱为空，无内容可推理',
@@ -177,6 +200,14 @@ const SKIP_REASON_TEXT = {
   'aborted': '已被用户中止',
   'materialize-failed': '物化过程出错',
   'timeout': '推理超时（已保留原始图谱，可在设置中调大超时）',
+  'dl-too-large': '本体规模超出 DL 推理上限，已跳过深度推理',
+  'dl-abox-budget': 'ABox 规模超出 DL 预算，仅做 TBox 级推理',
+  'dl-non-horn': '本体非 Horn，合取查询不可用（一致性/分类仍可用）',
+  'dl-timeout': 'DL 推理超时，已中断（保留原始图谱）',
+  'dl-unavailable': 'dl-js-reasoner 未安装或加载失败',
+  'dl-irregular': '属性层级不正则（循环依赖），DL 推理不可用',
+  'dl-error': 'DL 推理出错（已保留原始图谱，详见推理日志）',
+  'dl-no-abox': '该体系无实例数据，DL 只做 TBox 级推理',
 };
 
 /** 总开关：settings.reasonEnabled，默认开（设计文档 §6.11 / §11 开放问题 2 倾向默认开）。 */
@@ -188,6 +219,81 @@ function reasonEnabled(settings) {
 /** 推理超时（秒）：settings.reasonTimeout，默认 30，范围 5–120（§6.11）。 */
 function reasonTimeoutSec(settings) {
   return num(settings || {}, 'reasonTimeout', 30, 5, 120);
+}
+
+// ---------------------------------------------------------------------------
+// DL 深度推理配置（dl-js-reasoner 融合设计 §12：设置页 UI）
+//
+// 三个纯函数，全部只读 settings，不碰 kv、不碰推理层，因此可在任何降级态下安全调用。
+// 口径与 reasonEnabled 完全一致：「未显式关闭即开启」，且推理层不可用时连带为 false。
+//
+// ⚠️ dlLimitsFromSettings 的返回对象**只含 dl.js:DL_LIMITS 的 5 个既有键名**，
+//    绝不新增键（test/graph-dl.test.js:172-173 对 DL_LIMITS 的形状与默认值有硬断言）。
+//    min/max 必须与 src/renderer/constants.js 的 NUM_SETTING_FIELDS 逐字一致，
+//    否则会出现「设置里能填但主进程静默钳回」。
+// ---------------------------------------------------------------------------
+
+/** DL 深度推理开关：settings.dlEnabled，默认开；推理层不可用时连带为 false。 */
+function dlEnabled(settings) {
+  if (!reasonDlReady()) return false;
+  const v = settings && settings.dlEnabled;
+  return v === undefined || v === null || v === '' ? true : !!v;
+}
+
+/** 是否默认执行 ABox 级深度扫描：settings.dlDeep，默认关（D4 成本控制）。 */
+function dlDeepDefault(settings) {
+  return !!(settings && settings.dlDeep);
+}
+
+/**
+ * settings → dl.js 规模门控阈值（DL_LIMITS 的 5 个键，逐项钳制）。
+ * 留空/非法的项**不出现在返回对象里**，由 gateScale 的 `{...DL_LIMITS, ...limits}` 回落默认值 —— 这样
+ * 「用户只改了一项」时其余四项永远跟随代码里的默认值，不会把旧版本落盘的过期数值钉死。
+ * @param {object} [settings]
+ * @returns {object} DL_LIMITS 键名的子集（0–5 个键）
+ */
+function dlLimitsFromSettings(settings) {
+  const s = settings || {};
+  const out = {};
+  // [settings 键, DL_LIMITS 键, 默认值, min, max] —— 默认值只为可读性，实际回落发生在 gateScale
+  const MAP = [
+    ['dlMaxClasses', 'maxClasses', 2000, 10, 20000],
+    ['dlAboxBudget', 'aboxBudget', 20000, 0, 100000000],
+    ['dlTransitiveCap', 'transitiveIndividualCap', 80, 0, 100000],
+    ['dlMaxAxioms', 'maxDlAxioms', 600, 0, 100000],
+    ['dlMaxEdges', 'maxInferredEdges', 5000, 0, 1000000],
+  ];
+  for (const [sk, lk, , min, max] of MAP) {
+    const raw = s[sk];
+    if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) continue;
+    const v = Number(raw);
+    if (!Number.isFinite(v)) continue;
+    out[lk] = Math.min(max, Math.max(min, Math.round(v)));
+  }
+  return out;
+}
+
+/**
+ * DL 生效配置快照（供设置页状态行与「推理」Tab 的 DL 区块展示，避免前端硬编码默认值漂移）。
+ * 嵌套在 coverage.dl 下返回，不新增任何顶层键（getReasonState 11 键 / reasonStatus 5 键硬契约不变）。
+ */
+function dlConfigSnapshot(settings) {
+  const s = settings || readSettingsSafe();
+  const R = reason();
+  const D = (R && R.dl && R.dl.DL_LIMITS) || null;
+  const limits = dlLimitsFromSettings(s);
+  const merged = { ...(D || {}), ...limits };
+  return {
+    ready: reasonDlReady(),
+    unavailableReason: reasonDlReady() ? '' : reasonDlUnavailableReason(),
+    enabled: dlEnabled(s),
+    deepDefault: dlDeepDefault(s),
+    // 运行时实际生效值（默认值来自主进程，前端不必再抄一份）
+    limits: merged,
+    // 用户是否显式覆盖过（前端据此标注「已自定义」）
+    customized: Object.keys(limits),
+    timeoutSec: reasonTimeoutSec(s),
+  };
 }
 
 // ---------- 推理元数据（kv 'graph.meta'） ----------
@@ -773,12 +879,18 @@ async function extractGraph(settings, { rawPaths, readRaw, inlineSources, typeHi
   if (doReason) {
     if (onStage) onStage('reason', '本地物化推理中（OWL 2 RL 前向链）…');
     try {
+      // DL 生效配置（融合设计 §12）：提取后的自动推理同样受设置页的 DL 开关/默认深度/规模上限约束。
+      const exDlLimits = dlLimitsFromSettings(settings);
       const mat = await R.infer.materializeGraph(
         { nodes: mergedNodeList, edges: rawEdgeList },
         onto,
         {
           timeoutMs: reasonTimeoutSec(settings) * 1000,
           signal,
+          dlEnabled: (settings && settings.dlEnabled === false) ? false : undefined,
+          deep: dlDeepDefault(settings),
+          maxDlEdges: exDlLimits.maxInferredEdges,
+          limits: exDlLimits,
           onProgress: (info) => { if (onStage && info && info.phase) onStage('reason', info.phase); },
         }
       );
@@ -944,8 +1056,32 @@ function getOntology(profileId) {
   const id = profileId || kv.profileId || 'bfo-lite';
   const o = resolveOntology(id);
   const g = getGraph();
+  // 实例/关系统计**按体系隔离**（口径同 listGraphScopes / scopeFilter）：
+  //   节点归属 = 自身 profile 字段 → id 前缀（形如 `bfo-lite:充电桩`）→ 兜底 bfo-lite；
+  //   边仅在**两端同属当前体系**时计入（跨体系边不计入任何单体系，避免重复计数）。
+  // 历史：f49eccb 引入该隔离，daf7bfb「fix MCP client problems」误将其回退（测试断言未同步回退 → 长期红测），此处恢复。
+  const pidOf = (n) => {
+    if (n && n.profile) return String(n.profile);
+    const nid = String((n && n.id) || '');
+    const i = nid.indexOf(':');
+    return i > 0 ? nid.slice(0, i) : 'bfo-lite';
+  };
   const countBy = {};
-  for (const n of g.nodes) countBy[n.type] = (countBy[n.type] || 0) + 1;
+  const nodePid = new Map();
+  let instCount = 0;
+  let edgeCount = 0;
+  for (const n of g.nodes) {
+    if (!n) continue;
+    const p = pidOf(n);
+    nodePid.set(n.id, p);
+    if (p !== id) continue;
+    instCount += 1;
+    countBy[n.type] = (countBy[n.type] || 0) + 1;
+  }
+  for (const e of g.edges) {
+    if (!e || !e.from || !e.to) continue;
+    if (nodePid.get(e.from) === id && nodePid.get(e.to) === id) edgeCount += 1;
+  }
   const baseKeys = { classes: new Set(), predicates: new Set() };
   const baseProfile = id.startsWith('owl:') ? (kv.owlProfiles || []).find((p) => p.id === id) : ONTOLOGY_PROFILES[id];
   (baseProfile ? baseProfile.classes : []).forEach((c) => baseKeys.classes.add(c.key));
@@ -968,8 +1104,8 @@ function getOntology(profileId) {
       predicateCount: o.predicates.length,
       constraintCount: (o.constraints || []).length,
       axiomCount: (o.axioms || []).length,
-      instanceCount: g.nodes.length,
-      edgeCount: g.edges.length,
+      instanceCount: instCount,
+      edgeCount,
     },
   };
 }
@@ -1150,6 +1286,18 @@ async function kgAsk(event, { settings, question, hops, withFacts }) {
     const uniqFacts = [...new Set(facts)].slice(0, 80);
     event.sender.send('kg:stage', `邻居事实扩展完成（${maxHops} 跳内）：共 ${uniqFacts.length} 条事实`);
 
+    // ---------- DL 合取查询召回（融合设计 §6.2） ----------
+    // BFS 只能沿**图里已有的边**走；DL tableau 能回答「按公理应当成立、但图里没画出来」的关系
+    // （传递闭包、互逆、对称、属性链、domain/range 触发的类型归入）。命中 dlCapable 体系时，
+    // 用 CQ 补一轮召回，答案并入 facts。失败（非 Horn / 超预算 / 未安装）静默跳过，BFS 结果不变。
+    let dlFacts = [];
+    try {
+      dlFacts = dlRecallFacts(g, seeds, { settings, entityPid, send: (m) => event.sender.send('kg:stage', m) }).facts;
+    } catch (err) {
+      // DL 召回是增强项：任何异常都不得影响问答主链路（I5 静默降级）
+      event.sender.send('kg:stage', `DL 查询召回失败（已跳过）：${String((err && err.message) || err).slice(0, 120)}`);
+    }
+
     // ---------- 影响面扩展（设计文档 §4.4 / §11 开放问题 4：关键词触发） ----------
     // BFS 只给「N 跳内的直接邻居」，回答「变压器故障会波及什么」这类问题时，
     // 需要沿**传递谓词**做闭包（含推理边），并把传导路径写进事实里。
@@ -1212,11 +1360,14 @@ async function kgAsk(event, { settings, question, hops, withFacts }) {
     // 抹平箭头两侧空格与尾部括注（跳数/推理标记），并保留信息更丰富的影响面版本。
     const factKey = (f) => String(f).replace(/\s*→\s*/g, '→').replace(/（[^）]*）\s*$/, '').trim();
     let askFacts = uniqFacts;
-    if (impactFacts.length) {
+    if (impactFacts.length || dlFacts.length) {
       const byKey = new Map();
       const order = [];
-      for (const f of uniqFacts) { const k = factKey(f); if (!byKey.has(k)) order.push(k); byKey.set(k, f); }
-      for (const f of impactFacts) { const k = factKey(f); if (!byKey.has(k)) order.push(k); byKey.set(k, f); }
+      const add = (list) => { for (const f of list) { const k = factKey(f); if (!byKey.has(k)) order.push(k); byKey.set(k, f); } };
+      add(uniqFacts);
+      // DL 事实放中间：措辞与 BFS 同口径（`—rel→`），键相同则被 BFS 版本覆盖（保留先出现的）
+      add(dlFacts);
+      add(impactFacts);
       askFacts = order.map((k) => byKey.get(k)).slice(0, 120);
     }
 
@@ -1458,6 +1609,11 @@ function reasonStatus() {
       coverage = r.guard.coverage(resolveOntology(kv.profileId || 'bfo-lite'));
     } catch (_) { coverage = null; }
   }
+  // DL 生效配置（融合设计 §12）：嵌在 coverage.dl 下，**不新增顶层键**
+  // （test/graph-reason-integration.test.js:75 断言 reasonStatus() 恰好 5 个字段）。
+  if (coverage && typeof coverage === 'object') {
+    try { coverage.dl = dlConfigSnapshot(); } catch (_) { /* 降级态下不阻断状态查询 */ }
+  }
   return {
     available: ready,
     enabled: reasonEnabled(readSettingsSafe()),
@@ -1500,6 +1656,17 @@ async function runInference(settings, opts = {}) {
   };
   const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : reasonTimeoutSec(s) * 1000;
 
+  // DL 生效配置（融合设计 §12）：开关 / 默认深度 / 规模上限全部来自 settings，
+  // 但 opts 里的显式值优先——「运行深度推理」按钮传 {deep:true} 单次覆盖，测试传 opts.limits 亦如此。
+  // ⚠️ dlEnabled 只在**用户显式关闭**时传 false，模块缺失时传 undefined：
+  //    后者必须继续走 infer.js 的 'dl-unavailable' 分支（既有原因码语义不变，
+  //    SKIP_REASON_TEXT 15 键硬契约不动，'dl-disabled' 只由前端 reasonSkipText 解释）。
+  const dlOff = !!(s && s.dlEnabled === false);
+  const dlLimitsS = dlLimitsFromSettings(s);
+  const dlDeep = opts.deep !== undefined ? !!opts.deep : dlDeepDefault(s);
+  const dlMaxEdges = opts.maxDlEdges !== undefined ? opts.maxDlEdges : dlLimitsS.maxInferredEdges;
+  const dlLimits = { ...dlLimitsS, ...(opts.limits || {}) };
+
   // 只保留原始边作为推理输入（§5.4：上一轮推理产物本轮重算）
   const rawEdges = (g.edges || []).filter((e) => e && e.from && e.to && !e.inferred);
   const nodeById = new Map(g.nodes.map((n) => [n && n.id, n]));
@@ -1540,6 +1707,14 @@ async function runInference(settings, opts = {}) {
         maxRounds: opts.maxRounds,
         signal: opts.signal || null,
         scopeLabelOf,
+        // DL 深度推理（融合设计 §4.4/§6.1/§12）：深度扫描由设置项 dlDeep 决定默认值，
+        // 调用方可用 opts.deep 单次覆盖（「运行深度推理」按钮）。
+        // dlEnabled=false 时传 dlEnabled:false → infer.js 跳过整个 DL 阶段（RL 结论不变）。
+        // 规模上限来自设置（dlLimitsFromSettings），opts.limits 仍可再覆盖（测试用）。
+        dlEnabled: dlOff ? false : undefined,
+        deep: dlDeep,
+        maxDlEdges: dlMaxEdges,
+        limits: dlLimits,
         onProgress: (info) => report(info && info.phase ? `[${prof.name || pid}] ${info.phase}` : '', info && info.pct),
       });
     } catch (err) {
@@ -1557,6 +1732,8 @@ async function runInference(settings, opts = {}) {
       inferredEdges: (mat.inferredEdges || []).length,
       inconsistencies: (mat.inconsistencies || []).length,
       stats: mat.stats,
+      // DL 子对象（融合设计 §4.5 改动点 3）：嵌进 perProfile 条目，不增顶层键
+      dl: (mat.stats && mat.stats.dl) || null,
     });
   }
 
@@ -1579,15 +1756,45 @@ async function runInference(settings, opts = {}) {
     profiles: ran.length,
     skippedProfiles: perProfile.length - ran.length,
   };
+  // DL 汇总（融合设计 §4.5 改动点 3 / §6.1）：只嵌进 lastStats.dl，**不进顶层返回值**
+  // （顶层 12 键是 T1-f 硬契约，DG6：绝不新增顶层键）。
+  // 前端「DL 深度推理」区块靠它显示上次运行的一致性/不可满足类/ABox 推理边数，
+  // 不必再跑一次 dlHierarchy。逐体系明细仍在 perProfile[i].dl（perProfile 是自由形态数组）。
+  const dlSummary = summarizeDl(perProfile);
   setGraphMeta({
     lastInferredAt: Date.now(),
     inferredStale: false,
     // inconsistencyDetails 是「推理」Tab 冲突区块的数据源（§6.6）：
     // lastStats.inconsistencies 只存条数（前端徽标用），明细单独存且限量，
     // 避免一次大推理产生上千条冲突把 kv 撑爆。
-    lastStats: { skipped: false, ...stats, inconsistencyDetails: capInconsistencies(allInconsistencies), at: Date.now() },
+    lastStats: { skipped: false, ...stats, dl: dlSummary, inconsistencyDetails: capInconsistencies(allInconsistencies), at: Date.now() },
   });
   return { ok: true, skipped: false, ...stats, inconsistencies: allInconsistencies, perProfile, total: countInferredSafe(getGraph()) };
+}
+
+// 把 perProfile[i].dl（infer.js 的 dlStats）汇总成一条全局摘要。
+// 口径：ran=任一体系真跑了 DL；consistent=全部一致才为 true（有一个 false 即 false，
+// 全没跑则为 null）；unsatCount/dlInferred 求和；skipReasons 去重收集（前端查
+// SKIP_REASON_TEXT 出中文）；elapsedMs 求和。
+function summarizeDl(perProfile) {
+  const list = (Array.isArray(perProfile) ? perProfile : []).map((p) => p && p.dl).filter(Boolean);
+  const out = { ran: false, consistent: null, unsatCount: 0, dlInferred: 0, elapsedMs: 0, skipReasons: [], profiles: 0 };
+  if (!list.length) return out;
+  out.profiles = list.filter((d) => d.ran).length;
+  out.ran = out.profiles > 0;
+  for (const d of list) {
+    if (d.ran) {
+      if (d.consistent === false) out.consistent = false;
+      else if (d.consistent === true && out.consistent === null) out.consistent = true;
+    }
+    out.unsatCount += Number(d.unsatCount) || 0;
+    out.dlInferred += Number(d.dlInferred) || 0;
+    out.elapsedMs += Number(d.elapsedMs) || 0;
+    const sr = String(d.skipReason || '');
+    if (sr && !out.skipReasons.includes(sr)) out.skipReasons.push(sr);
+    if (d.error && !out.skipReasons.includes('dl-error')) out.skipReasons.push('dl-error');
+  }
+  return out;
 }
 
 function countInferredSafe(g) {
@@ -1639,6 +1846,14 @@ function getReasonState(profileId) {
     if (R && R.guard) {
       cov = R.guard.coverage(prof);
       features = predicateFeatures(pid);
+    }
+    // DL 能力子键（融合设计 §4.5 改动点 4）：嵌进既有 coverage 对象，不增顶层键
+    // （getReasonState 11 键 / IPC 12 键硬契约不变）。前端据此决定是否渲染第 6 区块。
+    if (cov && typeof cov === 'object') {
+      cov.dlCapable = !!(prof && prof.dlCapable && R && R.dl && typeof R.dl.dlAvailable === 'function' && R.dl.dlAvailable());
+      // DL 生效配置（融合设计 §12）：设置页的开关/深度/上限在「推理」Tab 的 DL 区块回显，
+      // 让「门控分母」不再靠前端硬编码默认值。同样嵌在 coverage 下，不增顶层键。
+      try { cov.dl = dlConfigSnapshot(); } catch (_) { /* 降级态下不阻断 */ }
     }
   } catch (_) { /* 体系解析失败时留空，不影响其余区块 */ }
   return {
@@ -1692,6 +1907,233 @@ function predicateFeatures(profileId) {
     });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// DL 深度推理编排（dl-js-reasoner 融合设计 §4.5 改动点 5）
+//
+// 三个交互式入口（IPC 通道 graph:dlQuery / graph:dlEntail / graph:dlHierarchy）：
+// 均为**只读**——不落库、不写 kv（I4），每次现合成 DL 本体（TBox+ABox）后查询。
+// dl 模块缺失/体系非 dlCapable/规模超限时返回 {ok:false, reason:'dl-*'}，
+// 前端按 SKIP_REASON_TEXT 同码文案提示。
+// ---------------------------------------------------------------------------
+
+/** 解析 DL 推理上下文：体系 + 门控 + 合成本体。失败返回 {ok:false, reason}。 */
+function _dlContext(profileId, opts = {}) {
+  const R = reason();
+  // ⚠️ pid 必须在**所有**分支里都算出来并回传：失败形态也要带 profileId，
+  //    否则前端拿到 {ok:false} 时无法判断是哪个体系面板失败了（多体系并存时会串台）。
+  const pid = profileId || readOntologyKv().profileId || 'bfo-lite';
+  // settings 必须在门控**之前**取到：DL 开关与规模上限都来自设置页（融合设计 §12）。
+  const s = opts.settings || readSettingsSafe();
+  const limits = { ...dlLimitsFromSettings(s), ...(opts.limits || {}) };
+  if (!R || !R.dl || typeof R.dl.dlAvailable !== 'function' || !R.dl.dlAvailable()) {
+    return { ok: false, pid, reason: 'dl-unavailable', error: reasonDlUnavailableReason() };
+  }
+  // 设置页总开关（融合设计 §12）：关闭后三个探针一律拒绝，前端按 'dl-disabled' 文案提示。
+  // 该码**刻意不进** SKIP_REASON_TEXT（15 键硬契约），只由 renderer/graph.js:reasonSkipText 解释。
+  if (!dlEnabled(s)) {
+    return { ok: false, pid, reason: 'dl-disabled', error: 'DL 深度推理已在「设置 → 推理」中关闭' };
+  }
+  let prof;
+  try { prof = resolveOntology(pid); } catch (err) {
+    return { ok: false, pid, reason: 'unknown-profile', error: String((err && err.message) || err) };
+  }
+  if (!prof || !prof.dlCapable) {
+    return { ok: false, pid, reason: 'dl-unavailable', error: `体系「${(prof && prof.name) || pid}」未启用 DL 推理（仅 OWL 导入的完整 DL 体系支持）` };
+  }
+  const g = getGraph();
+  const gate = R.dl.gateScale(prof, g, limits);
+  if (!gate.allowTBox) return { ok: false, pid, reason: gate.reason || 'dl-too-large', gate };
+  let ont;
+  try {
+    ont = R.dl.buildDLOntology(prof, g, { abox: gate.allowABox, limits });
+  } catch (err) {
+    return { ok: false, pid, reason: 'dl-error', error: String((err && err.message) || err), gate };
+  }
+  const cfg = R.dl.makeConfig({ timeoutMs: reasonTimeoutSec(s) * 1000 });
+  return { ok: true, pid, prof, graph: g, gate, ont, cfg, dl: R.dl };
+}
+
+/**
+ * 合取查询（CQ，§4.6 通道 graph:dlQuery）。
+ * @param {string} [profileId]
+ * @param {object} spec  {select:['?x',…], where:[{class|objectProperty,…}]}（key 或完整 IRI）
+ * @returns {{ok:boolean, reason?:string, answers?:Array, columns?:Array, isHorn?:boolean|null, elapsedMs?:number}}
+ */
+function dlQuery(profileId, spec) {
+  const ctx = _dlContext(profileId);
+  // ⚠️ 失败形态也必须带 profileId：前端三个探针面板共用一个结果渲染器，
+  //    没有 profileId 就无法知道「这次失败属于哪个体系」，多体系并存时会串台。
+  if (!ctx.ok) return { ok: false, reason: ctx.reason, error: ctx.error || '', profileId: ctx.pid, answers: [], columns: [], isHorn: null, elapsedMs: 0 };
+  if (!ctx.gate.allowABox) return { ok: false, reason: ctx.gate.reason || 'dl-abox-budget', error: 'ABox 规模超出 DL 预算，合取查询不可用', profileId: ctx.pid, answers: [], columns: [], isHorn: null, elapsedMs: 0 };
+  const res = ctx.dl.answerCQ(ctx.ont, spec, ctx.cfg);
+  return { ...res, profileId: ctx.pid, gate: ctx.gate };
+}
+
+/**
+ * 蕴含探针（§4.6 通道 graph:dlEntail）。
+ * @param {string} [profileId]
+ * @param {object} axiom  中立公理形态（见 dl.entail 的 axSpec）
+ * @returns {{ok:boolean, entailed?:boolean|null, explain?:string, reason?:string}}
+ */
+function dlEntail(profileId, axiom) {
+  const ctx = _dlContext(profileId);
+  if (!ctx.ok) return { ok: false, entailed: null, explain: '', reason: ctx.reason, error: ctx.error || '', profileId: ctx.pid, elapsedMs: 0 };
+  const res = ctx.dl.entail(ctx.ont, axiom, ctx.cfg);
+  return { ...res, profileId: ctx.pid };
+}
+
+/**
+ * 类层级 + 一致性 + 不可满足类（§4.6 通道 graph:dlHierarchy）。
+ * Q-DL-3 决议：层级**不落图边**（类不是图节点，落边即僵尸边），仅作为数据返回。
+ * @param {string} [profileId]
+ * @returns {{ok:boolean, reason?:string, consistent?:boolean|null, hierarchy?:object|null,
+ *            topClasses?:Array, unsatClasses?:Array, elapsedMs?:number}}
+ */
+function dlHierarchy(profileId) {
+  const ctx = _dlContext(profileId);
+  if (!ctx.ok) return { ok: false, reason: ctx.reason, error: ctx.error || '', profileId: ctx.pid, consistent: null, hierarchy: null, topClasses: [], unsatClasses: [], elapsedMs: 0 };
+  const res = ctx.dl.reasonTBox(ctx.ont, ctx.cfg);
+  if (res.skipped) return { ok: false, reason: res.skipReason || 'dl-error', error: res.error || '', profileId: ctx.pid, consistent: null, hierarchy: null, topClasses: [], unsatClasses: [], elapsedMs: res.elapsedMs };
+  // 附类中文名（前端树展示用）
+  const labels = {};
+  for (const c of (ctx.prof.classes || [])) if (c && c.key) labels[c.key] = c.label || c.key;
+  return {
+    ok: true, profileId: ctx.pid,
+    consistent: res.consistent,
+    hierarchy: res.hierarchy,
+    topClasses: res.topClasses,
+    unsatClasses: res.unsatClasses,
+    labels,
+    elapsedMs: res.elapsedMs,
+    stats: res.stats,
+  };
+}
+
+/**
+ * DL 合取查询召回（融合设计 §6.2）：把 kgAsk stage 1 的实体识别结果转成 CQ 原子，
+ * 用 dl-js-reasoner 的 datalog 引擎问「按公理应当成立」的属性关系，补 BFS 的盲区。
+ *
+ * BFS 只沿图里已画的边走；DL 能补上传递闭包 / 互逆 / 对称 / 属性链 / domain·range
+ * 触发的关系。答案渲染成与 BFS **完全同口径**的事实串
+ * （`[profile·type]名称 —rel→ [profile·type]名称`），上层 factKey 去重因此能直接吃掉重复项。
+ *
+ * 全程只读（I4）：不落库、不写 kv、不改图。任何前置条件不满足都返回 `{facts:[]}`，
+ * 调用方按 BFS 原样继续（I5 静默降级）。
+ *
+ * @param {object} g  当前图（getGraph()）
+ * @param {Array} seeds  stage 1 命中的种子节点
+ * @param {object} [opts]  {settings, entityPid, limits, send(stageMsg)}
+ * @returns {{facts:Array<string>, info:Array<object>|null}}
+ */
+function dlRecallFacts(g, seeds, opts = {}) {
+  const none = { facts: [], info: null };
+  if (!Array.isArray(seeds) || !seeds.length) return none;
+  if (!reasonEnabled(opts.settings)) return none;   // §6.11 总开关关闭 → DL 召回也不跑
+  if (!dlEnabled(opts.settings)) return none;       // §12 DL 开关关闭 → 召回同样不跑（问答退回 BFS）
+  const R = reason();
+  if (!R || !R.dl || typeof R.dl.answerCQs !== 'function' || !R.dl.dlAvailable()) return none;
+  // 规模上限来自设置页；opts.limits（测试用）优先
+  const limits = { ...dlLimitsFromSettings(opts.settings), ...(opts.limits || {}) };
+
+  const nodes = (g && g.nodes) || [];
+  const edges = (g && g.edges) || [];
+  const byId = new Map();
+  for (const n of nodes) if (n && n.id) byId.set(n.id, n);
+
+  // 种子按体系分组（多体系共存时各用自己的谓词表；口径同影响面扩展）
+  const pidOf = (n) => String(n.profile || (String(n.id || '').split(':')[0]) || opts.entityPid || 'bfo-lite');
+  const byProfile = new Map();
+  for (const s of seeds) {
+    const pid = pidOf(s);
+    if (!byProfile.has(pid)) byProfile.set(pid, []);
+    byProfile.get(pid).push(s);
+  }
+
+  const send = typeof opts.send === 'function' ? opts.send : () => {};
+  const MAX_SEEDS_PER_PROFILE = 5;   // 与影响面扩展同口径，防止 CQ 数量爆炸
+  const MAX_SPECS = 150;
+  const out = [];
+  const infos = [];
+
+  for (const [pid, list] of byProfile) {
+    let prof = null;
+    try { prof = resolveOntology(pid); } catch (_) { prof = null; }
+    // 内置体系（bfo-lite 等）dlCapable=false：RL 物化已覆盖其全部规则，不必合成 DL 本体
+    if (!prof || !prof.dlCapable) continue;
+
+    const gate = R.dl.gateScale(prof, g, limits);
+    if (!gate.allowABox) continue;   // CQ 需要 ABox；规模超预算则跳过（TBox 级对召回无贡献）
+
+    let ont = null;
+    try { ont = R.dl.buildDLOntology(prof, g, { abox: true, limits }); } catch (_) { continue; }
+    if (!ont || !ont.abox) continue;
+
+    // 图里已存在的边（规范 rel key）：DL 答案命中这些就不必再报，省提示词额度。
+    // relDisplay 把规范 key 映射回图里实际存的 rel 串（可能是中文别名），
+    // 保证 DL 事实与 BFS 事实**字面同口径**，上层 factKey 去重才吃得掉。
+    const m = R.bridge.normalizeProfile(prof);
+    const have = new Set();
+    const relDisplay = new Map();
+    for (const e of edges) {
+      if (!e || !e.from || !e.to) continue;
+      const key = m.relAlias.get(e.rel) || e.rel;
+      have.add(R.bridge.edgeKey(e.from, e.to, key));
+      if (!relDisplay.has(key)) relDisplay.set(key, e.rel);
+    }
+
+    // 每个种子 × 每个谓词：出向 + 入向各一条 CQ
+    const specs = [];
+    const meta = [];   // 与 specs 一一对应：{seedId, rel, dir}
+    for (const seed of list.slice(0, MAX_SEEDS_PER_PROFILE)) {
+      for (const rel of ont.propertyKeys) {
+        if (specs.length >= MAX_SPECS) break;
+        specs.push({ select: ['?o'], where: [{ objectProperty: rel, subject: seed.id, object: '?o' }] });
+        meta.push({ seedId: seed.id, rel, dir: 'out' });
+        if (specs.length >= MAX_SPECS) break;
+        specs.push({ select: ['?s'], where: [{ objectProperty: rel, subject: '?s', object: seed.id }] });
+        meta.push({ seedId: seed.id, rel, dir: 'in' });
+      }
+      if (specs.length >= MAX_SPECS) break;
+    }
+    if (!specs.length) continue;
+
+    const res = R.dl.answerCQs(ont, specs, R.dl.makeConfig({ timeoutMs: reasonTimeoutSec(opts.settings) * 1000 }));
+    if (!res || !res.ok) {
+      infos.push({ profileId: pid, ok: false, reason: (res && res.reason) || 'dl-error', specs: specs.length, facts: 0 });
+      continue;
+    }
+    const tag = (n) => `[${(n && n.profile) || pid}·${(n && n.type) || '?'}]`;
+    let added = 0;
+    (res.results || []).forEach((one, i) => {
+      if (!one || !one.ok) return;
+      const mm = meta[i] || {};
+      const relKey = mm.rel;
+      const relText = relDisplay.get(relKey) || relKey;
+      for (const row of (one.answers || [])) {
+        const cell = row && row[0];
+        if (!cell || cell.kind !== 'individual') continue;   // 只收个体答案（变量/字面量不入事实）
+        const a = byId.get(mm.seedId);
+        const b = byId.get(cell.value);
+        if (!a || !b || a === b) continue;
+        const from = mm.dir === 'out' ? a : b;
+        const to = mm.dir === 'out' ? b : a;
+        if (have.has(R.bridge.edgeKey(from.id, to.id, relKey))) continue;   // 图里已有 → BFS 已覆盖
+        out.push(`${tag(from)}${from.name} —${relText}→ ${tag(to)}${to.name}（⚡DL 推理）`);
+        added++;
+      }
+    });
+    infos.push({ profileId: pid, ok: true, isHorn: res.isHorn, specs: specs.length, facts: added, elapsedMs: res.elapsedMs });
+  }
+
+  const facts = [...new Set(out)].slice(0, 40);
+  if (infos.length) {
+    send(facts.length
+      ? `DL 合取查询召回完成：${infos.reduce((a, x) => a + (x.specs || 0), 0)} 条查询 → ${facts.length} 条 BFS 未覆盖的推理事实`
+      : 'DL 合取查询召回完成：未发现图外的新关系（BFS 已覆盖全部可推理事实）');
+  }
+  return { facts, info: infos.length ? infos : null };
 }
 
 /** 清除全部推理边（§9 风险 3 的「清除所有推理边」按钮）。 */
@@ -2251,6 +2693,12 @@ module.exports = { getGraph, saveGraph, clearGraph, extractGraph, contextFor, re
   // ---------- 推理层对外接口（设计文档 §4–§6） ----------
   runInference, getReasonState, clearInferredEdges, deleteEdgeWithCascade, deleteNodeWithCascade,
   impactClosureFor, predicateFeatures, reasonStatus, previewOwlImport, validateGraph,
+  // ---------- DL 深度推理（dl-js-reasoner 融合设计 §4.5/§4.6） ----------
+  dlQuery, dlEntail, dlHierarchy, reasonDlReady, reasonDlUnavailableReason,
+  dlRecallFacts,   // §6.2 kgAsk 的 CQ 召回（导出供测试直接驱动）
+  // ---------- DL 设置页配置（融合设计 §12）----------
+  // 导出供 mergeGraph 装饰器与测试直接驱动；均为纯函数（只读 settings）。
+  dlEnabled, dlDeepDefault, dlLimitsFromSettings, dlConfigSnapshot,
   // ---------- 体系化导入（bundle：主本体 + 依赖合并为单一体系）----------
   importBundle, previewBundleImport,
   // ---------- 冲突自动修复（方案2/3） ----------
